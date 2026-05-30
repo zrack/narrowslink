@@ -8,9 +8,9 @@ constraints into the conversation.
 
 Status: in progress
 
-- Define the project vision, audience, and contribution path.
-- Create the public GitHub repository.
-- Publish an initial roadmap and README.
+- Define the project vision, audience, and contribution path. Done.
+- Create the public GitHub repository. Done.
+- Publish an initial roadmap and README. Done.
 - Decide the license.
 - Collect early community feedback on use cases and protocol needs.
 

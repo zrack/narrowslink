@@ -10,8 +10,8 @@ protocol ideas, test data, and implementation work as the terminal takes form.
 
 ## Current state
 
-- Repository created locally.
-- Product direction and roadmap are being defined.
+- Public GitHub repository created.
+- Product direction and roadmap are defined at a first-pass level.
 - No runnable application has been implemented yet.
 - Core decisions are still open: runtime, UI shell, ingestion interfaces,
   telemetry schema format, and storage model.
