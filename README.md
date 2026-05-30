@@ -1,8 +1,10 @@
-# Narrow Telemetry Terminal
+# NarrowsLink
 
-Narrow Telemetry Terminal is an early-stage open source project for collecting,
-decoding, inspecting, and sharing telemetry from constrained or narrow-band data
-links.
+NarrowsLink is an early-stage open source project for collecting, decoding,
+inspecting, and sharing telemetry from constrained data links.
+
+The name nods to the Gig Harbor and Tacoma Narrows area: bridges, passages,
+signals, and the practical work of keeping remote systems connected.
 
 The project is currently in its framing stage. This repository exists so the
 community can see the direction, help shape the MVP, and contribute design notes,

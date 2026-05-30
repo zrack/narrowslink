@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping shape Narrow Telemetry Terminal. The project is early, so the
+Thanks for helping shape NarrowsLink. The project is early, so the
 most valuable contributions are clear use cases, sample data, architecture
 feedback, and small implementation slices once the foundation lands.
 
