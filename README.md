@@ -6,6 +6,8 @@ inspecting, and sharing telemetry from constrained data links.
 The name nods to the Gig Harbor and Tacoma Narrows area: bridges, passages,
 signals, and the practical work of keeping remote systems connected.
 
+![NarrowsLink dashboard screenshot](docs/assets/narrowslink-dashboard.png)
+
 The project is currently in its framing stage. This repository exists so the
 community can see the direction, help shape the MVP, and contribute design notes,
 protocol ideas, test data, and implementation work as the terminal takes form.
@@ -14,7 +16,8 @@ protocol ideas, test data, and implementation work as the terminal takes form.
 
 - Public GitHub repository created.
 - Product direction and roadmap are defined at a first-pass level.
-- No runnable application has been implemented yet.
+- Static prototype screen exists for visual framing and README screenshots.
+- No real telemetry ingestion, decoding, or recording has been implemented yet.
 - Core decisions are still open: runtime, UI shell, ingestion interfaces,
   telemetry schema format, and storage model.
 

@@ -8,3 +8,5 @@ build/
 coverage/
 .cache/
 .tmp/
+.playwright-cli/
+output/playwright/
