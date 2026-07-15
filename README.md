@@ -68,5 +68,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for collaboration guidelines.
 
 ## License
 
-License is not selected yet. Until a license is added, please treat the code and
-project materials as all rights reserved.
+NarrowsLink is licensed under the MIT License. See [LICENSE](LICENSE) for
+details.
