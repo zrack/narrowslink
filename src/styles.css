@@ -210,6 +210,48 @@ select:focus-visible {
   font-style: normal;
 }
 
+.capture-entry {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 20px);
+  min-height: 43px;
+  margin: 0 10px 10px;
+  padding: 6px 10px;
+  border: 1px solid #43584a;
+  background: #141c17;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.capture-entry:hover {
+  border-color: #607a66;
+  background: #19241d;
+}
+
+.capture-entry > svg {
+  color: var(--green);
+}
+
+.capture-entry > span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.capture-entry strong {
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.capture-entry small {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8px;
+}
+
 .link-list {
   padding-bottom: 4px;
 }
@@ -473,7 +515,8 @@ select:focus-visible {
   gap: 8px;
 }
 
-.topbar .open-replay-mobile {
+.topbar .open-replay-mobile,
+.topbar .capture-mobile {
   display: none;
 }
 
@@ -1853,6 +1896,215 @@ select:focus-visible {
   resize: vertical;
 }
 
+.capture-dialog {
+  width: min(720px, calc(100vw - 32px));
+  padding: 24px;
+}
+
+.capture-dialog-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.capture-dialog .dialog-fields {
+  margin: 0;
+}
+
+.capture-session-fields label:last-child,
+.capture-transport-fields label:last-child {
+  grid-column: auto;
+}
+
+.capture-transport-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--line);
+}
+
+.capture-transport-tab {
+  min-height: 38px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: #101410;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.capture-transport-tab:last-child {
+  border-right: 0;
+}
+
+.capture-transport-tab.active {
+  background: #1a211b;
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--green);
+}
+
+.capture-transport-tab:disabled {
+  cursor: not-allowed;
+}
+
+.capture-transport-panel {
+  min-height: 175px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: #101410;
+}
+
+.capture-transport-panel[hidden] {
+  display: none;
+}
+
+.capture-transport-fields .capture-field-wide {
+  grid-column: 1 / -1;
+}
+
+.capture-capability-warning,
+.capture-lock-notice,
+.capture-transport-state,
+.capture-dialog-notice {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.capture-capability-warning {
+  color: #efb46c;
+}
+
+.capture-live-status {
+  border: 1px solid #3b4d40;
+  background: #111813;
+}
+
+.capture-status-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.capture-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.capture-status-grid div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.capture-status-grid div:nth-child(3n) {
+  border-right: 0;
+}
+
+.capture-status-grid div:nth-last-child(-n + 3) {
+  border-bottom: 0;
+}
+
+.capture-status-grid dt {
+  color: var(--dim);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.capture-status-grid dd {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-transport-state,
+.capture-lock-notice {
+  padding: 0 12px 10px;
+}
+
+.capture-lock-notice {
+  margin-top: 0;
+  color: var(--dim);
+}
+
+.capture-dialog-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 !important;
+  padding: 10px 12px;
+  border: 1px solid #73443f;
+  background: #251817;
+}
+
+.capture-dialog-notice {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid #4e6955;
+  background: #152019;
+  color: var(--green);
+}
+
+.capture-discard-confirm {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #75423e;
+  background: #241716;
+}
+
+.capture-discard-confirm p {
+  margin: 0;
+  color: #d9b5b1;
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.destructive-action {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 13px;
+  border: 1px solid #a2554e;
+  background: #542923;
+  color: #ffe2dd;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.capture-dialog-actions {
+  min-height: 36px;
+  align-items: center;
+}
+
+.capture-action-progress {
+  margin: 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+}
+
 .dialog-error {
   margin: -8px 0 16px !important;
   color: var(--red) !important;
@@ -2078,7 +2330,8 @@ select:focus-visible {
     flex: 1 1 260px;
   }
 
-  .topbar .open-replay-mobile {
+  .topbar .open-replay-mobile,
+  .topbar .capture-mobile {
     display: inline-flex;
     flex: 0 0 auto;
     min-height: 32px;
@@ -2154,5 +2407,44 @@ select:focus-visible {
 
   .bundle-notes {
     min-height: 170px;
+  }
+}
+
+@media (max-width: 600px) {
+  .capture-dialog {
+    padding: 20px 16px;
+  }
+
+  .capture-session-fields,
+  .capture-transport-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .capture-session-fields label,
+  .capture-transport-fields label,
+  .capture-transport-fields .capture-field-wide {
+    grid-column: 1;
+  }
+
+  .capture-status-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .capture-status-grid div,
+  .capture-status-grid div:nth-child(3n) {
+    border-right: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .capture-status-grid div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .capture-status-grid div:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .capture-discard-confirm {
+    grid-template-columns: 1fr;
   }
 }

@@ -12,7 +12,7 @@ npm ci
 npm run dev
 ```
 
-Vite prints the local development URL. The application automatically loads the bundled harbor-relay fixture; use **Open local replay** to exercise the user-import path.
+Vite prints the local development URL. The application automatically loads the bundled harbor-relay fixture; use **Open local replay** to exercise the user-import path or **New live capture** for UDP/Web Serial.
 
 ## Required checks
 
@@ -33,6 +33,8 @@ Available commands:
 | `npm run build` | Typecheck and create the production bundle |
 | `npm run preview` | Serve the production bundle locally |
 | `npm run check` | Run typecheck, tests, and production build |
+| `npm run capture:bridge` | Start the token-protected local UDP capture bridge |
+| `npm run capture:demo` | Send checked-in fixture frames as real UDP datagrams |
 | `npm run fixture:generate` | Regenerate the deterministic bundled replay |
 
 ## Regenerating the fixture
@@ -54,6 +56,9 @@ Review both the generator diff and the resulting fixture facts. Keep generation 
 - Store and compare time as safe integer microsecond offsets from the session's UTC start. Apply the declared IANA time zone only for display.
 - Use half-open incident and export ranges: `[startUs, endUs)`.
 - Route bundled and user-imported sessions through the same validation and decoding functions.
+- Route finalized live captures through that same validation and decoding path before replay.
+- Never let a control client stop or adopt a UDP capture it did not start; reconcile bridge sequence, datagram, and byte totals before claiming a capture is complete.
+- Bound live recording by the serialized `.nlsession` size, not only the binary payload size, so every accepted capture remains importable.
 - Preserve malformed, partial, checksum-failed, and unknown frames with explicit integrity status and source linkage.
 - Keep decoder, replay, range, incident, and bundle behavior pure where practical and add automated tests for changes.
 - Make evidence manifests truthful: every listed file must exist, every inclusion toggle must be honored, and hashes must cover the exact emitted bytes.
@@ -68,7 +73,10 @@ Review both the generator diff and the resulting fixture facts. Keep generation 
 | Validation, metrics, diagnostics, and incidents | `src/domain/session.ts` |
 | Replay timing | `src/replay/` |
 | Evidence archive generation | `src/domain/bundle.ts` |
-| Import behavior | `src/data/load-session.ts` |
+| Session serialization and import behavior | `src/data/session-file.ts`, `src/data/load-session.ts` |
+| Capture lifecycle and session finalization | `src/capture/CaptureDialog.tsx`, `src/capture/recorder.ts` |
+| Serial capture and NSL-01 assembly | `src/capture/web-serial.ts`, `src/capture/nsl01-serial-assembler.ts` |
+| UDP browser protocol and local bridge | `src/capture/udp-bridge.ts`, `scripts/capture-bridge.mjs` |
 | Marker and note persistence | `src/storage/session-storage.ts` |
 | Workspace UI and interactions | `src/App.tsx`, `src/styles.css` |
 | Deterministic demo data | `scripts/generate-demo-session.mjs` |
@@ -83,6 +91,7 @@ The approved visual source is `docs/design/narrowslink-mission-timeline-source.p
 - Keep clock tests deterministic by injecting the monotonic time source and frame scheduler.
 - Verify evidence changes by inspecting archive paths, manifest metadata, record counts, and SHA-256 values rather than only checking that a download occurred.
 - For UI changes, exercise the bundled replay, file-import error state, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
+- For capture changes, exercise a real loopback UDP socket from start through stop, re-import, replay, annotation, and bundle export. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage.
 
 ## Pull requests
 

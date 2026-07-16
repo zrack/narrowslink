@@ -1,8 +1,10 @@
 import { parseSession, SessionValidationError } from "../domain/session";
 import type { ParsedSession } from "../domain/types";
+import { MAX_SESSION_FILE_BYTES } from "./session-file";
+
+export { MAX_SESSION_FILE_BYTES } from "./session-file";
 
 export const DEFAULT_SESSION_URL = "/fixtures/harbor-relay-session.json";
-export const MAX_SESSION_FILE_BYTES = 32 * 1024 * 1024;
 
 export class SessionLoadError extends Error {
   readonly details: string[];

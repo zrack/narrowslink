@@ -196,9 +196,9 @@ const sourceRecordSchema = z.object({
   index: z.number().int().nonnegative(),
   sourceId: wellFormedText(z.string().min(1).max(128)),
   offsetUs: z.number().int().nonnegative().safe(),
-  dataHex: z.string().max(131_100).regex(/^(?:[0-9a-fA-F]{2})+$/),
-  captureBytes: z.number().int().positive(),
-  wireBytes: z.number().int().positive(),
+  dataHex: z.string().max(131_100).regex(/^(?:[0-9a-fA-F]{2})*$/),
+  captureBytes: z.number().int().nonnegative(),
+  wireBytes: z.number().int().nonnegative(),
   transport: z.object({
     kind: z.enum(["udp", "serial", "file"]),
     kernelDropCounter: z.number().int().nonnegative().optional(),
@@ -211,7 +211,18 @@ const sourceRecordSchema = z.object({
     })
     .strict()
     .optional(),
-}).strict();
+}).strict().superRefine((record, context) => {
+  if (
+    record.transport.kind !== "udp"
+    && (record.dataHex.length === 0 || record.captureBytes === 0 || record.wireBytes === 0)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["dataHex"],
+      message: "Only UDP records may represent a zero-length datagram",
+    });
+  }
+});
 
 const incidentPresetSchema = z
   .object({

@@ -1,13 +1,18 @@
 # NarrowsLink
 
-NarrowsLink turns a recorded telemetry session into a synchronized incident review workspace. Load a replay, move one microsecond-accurate playhead across link health, packet families, decoder state, diagnostics, markers, and decoded signals, then export the selected incident as a reproducible evidence bundle.
+NarrowsLink records live UDP or serial telemetry, turns the capture into an immutable local replay, and provides a synchronized incident-review workspace. One microsecond-accurate playhead drives link health, packet families, decoder state, diagnostics, markers, and decoded signals; the selected interval can then be exported as a reproducible evidence bundle.
 
-![NarrowsLink mission timeline showing a selected link-fade incident](docs/design/implementation-final-production.png)
+![NarrowsLink live UDP capture setup](docs/design/live-capture-setup.jpg)
 
-The current application is a local-first replay tool. It does not yet listen to live UDP or serial sources, upload telemetry, or require a cloud account.
+![NarrowsLink replaying and investigating a captured UDP burst](docs/design/live-capture-replay.jpg)
+
+The application is local-first. UDP ingest uses a token-protected loopback bridge and serial ingest uses the browser's Web Serial connection; capture, replay, annotations, and evidence generation stay on the operator's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
 ## What works today
 
+- Records unicast or multicast UDP datagrams through a loopback-only Node.js bridge, preserving datagram boundaries, byte counts, monotonic offsets, and server-enforced capture ownership.
+- Records NSL-01 serial input directly through Web Serial, reassembling split frames while retaining noise, corrupt boundaries, and incomplete trailing bytes for diagnosis.
+- Stops a live source, downloads a versioned `.nlsession`, and opens that exact document through the existing validation and decoder pipeline for immediate replay.
 - Loads the bundled demonstration session or a local NarrowsLink session file through the same validation and decoding pipeline.
 - Rejects malformed documents, non-monotonic timestamps, duplicate records, invalid time zones, inconsistent byte counts, and files over the 32 MB browser safety limit with actionable errors.
 - Decodes the NSL-01 frame envelope, CRC-16/CCITT-FALSE integrity, and five built-in packet families: Heartbeat, Power, Attitude, Position, and Thermal.
@@ -34,6 +39,45 @@ npm run check
 ```
 
 `npm run check` runs TypeScript validation, the Vitest suite, and a production build.
+
+## Record live UDP
+
+Start the Vite app, then launch the local bridge in another terminal:
+
+```bash
+npm run dev
+```
+
+```bash
+npm run capture:bridge
+```
+
+The bridge prints one JSON line containing its loopback `controlUrl` and a newly generated `token`. In NarrowsLink, choose **New live capture**, paste those values, select the UDP bind host and port, and start recording. The control API listens only on `127.0.0.1`; the token prevents another local page from controlling the socket.
+
+To exercise the complete flow without hardware, start a capture on `127.0.0.1:9104` and run:
+
+```bash
+npm run capture:demo
+```
+
+The demo sends 480 exact datagrams from the checked-in fixture. Stop the capture with **Stop, save & replay**; NarrowsLink downloads the `.nlsession`, reopens it, and selects its full captured interval for investigation and evidence export.
+
+For multicast, bind an address in the same IP family and provide the group in the dialog. Bridge defaults can be supplied on the command line, but the dialog's bind host and port are explicit per-capture values; mirror `0.0.0.0` and `9104` there when using this example. `0.0.0.0` listens on every local IPv4 interface, so use a narrower interface address when appropriate.
+
+```bash
+npm run capture:bridge -- \
+  --udp-host 0.0.0.0 \
+  --udp-port 9104 \
+  --multicast-group 239.42.91.4
+```
+
+Use `npm run capture:bridge -- --help` and `npm run capture:demo -- --help` for all options.
+
+## Record live serial
+
+Choose **New live capture → Serial port**, configure the baud rate, data bits, stop bits, parity, and flow control, then select the device in the browser prompt. Device selection and connection setup are excluded from the capture clock; recording starts only after the port opens.
+
+Web Serial is available in supported Chromium browsers and requires a secure context. Local development on `localhost` or `127.0.0.1` satisfies that requirement; see [MDN's Web Serial guide](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API) for current browser support. NarrowsLink retains undecodable input rather than silently dropping it. Framing and sync failures remain inspectable records; a read error or disconnect causes the resulting recovery session to be marked incomplete.
 
 ## Bundled replay
 
@@ -95,7 +139,13 @@ Every time-bearing artifact is filtered to the selected half-open range. `manife
 | Area | Responsibility |
 | --- | --- |
 | `src/App.tsx` | Application state and mission-timeline workspace UI |
+| `src/capture/CaptureDialog.tsx` | Live-source configuration, capture lifecycle, integrity status, save, and replay handoff |
+| `src/capture/recorder.ts` | Bounded immutable source-record collection and versioned session finalization |
+| `src/capture/web-serial.ts` | Permission-aware Web Serial lifecycle and byte-stream reads |
+| `src/capture/nsl01-serial-assembler.ts` | NSL-01 framing, noise retention, and bounded resynchronization |
+| `src/capture/udp-bridge.ts` | Typed, authenticated browser client for the local UDP bridge |
 | `src/data/load-session.ts` | Bundled and user-file loading, size limits, and surfaced load errors |
+| `src/data/session-file.ts` | Canonical compact `.nlsession` serializer and shared 32 MB import/export budget |
 | `src/domain/types.ts` | Versioned session schema and core telemetry types |
 | `src/domain/decoder.ts` | Frame envelope, CRC, built-in family decoding, and malformed-frame retention |
 | `src/domain/session.ts` | Validation, metric derivation, diagnostics, incident projection, and range helpers |
@@ -103,24 +153,26 @@ Every time-bearing artifact is filtered to the selected half-open range. `manife
 | `src/storage/session-storage.ts` | Per-session marker and note persistence in local storage |
 | `src/domain/bundle.ts` | Range-filtered, checksummed `.nlb` evidence generation and browser download |
 | `src/lib/` | Timeline sampling, value lookup, and time-zone-aware presentation helpers |
+| `scripts/capture-bridge.mjs` | Token-protected loopback control plane, UDP socket, multicast membership, and SSE delivery |
+| `scripts/send-demo-udp.mjs` | Replays checked-in fixture records as real UDP datagrams for acceptance testing |
 | `scripts/generate-demo-session.mjs` | Deterministic synthetic fixture generator |
 
 Raw source records remain immutable. Frames, fields, metrics, diagnostics, incidents, and bundle artifacts are derived from those records, and the same path is used for the bundled fixture and imported files.
 
 ## Privacy and data handling
 
-Replay parsing, marker and note persistence, and evidence generation happen locally in the browser. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
+Serial capture, replay parsing, marker and note persistence, and evidence generation happen locally in the browser. UDP payloads move only from the local socket bridge to the local page. The bridge control plane is loopback-only and token-authenticated; the UDP listener itself binds exactly the interface selected by the operator. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
 
 Local does not automatically mean safe to share. A replay or evidence bundle can contain raw bytes, device identifiers, coordinates, signal observations, and operator notes. Review and sanitize captures before committing them or sending them to someone else. Browser local storage is convenient workspace persistence, not an encrypted secrets store.
 
 ## Current limits and next steps
 
-The current release is intentionally replay-first:
-
-- Input is the version 1 JSON session format; live UDP, serial, TCP, and session recording are not implemented.
-- Decoder families are compiled into the application; external schema loading and protocol plug-ins are next-stage work.
-- Files are parsed, indexed, and bundled in browser memory, with a 32 MB file limit, a 100,000-record schema limit, and a 24-hour session-duration limit.
-- The test suite covers pure domain behavior, but full browser end-to-end and expanded accessibility testing remain on the roadmap.
+- Live capture supports UDP and Web Serial; TCP and other transports are not implemented.
+- The serial adapter is intentionally bound to the bundled NSL-01 decoder schema. Decoder families are compiled into the application; external schema loading and protocol plug-ins are next-stage work.
+- Sessions are captured, parsed, indexed, and bundled in browser memory. The recorder enforces the same importable-file budget as the 32 MB replay loader, plus the 100,000-record and 24-hour schema limits.
+- Version 1 stores immutable source records but has no dedicated transport-event collection. Noise and partial serial input remain durable records; live control errors and any capture-integrity mismatch are surfaced before a clean evidence handoff.
+- Version 1 does not yet persist each UDP sender endpoint or the bridge's internal capture ID in every source record. A clean capture preserves the local bind/group descriptor, exact datagram bytes, ordering, and offsets, and is saved only after bridge stop-time totals reconcile with browser and recorder totals. Recovery sessions preserve retained records with a durable `Incomplete` label; detailed transport events and mismatch totals remain next-stage work.
+- Automated coverage includes capture adapters, the real loopback bridge, decoder/replay behavior, and capture-to-evidence byte/hash verification. Expanded cross-browser and assistive-technology testing remains on the roadmap.
 
 See [ROADMAP.md](ROADMAP.md) for the next milestones and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance.
 

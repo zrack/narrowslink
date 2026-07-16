@@ -13,6 +13,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   BookmarkSimple,
+  Broadcast,
   CaretRight,
   Check,
   Circle,
@@ -40,9 +41,10 @@ import {
   suggestEvidenceBundleFilename,
   type EvidenceBundleInclusions,
 } from "./domain/bundle";
+import { CaptureDialog } from "./capture/CaptureDialog";
 import { SUPPORTED_DECODER } from "./domain/decoder";
-import { rowsInRange } from "./domain/session";
-import type { DiagnosticEvent, IncidentProjection, Marker, ParsedSession } from "./domain/types";
+import { parseSession, rowsInRange } from "./domain/session";
+import type { DiagnosticEvent, IncidentProjection, Marker, ParsedSession, SessionDocument } from "./domain/types";
 import { loadBundledSession, loadSessionFile, SessionLoadError } from "./data/load-session";
 import { downsampleBuckets, finiteOrDash, incidentViewRange, percentInRange, valueAtOffset } from "./lib/telemetry";
 import { formatBytes, formatClockOffset, formatDurationUs, formatSessionDate, timeZoneAbbreviation } from "./lib/time";
@@ -266,10 +268,11 @@ interface LeftRailProps {
   session: ParsedSession;
   replayOffsetUs: number;
   onOpenReplay: () => void;
+  onOpenCapture: () => void;
   onResetReplay: () => void;
 }
 
-function LeftRail({ session, replayOffsetUs, onOpenReplay, onResetReplay }: LeftRailProps) {
+function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, onResetReplay }: LeftRailProps) {
   const { document } = session;
   const current = valueAtOffset(session.buckets, replayOffsetUs);
   const replaySummary = useMemo(() => {
@@ -293,6 +296,10 @@ function LeftRail({ session, replayOffsetUs, onOpenReplay, onResetReplay }: Left
             <button type="button" onClick={onOpenReplay}>Open local replay <UploadSimple size={13} /></button>
             <button type="button" className="filter-button" aria-label="Replay filters unavailable" disabled><FunnelSimple size={15} /></button>
           </div>
+          <button className="capture-entry" type="button" onClick={onOpenCapture}>
+            <Broadcast size={16} />
+            <span><strong>New live capture</strong><small>UDP or serial · local only</small></span>
+          </button>
         </section>
         <section className="rail-section active-links">
           <div className="section-kicker-row"><span>Loaded source</span><b>1</b></div>
@@ -347,6 +354,7 @@ interface TopBarProps {
   onAddMarker: () => void;
   onCreateBundle: () => void;
   onOpenReplay: () => void;
+  onOpenCapture: () => void;
   bundleDisabled: boolean;
 }
 
@@ -363,6 +371,7 @@ function TopBar(props: TopBarProps) {
         {formatSessionDate(document.startedAt, document.displayTimeZone)} <i>•</i> {formatClockOffset(document.startedAt, 0, document.displayTimeZone, false)} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, 0)} – {end} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, document.durationUs)} <i>•</i> {formatClockOffset(document.startedAt, props.replayOffsetUs, document.displayTimeZone)} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, props.replayOffsetUs)}
       </div>
       <div className="header-actions">
+        <button className="secondary-action capture-mobile" type="button" onClick={props.onOpenCapture}><Broadcast size={15} /> Capture</button>
         <button className="secondary-action open-replay-mobile" type="button" onClick={props.onOpenReplay}><UploadSimple size={15} /> Open replay</button>
         <button className={`secondary-action replay-toggle ${props.replayStatus === "playing" ? "active" : ""}`} type="button" onClick={props.onTogglePlayback}>
           {props.replayStatus === "playing" ? <Pause size={15} weight="fill" /> : <Play size={15} weight="fill" />}
@@ -725,7 +734,7 @@ function Toast({ message }: { message: string }) {
   return message ? <div className="toast" role="status"><Check size={15} weight="bold" /> {message}</div> : null;
 }
 
-function Workspace({ session, onOpenReplay }: { session: ParsedSession; onOpenReplay: () => void }) {
+function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSession; onOpenReplay: () => void; onOpenCapture: () => void }) {
   const firstIncident = session.incidents.find((candidate) => candidate.id === "fade") ?? session.incidents[0] ?? null;
   const replay = useReplay({ durationUs: session.document.durationUs, initialOffsetUs: firstIncident?.startUs ?? 0, initialRate: 1 });
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(firstIncident?.id ?? null);
@@ -756,7 +765,7 @@ function Workspace({ session, onOpenReplay }: { session: ParsedSession; onOpenRe
   const togglePlayback = () => replay.snapshot.status === "playing" ? replay.pause() : replay.play();
   const addMarker = (marker: Marker) => { setMarkers((current) => [...current, marker].sort((left, right) => left.offsetUs - right.offsetUs)); setMarkerDialogOpen(false); replay.seek(marker.offsetUs); notify(`Marker added at ${formatClockOffset(session.document.startedAt, marker.offsetUs, session.document.displayTimeZone)}`); };
 
-  return <main className="app-shell" aria-label="Telemetry review workspace"><LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onResetReplay={replay.reset} /><TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} /><SessionOverview session={session} incident={selectedIncident} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onSelectIncident={(incident) => selectIncident(incident.id)} />{selectedIncident ? <MissionTimeline session={session} incident={selectedIncident} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} /> : <section className="timeline-panel"><div className="empty-state"><BookmarkSimple size={24} /><h2>Select an incident</h2><p>The full replay remains available in the session overview.</p></div></section>}<IncidentPanel session={session} incident={selectedIncident} activeTab={activeTab} note={note} workspacePersisted={workspacePersisted} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onClear={() => setSelectedIncidentId(null)} /><BundlePanel session={session} incident={selectedIncident} items={bundleItems} note={note} workspacePersisted={workspacePersisted} onItemsChange={setBundleItems} onNoteChange={setNote} onCreateBundle={() => setBundleDialogOpen(true)} />{markerDialogOpen && <MarkerDialog session={session} initialOffsetUs={replay.snapshot.offsetUs} onClose={() => setMarkerDialogOpen(false)} onCreate={addMarker} />}{bundleDialogOpen && selectedIncident && <BundleDialog session={session} incident={selectedIncident} items={bundleItems} markers={markers} note={note} onClose={() => setBundleDialogOpen(false)} />}<Toast message={toast} /></main>;
+  return <main className="app-shell" aria-label="Telemetry review workspace"><LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} onResetReplay={replay.reset} /><TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} /><SessionOverview session={session} incident={selectedIncident} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onSelectIncident={(incident) => selectIncident(incident.id)} />{selectedIncident ? <MissionTimeline session={session} incident={selectedIncident} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} /> : <section className="timeline-panel"><div className="empty-state"><BookmarkSimple size={24} /><h2>Select an incident</h2><p>The full replay remains available in the session overview.</p></div></section>}<IncidentPanel session={session} incident={selectedIncident} activeTab={activeTab} note={note} workspacePersisted={workspacePersisted} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onClear={() => setSelectedIncidentId(null)} /><BundlePanel session={session} incident={selectedIncident} items={bundleItems} note={note} workspacePersisted={workspacePersisted} onItemsChange={setBundleItems} onNoteChange={setNote} onCreateBundle={() => setBundleDialogOpen(true)} />{markerDialogOpen && <MarkerDialog session={session} initialOffsetUs={replay.snapshot.offsetUs} onClose={() => setMarkerDialogOpen(false)} onCreate={addMarker} />}{bundleDialogOpen && selectedIncident && <BundleDialog session={session} incident={selectedIncident} items={bundleItems} markers={markers} note={note} onClose={() => setBundleDialogOpen(false)} />}<Toast message={toast} /></main>;
 }
 
 function LoadingScreen({ message }: { message: string }) {
@@ -769,6 +778,7 @@ function ErrorScreen({ error, onRetry, onOpenReplay }: { error: SessionLoadError
 
 export function App() {
   const [state, setState] = useState<LoadState>({ status: "loading", message: "Validating bundled telemetry…" });
+  const [captureDialogOpen, setCaptureDialogOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadDefault = useCallback(async () => {
     setState({ status: "loading", message: "Validating bundled telemetry…" });
@@ -783,6 +793,15 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [state.status]);
   const openReplay = () => fileInputRef.current?.click();
+  const completeCapture = useCallback(async (document: SessionDocument) => {
+    try {
+      setState({ status: "ready", session: parseSession(document) });
+      setCaptureDialogOpen(false);
+    } catch (cause) {
+      setCaptureDialogOpen(false);
+      setState({ status: "error", error: new SessionLoadError("The captured session could not be opened.", [cause instanceof Error ? cause.message : "Unknown capture error"]) });
+    }
+  }, []);
   const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -791,7 +810,7 @@ export function App() {
     try { setState({ status: "ready", session: await loadSessionFile(file) }); }
     catch (cause) { setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The selected replay could not be loaded.") }); }
   };
-  return <><input ref={fileInputRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="Choose a local NarrowsLink replay" accept=".json,.nlsession,application/json" onChange={(event) => void handleFile(event)} />{state.status === "loading" && <LoadingScreen message={state.message} />}{state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} />}{state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} />}</>;
+  return <><input ref={fileInputRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="Choose a local NarrowsLink replay" accept=".json,.nlsession,application/json" onChange={(event) => void handleFile(event)} />{state.status === "loading" && <LoadingScreen message={state.message} />}{state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} />}{state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} onOpenCapture={() => setCaptureDialogOpen(true)} />}{captureDialogOpen && <CaptureDialog displayTimeZone={state.status === "ready" ? state.session.document.displayTimeZone : undefined} onClose={() => setCaptureDialogOpen(false)} onComplete={completeCapture} />}</>;
 }
 
 function sessionWorkspaceKey(session: ParsedSession): string {

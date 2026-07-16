@@ -5,6 +5,8 @@
 - Source visual truth: `/Users/scottzeitner/Documents/Narrow Telemetry Terminal/docs/design/narrowslink-mission-timeline-source.png`
 - Final browser-rendered implementation: `/Users/scottzeitner/Documents/Narrow Telemetry Terminal/docs/design/implementation-final-production.png`
 - Responsive implementation: `/Users/scottzeitner/Documents/Narrow Telemetry Terminal/docs/design/implementation-functional-mobile.png`
+- Current live-capture setup: `/Users/scottzeitner/Documents/Narrow Telemetry Terminal/docs/design/live-capture-setup.jpg`
+- Current captured-session replay: `/Users/scottzeitner/Documents/Narrow Telemetry Terminal/docs/design/live-capture-replay.jpg`
 - Full-view comparison: `/Users/scottzeitner/Documents/Narrow Telemetry Terminal/docs/design/comparison-production-final.png`
 - Full plus focused comparison: `/Users/scottzeitner/Documents/Narrow Telemetry Terminal/docs/design/comparison-production-focused.png`
 - Desktop browser frame: `1280 × 720`; full-page capture: `1280 × 820`
@@ -57,7 +59,7 @@ Three content differences are intentional and accepted:
 - Image quality and asset fidelity: the repository's NarrowsLink mark is reused as a real image asset. The target contains no photography or illustration. Recharts renders telemetry plots and Phosphor supplies a consistent icon family; no emoji, placeholder art, custom CSS illustration, or improvised SVG replacement is present.
 - Copy and content: session metadata, diagnostics, units, decoder state, bundle contents, and privacy language are coherent in the standalone application. Dynamic values are derived from the same replay and do not retain contradictory prototype numbers.
 - Icons: playback, reset, marker, settings, upload, download, package, close, warning, and success controls use one icon system with consistent stroke and scale.
-- Responsiveness: at `390 × 844`, the page has no horizontal body overflow. The telemetry surface retains a deliberate internal horizontal scroller, the command strip remains horizontally reachable, and stacked panels preserve the desktop hierarchy.
+- Responsiveness: at `390 × 844`, the page and live-capture dialog have no horizontal body overflow. The capture form stays inside the viewport and scrolls vertically; the telemetry surface retains a deliberate internal horizontal scroller, the command strip remains horizontally reachable, and stacked panels preserve the desktop hierarchy.
 - Accessibility: the implementation uses semantic buttons, native checkboxes and selects, labeled text inputs, WAI-ARIA tabs with roving keyboard focus, trapped/restored modal focus, inert dialog backgrounds, status announcements, visible focus rings, descriptive chart summaries, disabled-state semantics, reduced-motion handling, and a keyboard-operable range input. A full screen-reader matrix and browser zoom pass remain follow-up test coverage rather than a known defect.
 
 ## Primary interactions tested
@@ -70,9 +72,11 @@ Three content differences are intentional and accepted:
 - Added a timestamped, categorized operator marker and verified its timeline position, toast, and persistence after reload.
 - Included and excluded evidence groups and verified live file and byte estimates.
 - Built the real local `.nlb` archive and reached the success state reporting `29.7 KB` for the tested interference selection.
-- Checked `390 × 844` responsive layout for zero horizontal body overflow.
+- Recorded a hardened real loopback UDP acceptance capture with 121 datagrams, including a zero-length datagram; reconciled 121 received and retained records, stopped cleanly, and reopened the immutable `.nlsession` through the production decoder.
+- Verified the zero-length datagram remains an inspectable partial-frame diagnostic, selected the full captured interval, and built a checksummed `20.8 KB` `.nlb` evidence bundle from it.
+- Checked the workspace and live-capture dialog at `390 × 844` for zero horizontal body overflow.
 - Checked browser console warnings and errors after the full interaction pass: none.
-- Automated verification: 41 tests across seven files, TypeScript validation, and a production Vite build passed. The suite parses the complete checked-in 18,402-record fixture in addition to focused unit cases.
+- Automated verification: 91 tests across 14 files, TypeScript validation, and a production Vite build passed. Coverage includes the loopback bridge, Web Serial lifecycle, serial frame assembly, bounded capture recording, capture-to-replay parsing, capture-to-bundle byte/hash fidelity, and the complete checked-in 18,402-record fixture.
 
 ## Follow-up polish
 

@@ -1,6 +1,6 @@
 # NarrowsLink roadmap
 
-NarrowsLink now has a working replay-first foundation: a validated session format, deterministic decoder and replay core, mission-timeline operator workspace, and verifiable local evidence export. The next phase is to extend that foundation without weakening its timing, provenance, or failure-visibility guarantees.
+NarrowsLink now has a working local capture-to-evidence foundation: validated UDP and serial recording, a deterministic decoder and replay core, a mission-timeline operator workspace, and verifiable local evidence export. The next phase is to extend that foundation without weakening its timing, provenance, or failure-visibility guarantees.
 
 ## Delivered foundation
 
@@ -15,7 +15,7 @@ Status: complete for the current replay application
 
 ## Delivered replay and ingestion
 
-Status: complete for local file replay
+Status: complete for local file and bounded live capture
 
 - Bundled fixture and user-selected files pass through the same validation, decoding, diagnostics, incident, and export pipeline.
 - Local `.json` and `.nlsession` import with explicit loading and error states.
@@ -23,6 +23,10 @@ Status: complete for local file replay
 - One replay offset drives the overview scrubber, mission timeline, current metrics, diagnostics, and marker placement.
 - Exact half-open range helpers for incident projection and evidence filtering.
 - Source records stay immutable throughout processing.
+- Token-protected loopback UDP bridge with unicast, IPv4/IPv6 multicast, exact datagram delivery, bounded backpressure, capture ownership, and final counter reconciliation.
+- Direct Web Serial capture with permission-aware start, lifecycle/error handling, bounded NSL-01 assembly, noise retention, and prompt resynchronization after corrupt headers.
+- Stop/save produces an importable version 1 `.nlsession` and immediately reopens it through the existing decoder, replay, incident, and export pipeline.
+- Recorder budgets include serialized JSON overhead so an accepted capture remains below the browser importer limit.
 
 ## Delivered decoder and diagnostics
 
@@ -58,16 +62,6 @@ Status: complete for local incident bundles
 - SHA-256 checksums for the manifest and every included evidence artifact.
 - Stable archive bytes when inputs and generation time are held constant.
 
-## Next: live UDP and serial sources
-
-- Define source adapters that emit the existing immutable `SourceRecord` shape.
-- Add UDP multicast/unicast and serial configuration, health, start/stop, and permission flows.
-- Record live input into a versioned session document without changing replay semantics.
-- Make operating-system drops, transport errors, disconnects, and partial reads first-class events.
-- Prove that a recorded live session replays into the same frames, diagnostics, incidents, and evidence.
-
-Exit criteria: an operator can capture a UDP or serial session locally, stop recording, replay it, and reproduce the same derived result.
-
 ## Next: decoder schema extensibility
 
 - Move the canonical built-in schema into a loadable, versioned registry with signature and trust policies.
@@ -87,6 +81,15 @@ Exit criteria: a contributor can add a decoder schema and fixtures without editi
 - Add cancellation and progress reporting for long imports and exports.
 
 Exit criteria: large sessions remain responsive, cancellable, and deterministic under documented memory and latency budgets.
+
+## Next: durable transport provenance
+
+- Add a versioned transport-event stream for disconnects, socket errors, operating-system drop counters, backpressure, capture cancellation, and unconfirmed shutdown.
+- Persist per-datagram remote UDP endpoint metadata without weakening the current immutable raw-byte model.
+- Distinguish captured payload bytes from measured or estimated link-layer wire bytes.
+- Include transport events and provenance in incident projection, bundle manifests, raw evidence, and checksums.
+
+Exit criteria: a replay and its evidence bundle can explain both the retained telemetry and every known transport-level gap or shutdown anomaly without relying on transient UI state.
 
 ## Next: accessibility and end-to-end reliability
 
