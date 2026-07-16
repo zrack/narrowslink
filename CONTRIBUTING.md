@@ -1,6 +1,6 @@
 # Contributing to NarrowsLink
 
-NarrowsLink is a local-first telemetry capture, replay, incident-analysis, and evidence-export application. Contributions should preserve timing precision, source provenance, visible failure states, deterministic derivation, and the ability to reproduce an incident from exported evidence.
+NarrowsLink is a local-first telemetry capture, replay, incident-analysis, and evidence-export application. Contributions should preserve timing semantics, source provenance, visible failure states, deterministic derivation, and the ability to reproduce an incident from exported evidence. Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md); use the [support guide](SUPPORT.md) for usage questions and the [security policy](SECURITY.md) for private vulnerability reporting.
 
 ## Development setup
 
@@ -50,7 +50,7 @@ npm run check
 
 Review both the generator diff and the resulting fixture facts. Keep generation deterministic, preserve all five packet families, and retain representative malformed frames and sequence gaps. If expected counts, incident ranges, decoder identity, or failure scenarios change, update the relevant tests and documentation in the same pull request.
 
-The bundled session also carries visual and diagnostic regression intent. Preserve varied packet cadence and throughput, measurable fade shoulders versus the fade center, intentional loss, and enough valid post-failure traffic to exercise the sustained decoder-relock window. Assert those properties from decoded domain output rather than snapshotting decorative chart coordinates.
+The bundled session also carries visual and diagnostic regression intent. Preserve varied packet cadence and received packet rate, measurable fade shoulders versus the fade center, intentional sequence gaps, and enough valid post-failure traffic to exercise the sustained decoder-relock window. Assert those properties from decoded domain output rather than snapshotting decorative chart coordinates.
 
 ## Engineering invariants
 
@@ -107,14 +107,32 @@ Screenshots are evidence, not the review itself: record the visible mismatch, th
 - For UI changes, exercise the bundled replay, file-import error state, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
 - For capture changes, exercise a real loopback UDP socket from start through stop, re-import, replay, annotation, and bundle export. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage.
 
-## Pull requests
+## Contribution workflow
 
-- Keep each pull request focused on one coherent change.
-- Explain the operator outcome, not only the implementation.
-- Call out changes to session format, decoder behavior, incident semantics, stored data, or evidence contents.
-- Include screenshots for material UI changes and document the viewport used.
-- Confirm `npm run check` in the pull request description.
-- Avoid committing generated build output, secrets, private telemetry, or sensitive location data.
+1. Read the [Code of Conduct](CODE_OF_CONDUCT.md), then search [open issues](https://github.com/zrack/narrowslink/issues) before starting. Open an issue for behavior changes so the operator outcome, acceptance criteria, compatibility impact, and privacy implications can be agreed on first. Small typo-only documentation corrections can go directly to a pull request.
+2. Use the route in [SUPPORT.md](SUPPORT.md) for setup and usage help. Do not open a public issue for a suspected vulnerability or attach sensitive telemetry; follow [SECURITY.md](SECURITY.md) instead.
+3. External contributors should fork the repository and add this repository as `upstream`. Collaborators may create a branch in the repository. Start from current `main` and use a descriptive branch such as `fix/serial-resync` or `docs/bundle-verification`:
+
+   ```bash
+   git fetch upstream
+   git switch main
+   git pull --ff-only upstream main
+   git switch -c fix/serial-resync
+   ```
+
+   If the clone uses `origin` for this repository rather than a fork, substitute `origin` for `upstream`.
+4. Make one coherent change, add focused tests, update affected documentation, and run `npm run check`. For visual changes, also complete the evidence workflow in [Visual changes](#visual-changes).
+5. Push the branch to your fork or repository remote and open a pull request against `main`. Complete every applicable section of the pull request template, link the tracking issue with `Closes #123` when appropriate, and call out session-format, decoder, incident-range, persisted-data, privacy, or evidence compatibility changes.
+6. Wait for the repository's required GitHub Actions checks to pass and address review feedback with additional commits. Do not rewrite another contributor's branch without their agreement.
+7. A maintainer squash-merges an approved pull request after required checks pass, then deletes the merged branch. The pull request title should therefore be a useful imperative commit summary.
+
+## Pull request expectations
+
+- Explain the operator outcome, not only the implementation, and keep the change focused on that outcome.
+- Include screenshots for material UI changes, document the viewport and replay state used, and update `design-qa.md` when the accepted appearance changes.
+- Report the exact local checks run, including `npm run check`; a local pass complements rather than replaces repository CI.
+- State whether file formats, decoder behavior, timing or half-open range semantics, browser storage, archive inclusions, or verification behavior changed.
+- Avoid committing generated build output, secrets, private telemetry, sensitive location data, or evidence bundles that have not been cleared for publication.
 
 ## Fixtures, privacy, and disclosure
 
@@ -122,4 +140,4 @@ Only contribute telemetry that you have permission to publish. Strip credentials
 
 Evidence bundles can contain raw records, decoded coordinates, markers, and operator notes. Treat them as potentially sensitive even though NarrowsLink builds them locally and does not upload them.
 
-For a security-sensitive issue, avoid attaching the original capture to a public report. Describe the affected format and minimum reproduction first, then coordinate a sanitized fixture.
+For a security-sensitive issue, do not attach the original capture to a public report. Follow [SECURITY.md](SECURITY.md) to report it privately, describe the affected format and minimum reproduction, and coordinate a sanitized fixture before sharing telemetry.

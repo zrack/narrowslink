@@ -1,0 +1,122 @@
+name: Feature request
+description: Propose an operator capability, protocol, data source, or workflow improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the operator decision or handoff this should improve. Do not include operational telemetry, credentials, device identifiers, precise locations, or other sensitive evidence.
+
+  - type: textarea
+    id: operator_outcome
+    attributes:
+      label: Operator outcome
+      description: What should an operator be able to accomplish, and how will they know it worked?
+      placeholder: An operator can compare two decoder interpretations over the same incident range and export the selected interpretation with its schema version.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_workaround
+    attributes:
+      label: Current workflow or workaround
+      description: Describe what happens today and where it breaks down.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: workflow_path
+    attributes:
+      label: Primary workflow path
+      options:
+        - Live UDP capture
+        - Live serial capture
+        - File import and validation
+        - Session replay
+        - Incident selection or investigation
+        - Evidence bundle preview or export
+        - Cross-cutting or other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source_type
+    attributes:
+      label: Telemetry source
+      options:
+        - UDP
+        - Serial
+        - User-imported file
+        - Bundled synthetic fixture
+        - Multiple source types
+        - Not source-specific
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment or deployment context
+      description: Note relevant operating systems, browsers, devices, bridge constraints, or offline requirements. Redact identifiers.
+      placeholder: Local browser workspace on macOS and Linux; no external service dependency.
+
+  - type: textarea
+    id: proposed_behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest coherent capability, including failure and empty states.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: List observable, testable outcomes. Include a synthetic-fixture path where the feature handles telemetry.
+      placeholder: |
+        - The bundled fixture and an equivalent imported fixture follow the same pipeline.
+        - A malformed record remains visible as a diagnostic.
+        - The exported manifest identifies the selected schema version.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: compatibility
+    attributes:
+      label: Compatibility considerations
+      description: Select areas the proposal may change, then explain them below.
+      options:
+        - label: Session or bundle schema
+        - label: Existing fixtures or imported files
+        - label: Replay clock or time display
+        - label: Decoder or malformed-frame behavior
+        - label: Half-open incident range semantics
+        - label: Evidence artifact contents or verification
+        - label: Browser, operating-system, UDP, or serial support
+        - label: Documentation or migration path
+
+  - type: textarea
+    id: compatibility_notes
+    attributes:
+      label: Compatibility and migration notes
+      description: Explain selected impacts, versioning needs, fallback behavior, and how old sessions remain inspectable. Write “None known” if applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting material
+      description: Link to sanitized diagrams, screenshots, or a generated synthetic fixture. Include viewport dimensions for UI proposals and fixture provenance for telemetry examples.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Submission confirmation
+      options:
+        - label: I have not included secrets, personal data, operational payloads, precise locations, device identifiers, or other sensitive telemetry.
+          required: true
+        - label: I searched existing issues and roadmap items for a related proposal.
+          required: true

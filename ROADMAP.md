@@ -38,8 +38,8 @@ Status: complete for NSL-01 v1
 - Built-in Heartbeat, Power, Attitude, Position, and Thermal packet decoders.
 - Decoded fields retain units, quality, integrity status, source-record linkage, and source provenance.
 - Missing sync words, CRC failures, truncated payloads, invalid lengths, and unknown families remain inspectable.
-- Derived one-second link, loss, throughput, jitter, position, thermal, power, and packet-family metrics.
-- Derived degradation, loss burst, checksum, partial-frame, resync, lock, and recovery diagnostics.
+- Derived one-second link, received-packet-rate, inferred missing-frame, jitter, position, thermal, power, and packet-family metrics. Missing-frame estimates reconcile available transport-drop counters with trusted decoder sequence gaps without double counting the same episode.
+- Derived degradation, inferred missing-frame (loss-burst), checksum, partial-frame, resync, lock, and recovery diagnostics.
 
 ## Delivered operator workspace
 
@@ -48,7 +48,7 @@ Status: complete for incident review
 - Mission-timeline-first desktop workspace with a whole-session overview and synchronized incident detail.
 - Selectable incident presets with narrative, detail, and statistics views.
 - Time-zone-aware presentation while preserving integer UTC-relative offsets internally.
-- Replay-linked link quality, throughput, sequence loss, packet-family, decoder, diagnostic, marker, and signal lanes.
+- Replay-linked link quality, received packet rate, inferred missing-frame, packet-family, decoder, diagnostic, marker, and signal lanes.
 - Per-session operator markers and notes persisted in browser local storage.
 - Responsive layouts and baseline keyboard/ARIA semantics for core controls.
 
@@ -58,7 +58,7 @@ Status: complete at the approved desktop reference state
 
 - Source-aligned `232 px` session rail, compact replay command bar, stacked whole-session overview, shared-grid mission timeline, `280 px` incident rail, and evidence workspace.
 - Minute-aligned timeline ticks, explicit right-side value scales, packet-family cadence bands, sustained decoder-resynchronization state, and a source-like incident context window.
-- Deterministic fixture shaping that produces a real fade, loss, malformed-frame diagnostics, recovery shoulders, and decoder relock without decorative chart-only data.
+- Deterministic fixture shaping that produces a real fade, inferred missing frames, malformed-frame diagnostics, recovery shoulders, and decoder relock without decorative chart-only data.
 - Matched `1487 × 1058` source/implementation comparison plus a `390 × 844` responsive browser review with no body overflow.
 - Persistent comparison history and accepted product/data differences in `design-qa.md`.
 

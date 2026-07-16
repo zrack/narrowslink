@@ -1,31 +1,31 @@
 # NarrowsLink
 
-NarrowsLink records live UDP or serial telemetry, turns the capture into an immutable local replay, and provides a synchronized incident-review workspace. One microsecond-accurate playhead drives link health, packet families, decoder state, diagnostics, markers, and decoded signals; the selected interval can then be exported as a reproducible evidence bundle.
+NarrowsLink records live UDP or serial telemetry, turns the capture into an immutable local replay, and provides a synchronized incident-review workspace. One playhead based on integer microsecond offsets drives link health, packet families, decoder state, diagnostics, markers, and decoded signals; the selected interval can then be exported as a reproducible evidence bundle.
 
 ![NarrowsLink mission-timeline session review workspace](docs/assets/narrowslink-dashboard.png)
 
-The application is local-first. UDP ingest uses a token-protected loopback bridge and serial ingest uses the browser's Web Serial connection; capture, replay, annotations, and evidence generation stay on the operator's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
+The application is local-first. UDP ingest uses a local Node.js bridge whose token-protected control plane listens only on loopback; its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, replay, annotations, and evidence generation stay on the operator's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
 ## Workspace at a glance
 
 - The source rail starts a live capture, opens a local replay, and identifies the session that is actually loaded.
-- The session overview locates the active time window inside the full recording while separating link quality, throughput, dropped frames, and markers.
+- The session overview locates the active time window inside the full recording while separating link quality, received packet rate, inferred missing frames, and markers.
 - The mission timeline correlates connection health, packet cadence, decoder state, diagnostics, operator markers, and decoded position signals on one shared clock.
 - The incident rail explains the selected half-open range with a compact narrative, exact details, statistics, and a session-wide operator note.
-- The evidence workspace previews the real archive contents before building a checksummed local `.nlb` handoff bundle.
+- The evidence workspace previews the selected artifact groups and their estimated size before building a checksummed local `.nlb` handoff bundle. After generation, the archive manifest records the exact files, byte sizes, record counts, and hashes that were emitted.
 
 ## What works today
 
-- Records unicast or multicast UDP datagrams through a loopback-only Node.js bridge, preserving datagram boundaries, byte counts, monotonic offsets, and server-enforced capture ownership.
+- Records unicast or multicast UDP datagrams through a local Node.js bridge with a loopback-only control API, preserving datagram boundaries, byte counts, monotonic offsets, and server-enforced capture ownership. The UDP listener binds the interface selected by the operator.
 - Records NSL-01 serial input directly through Web Serial, reassembling split frames while retaining noise, corrupt boundaries, and incomplete trailing bytes for diagnosis.
 - Stops a live source, downloads a versioned `.nlsession`, and opens that exact document through the existing validation and decoder pipeline for immediate replay.
 - Loads the bundled demonstration session or a local NarrowsLink session file through the same validation and decoding pipeline.
-- Rejects malformed documents, non-monotonic timestamps, duplicate records, invalid time zones, inconsistent byte counts, and files over the 32 MiB browser safety limit with actionable errors.
+- Rejects malformed documents, non-monotonic timestamps, duplicate record IDs, invalid time zones, inconsistent byte counts, and files over the 32 MiB browser safety limit with actionable errors.
 - Decodes the NSL-01 frame envelope, CRC-16/CCITT-FALSE integrity, and five built-in packet families: Heartbeat, Power, Attitude, Position, and Thermal.
 - Retains checksum failures, missing sync words, truncated frames, and invalid lengths as inspectable diagnostics instead of silently discarding them.
 - Requires sustained valid traffic before reporting decoder relock, keeping recovery periods visible instead of converting the first good frame into an immediate success state.
 - Uses one monotonic replay clock for play, pause, seek, rate changes, the timeline playhead, current values, diagnostics, and incident context. Times remain integer microsecond offsets from a UTC session start.
-- Projects preset incidents into exact half-open ranges (`[startUs, endUs)`) with delivery, loss, signal, jitter, availability, and decode-confidence statistics.
+- Projects preset incidents into exact half-open ranges (`[startUs, endUs)`) with delivery, inferred missing-frame, signal, jitter, availability, and decode-confidence statistics. Missing-frame estimates use the stronger of available transport-drop counters and trusted decoder sequence gaps without summing the same episode twice.
 - Persists operator markers and notes per session in browser local storage.
 - Builds and downloads a real `.nlb` ZIP archive for the selected incident, with a manifest, exact inclusion list, and SHA-256 checksum for every evidence artifact.
 - Includes focused automated tests for validation, decoding, replay-clock behavior, range semantics, and deterministic evidence packaging.
@@ -36,7 +36,7 @@ The application is local-first. UDP ingest uses a token-protected loopback bridg
 2. Select an incident, then use **Play replay**, seeking, and rate controls to inspect its context on the shared timeline.
 3. Correlate the Narrative, Details, and Stats views with decoder, diagnostic, marker, packet-family, and decoded-signal lanes.
 4. Use **Add marker** and the session-wide note to preserve operator context locally.
-5. Choose the evidence groups to include and review the exact archive preview.
+5. Choose the evidence groups to include and review the estimated archive size; this pre-build preview is not a byte-exact manifest.
 6. Select **Create incident bundle** to download the verifiable `.nlb` archive.
 
 ## Run it locally
@@ -99,6 +99,18 @@ Choose **Live capture → Serial port**, configure the baud rate, data bits, sto
 
 Web Serial is available in supported Chromium browsers and requires a secure context. Local development on `localhost` or `127.0.0.1` satisfies that requirement; see [MDN's Web Serial guide](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API) for current browser support. NarrowsLink retains undecodable input rather than silently dropping it. Framing and sync failures remain inspectable records; a read error or disconnect causes the resulting recovery session to be marked incomplete.
 
+## Browser capability and test matrix
+
+This matrix separates intended capability from verification already performed; it is not a blanket support claim for untested browser and operating-system combinations.
+
+| Workflow | Chromium-based browser | Firefox and Safari | Current verification |
+| --- | --- | --- | --- |
+| Replay, local import, timeline review, markers, notes, and `.nlb` export | Uses standard browser file, storage, download, and Web Crypto APIs | Expected to use the same standards-based path, but not yet tested | Domain and component tests plus a manual Chromium-based desktop and responsive review |
+| Live UDP through the local bridge | Available through the loopback control API and browser SSE client | Architecture does not depend on Web Serial, but these browsers are not yet tested | Automated real-loopback bridge and capture-pipeline tests; capture setup manually exercised in Chromium |
+| Live serial | Available only when `navigator.serial` is present and the page is a secure context | Web Serial is normally unavailable; use UDP capture or a supported Chromium browser | Serial adapter and frame-assembly tests; broad hardware/driver coverage remains outstanding |
+
+Expanded cross-browser, device, screen-reader, and `200%` zoom coverage is tracked in [ROADMAP.md](ROADMAP.md).
+
 ## Bundled replay
 
 `public/fixtures/harbor-relay-session.json` is a deterministic synthetic session designed to exercise the production pipeline:
@@ -108,7 +120,7 @@ Web Serial is available in supported Chromium browsers and requires a secure con
 - Historical source metadata for multicast UDP `239.42.91.4:9104`; the app is replaying a file, not opening that socket.
 - NSL-01 decoder revision `v1.3.7` with all five built-in packet families.
 - Three incident presets covering a link fade and decoder resync, an interference burst, and a clean schema-revision transition.
-- Varied deterministic packet cadence, a sustained fade and recovery, intentional loss, CRC failures, missing sync words, and truncated frames for forensic and error-state testing.
+- Varied deterministic packet cadence, a sustained fade and recovery, intentional missing-frame episodes, CRC failures, missing sync words, and truncated frames for forensic and error-state testing.
 
 Regenerate it from the checked-in source script with:
 
@@ -152,7 +164,22 @@ notes/notes.json
 schema/schema.json
 ```
 
-Every time-bearing artifact is filtered to the selected half-open range. `manifest.json` records the session and decoder identity, exact selection, actual inclusions, media types, byte sizes, record counts, and artifact hashes. `decoded/packets.csv` retains complete integrity JSON for forensic failures, and `schema/schema.json` includes the reproducible byte-level decoder definition. `SHA256SUMS` covers the manifest and each included evidence artifact.
+Every time-bearing artifact is filtered to the selected half-open range. `manifest.json` records the session and decoder identity, exact selection, actual inclusions, media types, byte sizes, record counts, and artifact hashes. Those values describe the generated bytes, unlike the selected-group and size estimates shown before generation. `decoded/packets.csv` retains complete integrity JSON for forensic failures, and `schema/schema.json` includes the reproducible byte-level decoder definition. `SHA256SUMS` covers the manifest and each included evidence artifact.
+
+### Verify a bundle independently
+
+An `.nlb` can be checked without NarrowsLink because it is an ordinary ZIP archive with standard SHA-256 checksum lines. Extract into a new directory, then verify from inside that directory:
+
+```bash
+mkdir narrowslink-bundle-check
+unzip path/to/incident.nlb -d narrowslink-bundle-check
+cd narrowslink-bundle-check
+shasum -a 256 -c SHA256SUMS
+```
+
+On systems that provide GNU Coreutils instead of `shasum`, use `sha256sum -c SHA256SUMS`. Every listed path must report `OK`; otherwise, treat the bundle as modified or incomplete. Then inspect `manifest.json` to confirm the expected session, decoder revision and schema hash, half-open selection, inclusions, file sizes, and record counts.
+
+Checksums establish internal integrity only. Version 1 bundles are unsigned: they do not prove who created the archive, that the source capture was trustworthy, or that the NarrowsLink build used to generate it was uncompromised. Exchange the `.nlb` checksum or the expected manifest identity through a separately trusted channel when provenance matters.
 
 ## Architecture
 
@@ -196,6 +223,8 @@ Local does not automatically mean safe to share. A replay or evidence bundle can
 - Automated coverage includes capture adapters, the real loopback bridge, decoder/replay behavior, and capture-to-evidence byte/hash verification. Expanded cross-browser and assistive-technology testing remains on the roadmap.
 
 See [ROADMAP.md](ROADMAP.md) for the next milestones and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance.
+
+For usage help, see [SUPPORT.md](SUPPORT.md). Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md), and review [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating in project spaces.
 
 ## License
 
