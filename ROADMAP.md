@@ -1,128 +1,103 @@
-# Roadmap
+# NarrowsLink roadmap
 
-This roadmap frames the project from empty repository to community-usable MVP.
-It should evolve as real users bring telemetry sources, protocols, and operating
-constraints into the conversation.
+NarrowsLink now has a working replay-first foundation: a validated session format, deterministic decoder and replay core, mission-timeline operator workspace, and verifiable local evidence export. The next phase is to extend that foundation without weakening its timing, provenance, or failure-visibility guarantees.
 
-## Phase 0: Project Frame
+## Delivered foundation
 
-Status: in progress
+Status: complete for the current replay application
 
-- Define the project vision, audience, and contribution path. Done.
-- Create the public GitHub repository. Done.
-- Publish an initial roadmap and README. Done.
-- Decide the license.
-- Collect early community feedback on use cases and protocol needs.
+- React 19, TypeScript, and Vite application shell with repeatable development, test, typecheck, and production-build commands.
+- Versioned `narrowslink/session` v1 domain model using integer microsecond offsets from a UTC start.
+- Zod document validation plus cross-record checks for identifiers, source references, monotonic time, duration bounds, byte counts, and IANA time zones.
+- Deterministic 18,402-record synthetic fixture and checked-in generator.
+- Pure domain modules with focused Vitest coverage.
+- MIT licensing and contributor documentation.
 
-Exit criteria:
+## Delivered replay and ingestion
 
-- The repository explains what the project is and how to help.
-- There is a clear MVP target.
-- The community has a place to file examples, requests, and questions.
+Status: complete for local file replay
 
-## Phase 1: Technical Foundation
+- Bundled fixture and user-selected files pass through the same validation, decoding, diagnostics, incident, and export pipeline.
+- Local `.json` and `.nlsession` import with explicit loading and error states.
+- Monotonic replay clock with play, pause, reset, seek, and `0.5×` through `16×` rate control.
+- One replay offset drives the overview scrubber, mission timeline, current metrics, diagnostics, and marker placement.
+- Exact half-open range helpers for incident projection and evidence filtering.
+- Source records stay immutable throughout processing.
 
-Status: next
+## Delivered decoder and diagnostics
 
-- Choose the app architecture and runtime.
-- Create the initial application skeleton.
-- Add automated formatting, linting, and test commands.
-- Define the core telemetry domain model:
-  - source
-  - frame
-  - packet
-  - decoded field
-  - session
-  - parser diagnostic
-- Add a small fixture set for replay-driven development.
+Status: complete for NSL-01 v1
 
-Exit criteria:
+- Little-endian `A55A` frame envelope with sequence, device time, payload length, and CRC-16/CCITT-FALSE validation.
+- Canonical byte-level schema for every envelope and family field, cryptographically bound to the supported decoder descriptor.
+- Built-in Heartbeat, Power, Attitude, Position, and Thermal packet decoders.
+- Decoded fields retain units, quality, integrity status, source-record linkage, and source provenance.
+- Missing sync words, CRC failures, truncated payloads, invalid lengths, and unknown families remain inspectable.
+- Derived one-second link, loss, throughput, jitter, position, thermal, power, and packet-family metrics.
+- Derived degradation, loss burst, checksum, partial-frame, resync, lock, and recovery diagnostics.
 
-- A developer can clone the repo, run the app, and execute tests.
-- A sample telemetry log can be loaded through a core replay path.
+## Delivered operator workspace
 
-## Phase 2: Ingestion And Replay
+Status: complete for incident review
 
-Status: planned
+- Mission-timeline-first desktop workspace with a whole-session overview and synchronized incident detail.
+- Selectable incident presets with narrative, detail, and statistics views.
+- Time-zone-aware presentation while preserving integer UTC-relative offsets internally.
+- Replay-linked link quality, throughput, sequence loss, packet-family, decoder, diagnostic, marker, and signal lanes.
+- Per-session operator markers and notes persisted in browser local storage.
+- Responsive layouts and baseline keyboard/ARIA semantics for core controls.
 
-- Implement file replay as the first source type.
-- Add source status, timing controls, pause, resume, and seek.
-- Add serial ingestion.
-- Add UDP ingestion.
-- Capture invalid frames and source errors as first-class events.
+## Delivered evidence handoff
 
-Exit criteria:
+Status: complete for local incident bundles
 
-- Users can load a fixture or connect a basic live source.
-- The app distinguishes raw data, decoded packets, and diagnostics.
+- Real `.nlb` ZIP download generated in the browser.
+- Exact incident-range filtering using `[startUs, endUs)` semantics.
+- Configurable raw records, decoded packets, diagnostics, schema context, markers, and notes.
+- Canonical manifest with session, decoder, selection, inclusion, byte-size, media-type, record-count, and hash metadata.
+- SHA-256 checksums for the manifest and every included evidence artifact.
+- Stable archive bytes when inputs and generation time are held constant.
 
-## Phase 3: Decoder System
+## Next: live UDP and serial sources
 
-Status: planned
+- Define source adapters that emit the existing immutable `SourceRecord` shape.
+- Add UDP multicast/unicast and serial configuration, health, start/stop, and permission flows.
+- Record live input into a versioned session document without changing replay semantics.
+- Make operating-system drops, transport errors, disconnects, and partial reads first-class events.
+- Prove that a recorded live session replays into the same frames, diagnostics, incidents, and evidence.
 
-- Define a simple schema format for packet layouts.
-- Support field types, byte order, scaling, units, enums, and checksums.
-- Add parser validation and helpful error messages.
-- Provide example decoders.
-- Add tests for known-good, malformed, and partial packets.
+Exit criteria: an operator can capture a UDP or serial session locally, stop recording, replay it, and reproduce the same derived result.
 
-Exit criteria:
+## Next: decoder schema extensibility
 
-- A user can add a schema and see decoded telemetry without changing app code.
-- Parser failures are understandable and reproducible.
+- Move the canonical built-in schema into a loadable, versioned registry with signature and trust policies.
+- Drive field decoding from schema definitions so new field types, scaling, enums, and bounds do not require application code changes.
+- Add schema import, compatibility diagnostics, migration rules, and explicit decoder revision history.
+- Preserve imported schemas and their cryptographic identities in sessions and evidence bundles.
+- Add fixture-driven conformance tests for third-party decoders.
 
-## Phase 4: Operator Workspace
+Exit criteria: a contributor can add a decoder schema and fixtures without editing the core frame-processing code.
 
-Status: planned
+## Next: large-session processing
 
-- Build the main terminal workspace:
-  - source controls
-  - packet stream
-  - decoded field inspector
-  - raw byte view
-  - diagnostics panel
-  - session timeline
-- Add filtering, search, and packet pinning.
-- Add basic charts for selected numeric fields.
-- Make the interface resilient with large streams.
+- Move validation, decoding, aggregation, and bundle construction off the main UI thread with Web Workers.
+- Add streaming JSON/NDJSON ingestion or a chunked binary container for captures beyond the current 32 MB limit.
+- Evaluate IndexedDB or an embedded desktop store for indexed frame and metric access.
+- Bound timeline downsampling, memory growth, marker lookup, and evidence generation for multi-million-record sessions.
+- Add cancellation and progress reporting for long imports and exports.
 
-Exit criteria:
+Exit criteria: large sessions remain responsive, cancellable, and deterministic under documented memory and latency budgets.
 
-- The app is useful for live inspection and replay debugging.
+## Next: accessibility and end-to-end reliability
 
-## Phase 5: Sessions And Sharing
+- Complete keyboard-only review of replay, timeline, tabs, marker creation, file loading, and bundle export.
+- Add focus management for dialogs and error recovery, reduced-motion behavior, and non-color diagnostic cues.
+- Verify contrast and responsive behavior across supported viewport and zoom ranges.
+- Add browser end-to-end tests for bundled replay, local import, seek/rate behavior, persistence, failures, and `.nlb` download.
+- Add automated archive inspection so browser tests verify bundle paths, range boundaries, and hashes.
 
-Status: planned
+Exit criteria: critical operator workflows pass automated browser tests and a documented accessibility audit.
 
-- Record telemetry sessions locally.
-- Export decoded data to CSV and JSON.
-- Export raw captures for reproduction.
-- Add project-level examples and demo sessions.
-- Document how to share logs without exposing sensitive data.
+## Product boundary
 
-Exit criteria:
-
-- A community member can reproduce a bug or demo from a shared session.
-
-## Phase 6: Community Release
-
-Status: planned
-
-- Pick and publish the project license.
-- Add release notes and versioning.
-- Create labels for good first issues, protocol requests, and design discussions.
-- Publish a demo walkthrough.
-- Invite protocol fixtures and use-case reports from the community.
-
-Exit criteria:
-
-- The project has a clear contribution loop and a usable early release.
-
-## Open decisions
-
-- App runtime: web app, Electron/Tauri desktop app, CLI-first, or hybrid.
-- Schema format: custom JSON/YAML, Kaitai Struct, Protocol Buffers, or another
-  existing parser ecosystem.
-- Storage: plain files, SQLite, or append-only logs.
-- First live source: serial, UDP, TCP, SDR-derived stream, or another source.
-- Visualization scope for MVP.
+Cloud storage, accounts, collaboration, and hosted ingestion are not current commitments. The default posture remains local-first, inspectable, and portable; any networked service should be optional and should not become necessary for capture, replay, diagnosis, or evidence export.
