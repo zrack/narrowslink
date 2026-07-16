@@ -4,7 +4,7 @@ NarrowsLink now has a working local capture-to-evidence foundation: validated UD
 
 ## Delivered foundation
 
-Status: complete for the current replay application
+Status: complete for the current local capture, replay, incident-review, and evidence-export application
 
 - React 19, TypeScript, and Vite application shell with repeatable development, test, typecheck, and production-build commands.
 - Versioned `narrowslink/session` v1 domain model using integer microsecond offsets from a UTC start.
@@ -23,8 +23,9 @@ Status: complete for local file and bounded live capture
 - One replay offset drives the overview scrubber, mission timeline, current metrics, diagnostics, and marker placement.
 - Exact half-open range helpers for incident projection and evidence filtering.
 - Source records stay immutable throughout processing.
-- Token-protected loopback UDP bridge with unicast, IPv4/IPv6 multicast, exact datagram delivery, bounded backpressure, capture ownership, and final counter reconciliation.
-- Direct Web Serial capture with permission-aware start, lifecycle/error handling, bounded NSL-01 assembly, noise retention, and prompt resynchronization after corrupt headers.
+- Token-protected loopback UDP bridge with unicast and IPv4/IPv6 multicast, byte-exact datagram forwarding, bounded backpressure, capture ownership, event-sequence gap detection, and final counter reconciliation.
+- Direct Web Serial capture with permission-aware start, lifecycle/error handling, bounded NSL-01 assembly, noise retention, and prompt frame-boundary recovery after corrupt headers.
+- Derived decoder recovery remains visible until at least three valid CRC frames span 40 uninterrupted seconds, preventing a single good frame from claiming relock.
 - Stop/save produces an importable version 1 `.nlsession` and immediately reopens it through the existing decoder, replay, incident, and export pipeline.
 - Recorder budgets include serialized JSON overhead so an accepted capture remains below the browser importer limit.
 
@@ -51,6 +52,16 @@ Status: complete for incident review
 - Per-session operator markers and notes persisted in browser local storage.
 - Responsive layouts and baseline keyboard/ARIA semantics for core controls.
 
+## Delivered prototype-fidelity pass
+
+Status: complete at the approved desktop reference state
+
+- Source-aligned `232 px` session rail, compact replay command bar, stacked whole-session overview, shared-grid mission timeline, `280 px` incident rail, and evidence workspace.
+- Minute-aligned timeline ticks, explicit right-side value scales, packet-family cadence bands, sustained decoder-resynchronization state, and a source-like incident context window.
+- Deterministic fixture shaping that produces a real fade, loss, malformed-frame diagnostics, recovery shoulders, and decoder relock without decorative chart-only data.
+- Matched `1487 × 1058` source/implementation comparison plus a `390 × 844` responsive browser review with no body overflow.
+- Persistent comparison history and accepted product/data differences in `design-qa.md`.
+
 ## Delivered evidence handoff
 
 Status: complete for local incident bundles
@@ -75,7 +86,7 @@ Exit criteria: a contributor can add a decoder schema and fixtures without editi
 ## Next: large-session processing
 
 - Move validation, decoding, aggregation, and bundle construction off the main UI thread with Web Workers.
-- Add streaming JSON/NDJSON ingestion or a chunked binary container for captures beyond the current 32 MB limit.
+- Add streaming JSON/NDJSON ingestion or a chunked binary container for captures beyond the current 32 MiB UTF-8 `.nlsession` import limit.
 - Evaluate IndexedDB or an embedded desktop store for indexed frame and metric access.
 - Bound timeline downsampling, memory growth, marker lookup, and evidence generation for multi-million-record sessions.
 - Add cancellation and progress reporting for long imports and exports.
@@ -93,9 +104,9 @@ Exit criteria: a replay and its evidence bundle can explain both the retained te
 
 ## Next: accessibility and end-to-end reliability
 
-- Complete keyboard-only review of replay, timeline, tabs, marker creation, file loading, and bundle export.
-- Add focus management for dialogs and error recovery, reduced-motion behavior, and non-color diagnostic cues.
-- Verify contrast and responsive behavior across supported viewport and zoom ranges.
+- Automate the keyboard-only review of replay, timeline, tabs, marker creation, file loading, and bundle export.
+- Add a documented screen-reader matrix and verify non-color diagnostic cues across supported combinations.
+- Verify contrast and responsive behavior across supported viewport and `200%` zoom ranges.
 - Add browser end-to-end tests for bundled replay, local import, seek/rate behavior, persistence, failures, and `.nlb` download.
 - Add automated archive inspection so browser tests verify bundle paths, range boundaries, and hashes.
 

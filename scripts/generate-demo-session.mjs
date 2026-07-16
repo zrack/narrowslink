@@ -8,6 +8,8 @@ const FIRST_RECORD_US = 100_000;
 const LAST_RECORD_US = DURATION_US - 100_000;
 const SOURCE_ID = "harbor-relay-udp-9104";
 const STARTED_AT = "2026-07-16T04:38:12.000Z";
+const SECOND_US = 1_000_000;
+const FADE_THROUGHPUT_DEPTH = 0.82;
 
 const INCIDENTS = {
   fade: {
@@ -87,6 +89,63 @@ function rangeProgress(offsetUs, range) {
 function fadeEnvelope(offsetUs) {
   if (!inRange(offsetUs, INCIDENTS.fade)) return 0;
   return Math.sin(Math.PI * rangeProgress(offsetUs, INCIDENTS.fade)) ** 1.18;
+}
+
+function receptionWeight(offsetUs) {
+  const seconds = offsetUs / SECOND_US;
+  const naturalVariation = 1
+    + 0.28 * Math.sin(seconds / 53)
+    + 0.16 * Math.sin(seconds / 17)
+    + 0.08 * Math.sin(seconds / 3.1);
+  const fadeWeight = 1 - FADE_THROUGHPUT_DEPTH * fadeEnvelope(offsetUs);
+  return Math.max(0.05, naturalVariation * fadeWeight);
+}
+
+function createRecordOffsets() {
+  const bucketCount = Math.ceil(DURATION_US / SECOND_US);
+  const cumulativeWeights = [0];
+  for (let bucketIndex = 0; bucketIndex < bucketCount; bucketIndex += 1) {
+    const bucketStartUs = bucketIndex * SECOND_US;
+    const bucketEndUs = Math.min(DURATION_US, bucketStartUs + SECOND_US);
+    const midpointUs = bucketStartUs + (bucketEndUs - bucketStartUs) / 2;
+    const weightedDuration = receptionWeight(midpointUs) * ((bucketEndUs - bucketStartUs) / SECOND_US);
+    cumulativeWeights.push((cumulativeWeights.at(-1) ?? 0) + weightedDuration);
+  }
+
+  const totalWeight = cumulativeWeights.at(-1) ?? 0;
+  const offsets = [];
+  for (let index = 0; index < RECORD_COUNT; index += 1) {
+    if (index === 0) {
+      offsets.push(FIRST_RECORD_US);
+      continue;
+    }
+    if (index === RECORD_COUNT - 1) {
+      offsets.push(LAST_RECORD_US);
+      continue;
+    }
+
+    const targetWeight = (index / (RECORD_COUNT - 1)) * totalWeight;
+    let low = 0;
+    let high = bucketCount - 1;
+    while (low < high) {
+      const midpoint = Math.floor((low + high) / 2);
+      if ((cumulativeWeights[midpoint + 1] ?? totalWeight) < targetWeight) low = midpoint + 1;
+      else high = midpoint;
+    }
+
+    const bucketWeightStart = cumulativeWeights[low] ?? 0;
+    const bucketWeightEnd = cumulativeWeights[low + 1] ?? totalWeight;
+    const bucketProgress = bucketWeightEnd > bucketWeightStart
+      ? (targetWeight - bucketWeightStart) / (bucketWeightEnd - bucketWeightStart)
+      : 0;
+    const weightedOffsetUs = Math.round((low + bucketProgress) * SECOND_US);
+    const previousOffsetUs = offsets.at(-1) ?? FIRST_RECORD_US;
+    offsets.push(Math.max(
+      previousOffsetUs + 1,
+      Math.min(LAST_RECORD_US - (RECORD_COUNT - 1 - index), weightedOffsetUs),
+    ));
+  }
+  return offsets;
 }
 
 function setInt16(view, offset, value) {
@@ -242,10 +301,10 @@ function makePayload(familyId, offsetUs) {
 
 function corruptionAt(offsetUs, recordIndex) {
   const fadeElapsed = (offsetUs - INCIDENTS.fade.startUs) / 1_000_000;
-  if (fadeElapsed >= 56.7 && fadeElapsed < 58.1) {
+  if (fadeElapsed >= 55 && fadeElapsed < 60) {
     return ["crc", "missing-sync", "truncated"][recordIndex % 3];
   }
-  if (fadeElapsed >= 96.8 && fadeElapsed < 98.2) {
+  if (fadeElapsed >= 94 && fadeElapsed < 99) {
     return recordIndex % 2 === 0 ? "crc" : "missing-sync";
   }
 
@@ -292,17 +351,15 @@ function transitDelayMs(offsetUs, recordIndex) {
   return clamp(12 + Math.sin(seconds / 8.2) * 2.4 + fadeJitter + interferenceJitter, -42, 196);
 }
 
-function offsetForIndex(index) {
-  return Math.floor(FIRST_RECORD_US + (index * (LAST_RECORD_US - FIRST_RECORD_US)) / (RECORD_COUNT - 1));
-}
-
 function createFixture() {
   const records = [];
+  const recordOffsets = createRecordOffsets();
   let nextSequence = 40_000;
   let kernelDropCounter = 0;
 
   for (let index = 0; index < RECORD_COUNT; index += 1) {
-    const offsetUs = offsetForIndex(index);
+    const offsetUs = recordOffsets[index];
+    if (offsetUs == null) throw new Error(`Missing generated offset for record ${index}`);
     const familyId = FAMILY_PATTERN[index % FAMILY_PATTERN.length];
     const missedSequences = missingSequenceCount(offsetUs, index);
     nextSequence = (nextSequence + missedSequences) & 0xffff;
@@ -374,7 +431,7 @@ function validateFixture(fixture) {
   for (const record of fixture.records) {
     if (ids.has(record.id)) throw new Error(`Duplicate record ID: ${record.id}`);
     ids.add(record.id);
-    if (record.offsetUs < previousOffset) throw new Error(`Non-monotonic offset at ${record.id}`);
+    if (record.offsetUs <= previousOffset) throw new Error(`Non-monotonic offset at ${record.id}`);
     if (record.offsetUs >= DURATION_US) throw new Error(`Out-of-range offset at ${record.id}`);
     if (record.captureBytes !== record.dataHex.length / 2) throw new Error(`Byte-count mismatch at ${record.id}`);
     if (!/^(?:[0-9A-F]{2})+$/.test(record.dataHex)) throw new Error(`Invalid hex at ${record.id}`);
@@ -384,6 +441,60 @@ function validateFixture(fixture) {
   }
   if (families.size !== 5) throw new Error(`Expected all five packet families; found ${families.size}`);
   if (malformedRecords === 0) throw new Error("Fixture does not include inspectable malformed records");
+
+  const firstRecord = fixture.records[0];
+  const lastRecord = fixture.records.at(-1);
+  if (firstRecord?.offsetUs !== FIRST_RECORD_US || lastRecord?.offsetUs !== LAST_RECORD_US) {
+    throw new Error("Fixture endpoints changed unexpectedly");
+  }
+
+  const fadeCenterUs = (INCIDENTS.fade.startUs + INCIDENTS.fade.endUs) / 2;
+  const centerStartUs = fadeCenterUs - 15 * SECOND_US;
+  const centerEndUs = fadeCenterUs + 15 * SECOND_US;
+  const shoulderRanges = [
+    [INCIDENTS.fade.startUs - 60 * SECOND_US, INCIDENTS.fade.startUs],
+    [INCIDENTS.fade.endUs, INCIDENTS.fade.endUs + 60 * SECOND_US],
+  ];
+  const centerRate = fixture.records.filter((record) => record.offsetUs >= centerStartUs && record.offsetUs < centerEndUs).length / 30;
+  const shoulderFrames = fixture.records.filter((record) => shoulderRanges.some(
+    ([startUs, endUs]) => record.offsetUs >= startUs && record.offsetUs < endUs,
+  )).length;
+  const shoulderRate = shoulderFrames / 120;
+  if (shoulderRate < centerRate * 2.5) {
+    throw new Error(`Expected visible throughput fade; shoulders ${shoulderRate.toFixed(2)} pkt/s, center ${centerRate.toFixed(2)} pkt/s`);
+  }
+
+  const overviewRates = [];
+  for (let startUs = 0; startUs < DURATION_US; startUs += 20 * SECOND_US) {
+    const endUs = Math.min(DURATION_US, startUs + 20 * SECOND_US);
+    const recordsInWindow = fixture.records.filter((record) => record.offsetUs >= startUs && record.offsetUs < endUs).length;
+    overviewRates.push(recordsInWindow / ((endUs - startUs) / SECOND_US));
+  }
+  const sortedOverviewRates = [...overviewRates].sort((left, right) => left - right);
+  const medianOverviewRate = sortedOverviewRates[Math.floor(sortedOverviewRates.length / 2)] ?? 0;
+  const maximumOverviewRate = sortedOverviewRates.at(-1) ?? 0;
+  if (medianOverviewRate <= 0 || maximumOverviewRate > medianOverviewRate * 1.75) {
+    throw new Error(`Expected broadly distributed overview throughput; median ${medianOverviewRate.toFixed(2)} pkt/s, maximum ${maximumOverviewRate.toFixed(2)} pkt/s`);
+  }
+
+  const fadeRecords = fixture.records.filter((record) => inRange(record.offsetUs, INCIDENTS.fade));
+  const precedingFadeRecord = fixture.records.findLast((record) => record.offsetUs < INCIDENTS.fade.startUs);
+  const fadeMissing = (fadeRecords.at(-1)?.transport.kernelDropCounter ?? 0)
+    - (precedingFadeRecord?.transport.kernelDropCounter ?? 0);
+  const fadeLossPct = (fadeMissing / (fadeRecords.length + fadeMissing)) * 100;
+  if (fadeLossPct < 4 || fadeLossPct > 8) {
+    throw new Error(`Expected a bounded fade loss envelope; observed ${fadeLossPct.toFixed(2)}%`);
+  }
+
+  const corruptionWindows = [
+    [INCIDENTS.fade.startUs + 55_000_000, INCIDENTS.fade.startUs + 60_000_000],
+    [INCIDENTS.fade.startUs + 94_000_000, INCIDENTS.fade.startUs + 99_000_000],
+    [INCIDENTS.interference.startUs + 18_900_000, INCIDENTS.interference.startUs + 20_300_000],
+  ];
+  for (const [startUs, endUs] of corruptionWindows) {
+    const recordsInWindow = fixture.records.filter((record) => record.offsetUs >= startUs && record.offsetUs < endUs).length;
+    if (recordsInWindow < 2) throw new Error(`Corruption window ${startUs}-${endUs} contains fewer than two records`);
+  }
 }
 
 const fixture = createFixture();

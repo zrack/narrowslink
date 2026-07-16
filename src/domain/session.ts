@@ -11,6 +11,8 @@ import {
 } from "./types";
 
 const SECOND_US = 1_000_000;
+const DECODER_RELOCK_STABILITY_US = 40 * SECOND_US;
+const DECODER_RELOCK_MIN_VALID_FRAMES = 3;
 
 export class SessionValidationError extends Error {
   readonly details: string[];
@@ -299,11 +301,13 @@ function deriveDiagnostics(frames: DecodedFrame[], buckets: MetricBucket[]): Dia
 
   let consecutiveInvalid = 0;
   let consecutiveValidAfterResync = 0;
+  let validRecoveryStartedUs: number | null = null;
   let resyncing = false;
   for (const frame of frames) {
     if (frame.status !== "complete") {
       consecutiveInvalid += 1;
       consecutiveValidAfterResync = 0;
+      validRecoveryStartedUs = null;
       const isCrc = frame.integrity.status === "crc-failed";
       events.push(makeDiagnostic(
         isCrc ? "crc-failure" : "partial-frame",
@@ -320,10 +324,23 @@ function deriveDiagnostics(frames: DecodedFrame[], buckets: MetricBucket[]): Dia
     } else {
       consecutiveInvalid = 0;
       if (resyncing) {
+        if (validRecoveryStartedUs == null) validRecoveryStartedUs = frame.offsetUs;
         consecutiveValidAfterResync += 1;
-        if (consecutiveValidAfterResync === 3) {
+        const stableForUs = frame.offsetUs - validRecoveryStartedUs;
+        if (
+          consecutiveValidAfterResync >= DECODER_RELOCK_MIN_VALID_FRAMES
+          && stableForUs >= DECODER_RELOCK_STABILITY_US
+        ) {
           resyncing = false;
-          events.push(makeDiagnostic("decoder-locked", "info", frame.offsetUs, "Decoder locked", "Three valid CRC frames restored decoder boundary lock.", [frame.id]));
+          validRecoveryStartedUs = null;
+          events.push(makeDiagnostic(
+            "decoder-locked",
+            "info",
+            frame.offsetUs,
+            "Decoder locked",
+            "At least three valid CRC frames over 40 uninterrupted seconds restored decoder boundary lock.",
+            [frame.id],
+          ));
         }
       }
     }

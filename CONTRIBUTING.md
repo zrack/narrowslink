@@ -1,6 +1,6 @@
 # Contributing to NarrowsLink
 
-NarrowsLink is a local-first telemetry replay and incident-analysis application. Contributions should preserve timing precision, source provenance, visible failure states, deterministic derivation, and the ability to reproduce an incident from exported evidence.
+NarrowsLink is a local-first telemetry capture, replay, incident-analysis, and evidence-export application. Contributions should preserve timing precision, source provenance, visible failure states, deterministic derivation, and the ability to reproduce an incident from exported evidence.
 
 ## Development setup
 
@@ -12,7 +12,7 @@ npm ci
 npm run dev
 ```
 
-Vite prints the local development URL. The application automatically loads the bundled harbor-relay fixture; use **Open local replay** to exercise the user-import path or **New live capture** for UDP/Web Serial.
+Vite prints the local development URL. The application automatically loads the bundled harbor-relay fixture; use **Open local replay** to exercise the user-import path or **Live capture** for UDP/Web Serial.
 
 ## Required checks
 
@@ -50,6 +50,8 @@ npm run check
 
 Review both the generator diff and the resulting fixture facts. Keep generation deterministic, preserve all five packet families, and retain representative malformed frames and sequence gaps. If expected counts, incident ranges, decoder identity, or failure scenarios change, update the relevant tests and documentation in the same pull request.
 
+The bundled session also carries visual and diagnostic regression intent. Preserve varied packet cadence and throughput, measurable fade shoulders versus the fade center, intentional loss, and enough valid post-failure traffic to exercise the sustained decoder-relock window. Assert those properties from decoded domain output rather than snapshotting decorative chart coordinates.
+
 ## Engineering invariants
 
 - Treat raw `SourceRecord` values as immutable input. Derive frames, decoded fields, metrics, diagnostics, incidents, and archives from them.
@@ -82,6 +84,18 @@ Review both the generator diff and the resulting fixture facts. Keep generation 
 | Deterministic demo data | `scripts/generate-demo-session.mjs` |
 
 The approved visual source is `docs/design/narrowslink-mission-timeline-source.png`. Preserve its restrained, square-cornered, instrument-grade hierarchy unless a change intentionally establishes a new documented direction.
+
+## Visual changes
+
+Treat visible differences from the approved source as regressions unless the pull request explicitly records an approved new product direction in `AGENTS.md`. For material workspace changes:
+
+1. Run the application and load the bundled Harbor relay replay.
+2. Capture the source and implementation at the same `1487 × 1058` viewport and equivalent incident state.
+3. Put both full frames into one comparison image, then repeat for any fidelity-critical region that is difficult to judge at full scale.
+4. Verify the responsive workspace at `390 × 844`, including body overflow, command reachability, timeline labels, incident content, and evidence controls.
+5. Update `docs/assets/narrowslink-dashboard.png`, the current evidence in `docs/design/`, and `design-qa.md` when the accepted appearance changes.
+
+Screenshots are evidence, not the review itself: record the visible mismatch, the implemented correction, remaining intentional differences, interaction coverage, and the final pass/block result in `design-qa.md`.
 
 ## Tests and review expectations
 

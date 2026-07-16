@@ -53,10 +53,11 @@ export function downsampleBuckets(
 
 export function incidentViewRange(session: ParsedSession, incident: IncidentProjection): { startUs: number; endUs: number } {
   const incidentDuration = incident.endUs - incident.startUs;
-  const minimumWindow = 7 * 60 * 1_000_000;
+  const minimumWindow = 7.5 * 60 * 1_000_000;
   const targetDuration = Math.max(minimumWindow, incidentDuration * 2.8);
-  const center = incident.startUs + incidentDuration / 2;
-  let startUs = Math.max(0, center - targetDuration / 2);
+  const availableContext = targetDuration - incidentDuration;
+  const leadingContext = availableContext * 0.35;
+  let startUs = Math.max(0, incident.startUs - leadingContext);
   let endUs = Math.min(session.document.durationUs, startUs + targetDuration);
   startUs = Math.max(0, endUs - targetDuration);
   return { startUs, endUs };

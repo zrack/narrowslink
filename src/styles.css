@@ -1,23 +1,24 @@
 :root {
   color-scheme: dark;
-  --bg: #0c100f;
-  --surface: #121513;
-  --surface-2: #171917;
-  --surface-3: #20231f;
-  --line: #30332e;
-  --line-soft: #242824;
-  --text: #e5e7e2;
-  --muted: #a5a9a3;
-  --dim: #7f847e;
+  --bg: #111210;
+  --surface: #191a18;
+  --surface-2: #1d1e1b;
+  --surface-3: #252520;
+  --line: #393630;
+  --line-soft: #2d2b27;
+  --text: #f0f2ed;
+  --muted: #b4b7b0;
+  --dim: #898c85;
   --amber: #f2a900;
   --green: #8bc879;
   --blue: #6398d6;
   --red: #ea6f66;
   --purple: #c36ddb;
   --cyan: #53b8b7;
-  --primary: #d8ecf3;
+  --primary: #c1d7e0;
   --primary-text: #172024;
-  --label-gutter: 142px;
+  --label-gutter: 148px;
+  --scale-gutter: 35px;
   font-family: "Inter", system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -81,8 +82,8 @@ select:focus-visible {
 .app-shell {
   position: relative;
   display: grid;
-  grid-template-columns: 225px minmax(640px, 1fr) 271px;
-  grid-template-rows: 64px 98px minmax(588px, 1fr) 258px;
+  grid-template-columns: 232px minmax(640px, 1fr) 280px;
+  grid-template-rows: 66px 101px minmax(588px, 1fr) 268px;
   min-width: 1180px;
   min-height: 860px;
   height: 100vh;
@@ -114,18 +115,18 @@ select:focus-visible {
   grid-column: 1;
   grid-row: 1 / -1;
   display: grid;
-  grid-template-rows: 64px minmax(0, 1fr) 54px;
+  grid-template-rows: 66px minmax(0, 1fr) 54px;
   min-width: 0;
   overflow: hidden;
   border-right: 1px solid var(--line);
-  background: #101310;
+  background: #121312;
 }
 
 .brand-lockup {
   display: flex;
   align-items: center;
   gap: 11px;
-  height: 64px;
+  height: 66px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
 }
@@ -212,13 +213,13 @@ select:focus-visible {
 
 .capture-entry {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   width: calc(100% - 20px);
-  min-height: 43px;
+  min-height: 31px;
   margin: 0 10px 10px;
-  padding: 6px 10px;
+  padding: 4px 9px;
   border: 1px solid #43584a;
   background: #141c17;
   color: var(--text);
@@ -249,7 +250,7 @@ select:focus-visible {
 .capture-entry small {
   color: var(--muted);
   font-family: "IBM Plex Mono", monospace;
-  font-size: 8px;
+  font-size: 7px;
 }
 
 .link-list {
@@ -453,12 +454,12 @@ select:focus-visible {
   grid-column: 2 / 4;
   grid-row: 1;
   display: grid;
-  grid-template-columns: minmax(300px, auto) minmax(240px, 1fr) auto;
+  grid-template-columns: 247px minmax(240px, 1fr) auto;
   align-items: center;
   min-width: 0;
   padding: 0 16px;
   border-bottom: 1px solid var(--line);
-  background: #0e120f;
+  background: #111210;
 }
 
 .session-title {
@@ -515,14 +516,24 @@ select:focus-visible {
   gap: 8px;
 }
 
+.primary-action-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.primary-action-group .primary-action {
+  border-right: 0;
+}
+
 .topbar .open-replay-mobile,
 .topbar .capture-mobile {
   display: none;
 }
 
 .speed-control select {
+  width: 44px;
   height: 36px;
-  padding: 0 8px;
+  padding: 0 3px;
   border: 1px solid var(--line);
   border-radius: 0;
   background: var(--surface-2);
@@ -536,6 +547,15 @@ select:focus-visible {
   flex: 0 0 auto;
   border: 1px solid var(--line);
   background: var(--surface-2);
+}
+
+.replay-action-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.replay-action-group .replay-toggle {
+  border-right: 0;
 }
 
 .secondary-action,
@@ -573,7 +593,7 @@ select:focus-visible {
 }
 
 .primary-action:hover {
-  background: #ecf7fa;
+  background: #d7e7ec;
 }
 
 .primary-action:disabled {
@@ -609,13 +629,13 @@ select:focus-visible {
   min-width: 0;
   padding: 6px 16px 8px;
   border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  background: #111210;
 }
 
 .overview-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   color: var(--dim);
   font-size: 8px;
   font-weight: 600;
@@ -623,14 +643,29 @@ select:focus-visible {
   text-transform: uppercase;
 }
 
-.overview-title div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.overview-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.overview-legend {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
   font-size: 8px;
   font-weight: 500;
-  letter-spacing: 0;
-  text-transform: none;
+}
+
+.overview-legend span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
 }
 
 .legend {
@@ -651,7 +686,7 @@ select:focus-visible {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
-  background: #101411;
+  background: #161715;
 }
 
 .overview-chart:has(.overview-scrubber:focus-visible) {
@@ -659,9 +694,22 @@ select:focus-visible {
   outline-offset: -2px;
 }
 
-.overview-chart .recharts-responsive-container {
-  position: absolute !important;
-  inset: 11px 0 6px;
+.overview-tracks {
+  position: absolute;
+  inset: 11px 0 5px;
+  display: grid;
+  grid-template-rows: 1fr 1fr 0.72fr;
+  min-height: 0;
+}
+
+.overview-tracks > div {
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid rgb(57 54 48 / 52%);
+}
+
+.overview-tracks > div:last-child {
+  border-bottom: 0;
 }
 
 .overview-marker-strip {
@@ -740,6 +788,10 @@ select:focus-visible {
   pointer-events: none;
 }
 
+.timeline-stack .timeline-cursor {
+  bottom: 36px;
+}
+
 .replay-cursor::before {
   position: absolute;
   top: 0;
@@ -779,7 +831,12 @@ select:focus-visible {
 .time-zone {
   display: flex;
   align-items: center;
-  padding-left: 16px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 14px 0 16px;
+}
+
+.time-zone small {
   color: var(--muted);
   font-size: 9px;
   font-weight: 600;
@@ -787,15 +844,24 @@ select:focus-visible {
   text-transform: uppercase;
 }
 
+.time-zone strong {
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 14px;
+  font-weight: 500;
+}
+
 .time-buttons {
-  display: flex;
-  align-items: stretch;
-  justify-content: space-between;
+  position: relative;
+  min-width: 0;
+  padding-right: var(--scale-gutter);
   background: #101310;
 }
 
 .time-buttons button {
-  position: relative;
+  position: absolute;
+  top: 0;
+  bottom: 0;
   min-width: 46px;
   padding: 0 5px;
   border: 0;
@@ -803,6 +869,7 @@ select:focus-visible {
   color: var(--muted);
   font-family: "IBM Plex Mono", monospace;
   font-size: 9px;
+  transform: translateX(-50%);
   cursor: pointer;
 }
 
@@ -832,17 +899,20 @@ select:focus-visible {
   position: absolute;
   z-index: 0;
   top: 0;
-  right: 0;
+  right: var(--scale-gutter);
   bottom: 0;
   left: var(--label-gutter);
   pointer-events: none;
+  background-image: linear-gradient(to right, transparent calc(100% - 1px), rgb(57 54 48 / 62%) calc(100% - 1px));
+  background-size: calc(100% / 6) 100%;
+  border-left: 1px solid rgb(57 54 48 / 62%);
 }
 
 .selection-band {
   position: absolute;
   z-index: 4;
   top: 0;
-  bottom: 0;
+  bottom: 36px;
   border-right: 1px dashed var(--amber);
   border-left: 1px dashed var(--amber);
   background: rgb(242 169 0 / 10%);
@@ -882,13 +952,13 @@ select:focus-visible {
   display: grid;
   grid-template-columns: var(--label-gutter) minmax(0, 1fr);
   min-height: 0;
-  height: calc((100% - 106px - 141px) / 6);
+  height: calc((100% - 106px - 141px - 58px) / 6);
   border-bottom: 1px solid var(--line);
 }
 
 .plot-lane:first-of-type {
   padding-top: 22px;
-  height: calc((100% - 106px - 141px) / 6 + 22px);
+  height: calc((100% - 106px - 141px - 58px) / 6 + 22px);
 }
 
 .plot-lane.families-lane {
@@ -904,11 +974,11 @@ select:focus-visible {
   align-items: flex-start;
   gap: 4px;
   padding: 8px 8px 4px 16px;
-  background: rgb(18 21 19 / 92%);
+  background: rgb(25 26 24 / 94%);
 }
 
 .lane-label > svg {
-  margin-top: 2px;
+  margin-top: 3px;
   color: var(--muted);
 }
 
@@ -931,10 +1001,16 @@ select:focus-visible {
   font-size: 9px;
 }
 
+.lane-label small i {
+  color: var(--dim);
+  font-style: normal;
+}
+
 .lane-plot {
   position: relative;
   min-width: 0;
   overflow: hidden;
+  padding-right: var(--scale-gutter);
 }
 
 .signal-chart {
@@ -953,6 +1029,27 @@ select:focus-visible {
   font-weight: 500;
 }
 
+.lane-scale {
+  position: absolute;
+  z-index: 5;
+  top: 4px;
+  right: 7px;
+  bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8px;
+  line-height: 8px;
+  pointer-events: none;
+}
+
+.lane-scale i {
+  font-style: normal;
+  text-align: right;
+}
+
 .lane-value.out-of-view,
 .lane-value[data-state="out-of-view"] {
   color: var(--dim);
@@ -963,7 +1060,16 @@ select:focus-visible {
 .family-list {
   display: grid;
   height: 100%;
-  padding: 4px 0;
+  padding: 21px 0 0;
+}
+
+.families-lane .lane-plot {
+  overflow: visible;
+}
+
+.families-lane .family-list {
+  width: calc(100% + 116px);
+  margin-left: -116px;
 }
 
 .family-row {
@@ -1047,9 +1153,18 @@ select:focus-visible {
 
 .decoder-track > .decoder-segment.resync,
 .decoder-track > .decoder-segment.is-resync {
+  display: grid;
+  align-content: center;
+  gap: 1px;
   border-color: var(--amber);
   background: #3c3012;
   color: var(--amber);
+}
+
+.decoder-track > .decoder-segment.resync small,
+.decoder-track > .decoder-segment.is-resync small {
+  color: #e2b84f;
+  font-size: 7px;
 }
 
 .decoder-track .decoder-locked {
@@ -1145,12 +1260,12 @@ select:focus-visible {
   grid-column: 3;
   grid-row: 2 / 4;
   display: grid;
-  grid-template-rows: 37px 79px 36px minmax(0, 1fr) auto;
+  grid-template-rows: 37px 61px 36px minmax(0, 1fr) auto;
   min-height: 0;
   overflow: hidden;
   border-left: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  background: #111411;
+  background: var(--surface);
 }
 
 .incident-panel.empty-incident {
@@ -1210,13 +1325,13 @@ select:focus-visible {
 .incident-switcher {
   width: 100%;
   min-width: 0;
-  height: 23px;
-  padding: 0 22px 0 6px;
+  height: 16px;
+  padding: 0 18px 0 0;
   overflow: hidden;
-  border: 1px solid var(--line-soft);
+  border: 0;
   border-radius: 0;
-  background: var(--surface-2);
-  color: var(--text);
+  background: transparent;
+  color: var(--dim);
   font-size: 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1277,7 +1392,7 @@ select:focus-visible {
 }
 
 .narrative-view {
-  padding: 15px 14px 8px;
+  padding: 16px 14px 8px;
 }
 
 .narrative-view h2 {
@@ -1315,7 +1430,7 @@ select:focus-visible {
 .event-narrative {
   position: relative;
   display: grid;
-  gap: 12px;
+  gap: 13px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1519,7 +1634,7 @@ select:focus-visible {
   display: grid;
   grid-template-columns: minmax(300px, 1fr) minmax(410px, 0.9fr) auto;
   align-items: center;
-  height: 67px;
+  height: 68px;
   padding: 0 16px;
   border-bottom: 1px solid var(--line);
 }
@@ -1583,10 +1698,10 @@ select:focus-visible {
 
 .bundle-body {
   display: grid;
-  grid-template-columns: minmax(590px, 1fr) 326px;
-  gap: 14px;
-  height: 191px;
-  padding: 10px 16px 9px;
+  grid-template-columns: minmax(590px, 1fr) 360px;
+  gap: 16px;
+  height: 176px;
+  padding: 0 16px 9px;
 }
 
 .bundle-table-wrap {
@@ -1605,7 +1720,7 @@ select:focus-visible {
 }
 
 .bundle-table-head {
-  height: 25px;
+  height: 24px;
   padding: 0 8px;
   border-bottom: 1px solid var(--line);
   color: var(--dim);
@@ -1618,7 +1733,7 @@ select:focus-visible {
 .bundle-table button,
 .bundle-table label {
   width: 100%;
-  height: 28px;
+  height: 26px;
   padding: 0 8px;
   border: 0;
   border-bottom: 1px solid var(--line-soft);
@@ -2247,7 +2362,17 @@ select:focus-visible {
 
 }
 
-@media (max-width: 1540px) {
+@media (min-width: 1381px) {
+  .bundle-summary {
+    grid-template-columns: minmax(300px, 1fr) 360px 185px 270px;
+  }
+
+  .bundle-summary .bundle-create {
+    width: 185px;
+  }
+}
+
+@media (max-width: 1380px) {
   .session-meta {
     display: none;
   }

@@ -11,6 +11,7 @@ Treat `docs/design/narrowslink-mission-timeline-source.png` as the source of tru
 - The approved concept is the mission-timeline-first NarrowsLink session review workspace.
 - The primary outcome is to correlate link health, packet behavior, decoder state, diagnostics, markers, and decoded signals across a recorded session, then package a selected incident range into a reproducible handoff bundle.
 - Preserve the restrained, square-cornered, instrument-grade visual language of the existing NarrowsLink prototype.
+- Prototype fidelity is the current priority: treat visible differences in composition, component geometry, density, spacing, typography, color, and hierarchy from the source image as product defects rather than optional polish.
 
 ## Product Engineering Constraints
 

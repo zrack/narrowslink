@@ -195,6 +195,36 @@ describe("session parsing", () => {
     expect(parsed.incidents[0]?.stats.missingFrames).toBe(1);
   });
 
+  it("requires 40 uninterrupted seconds of valid frames before declaring decoder relock", () => {
+    const replay = document();
+    replay.durationUs = 90_000_000;
+    replay.records = [
+      record(0, 0, 100, 0x02),
+      record(1, 1_000_000, 101, 0x02, true),
+      record(2, 2_000_000, 102, 0x02, true),
+      record(3, 3_000_000, 103, 0x02),
+      record(4, 10_000_000, 104, 0x02),
+      record(5, 42_000_000, 105, 0x02),
+      record(6, 43_000_000, 106, 0x02, true),
+      record(7, 44_000_000, 107, 0x02),
+      record(8, 45_000_000, 108, 0x02),
+      record(9, 83_000_000, 109, 0x02),
+      record(10, 84_000_000, 110, 0x02),
+    ];
+    replay.incidents = [{ id: "resync", title: "Resync", startUs: 0, endUs: replay.durationUs, severity: "warning" }];
+
+    const parsed = parseSession(replay);
+    const transitions = parsed.diagnostics.filter(
+      (event) => event.type === "decoder-resync" || event.type === "decoder-locked",
+    );
+
+    expect(transitions.map((event) => [event.type, event.startUs])).toEqual([
+      ["decoder-resync", 2_000_000],
+      ["decoder-locked", 84_000_000],
+    ]);
+    expect(transitions[1]?.description).toContain("40 uninterrupted seconds");
+  });
+
   it("retains a uniquely identified diagnostic for every malformed frame", () => {
     const replay = document();
     replay.records = Array.from({ length: 14 }, (_, index) => record(index, 2_000_000, 100 + index, 0x02, true));

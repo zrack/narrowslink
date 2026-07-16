@@ -2,11 +2,17 @@
 
 NarrowsLink records live UDP or serial telemetry, turns the capture into an immutable local replay, and provides a synchronized incident-review workspace. One microsecond-accurate playhead drives link health, packet families, decoder state, diagnostics, markers, and decoded signals; the selected interval can then be exported as a reproducible evidence bundle.
 
-![NarrowsLink live UDP capture setup](docs/design/live-capture-setup.jpg)
-
-![NarrowsLink replaying and investigating a captured UDP burst](docs/design/live-capture-replay.jpg)
+![NarrowsLink mission-timeline session review workspace](docs/assets/narrowslink-dashboard.png)
 
 The application is local-first. UDP ingest uses a token-protected loopback bridge and serial ingest uses the browser's Web Serial connection; capture, replay, annotations, and evidence generation stay on the operator's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
+
+## Workspace at a glance
+
+- The source rail starts a live capture, opens a local replay, and identifies the session that is actually loaded.
+- The session overview locates the active time window inside the full recording while separating link quality, throughput, dropped frames, and markers.
+- The mission timeline correlates connection health, packet cadence, decoder state, diagnostics, operator markers, and decoded position signals on one shared clock.
+- The incident rail explains the selected half-open range with a compact narrative, exact details, statistics, and a session-wide operator note.
+- The evidence workspace previews the real archive contents before building a checksummed local `.nlb` handoff bundle.
 
 ## What works today
 
@@ -14,14 +20,24 @@ The application is local-first. UDP ingest uses a token-protected loopback bridg
 - Records NSL-01 serial input directly through Web Serial, reassembling split frames while retaining noise, corrupt boundaries, and incomplete trailing bytes for diagnosis.
 - Stops a live source, downloads a versioned `.nlsession`, and opens that exact document through the existing validation and decoder pipeline for immediate replay.
 - Loads the bundled demonstration session or a local NarrowsLink session file through the same validation and decoding pipeline.
-- Rejects malformed documents, non-monotonic timestamps, duplicate records, invalid time zones, inconsistent byte counts, and files over the 32 MB browser safety limit with actionable errors.
+- Rejects malformed documents, non-monotonic timestamps, duplicate records, invalid time zones, inconsistent byte counts, and files over the 32 MiB browser safety limit with actionable errors.
 - Decodes the NSL-01 frame envelope, CRC-16/CCITT-FALSE integrity, and five built-in packet families: Heartbeat, Power, Attitude, Position, and Thermal.
 - Retains checksum failures, missing sync words, truncated frames, and invalid lengths as inspectable diagnostics instead of silently discarding them.
+- Requires sustained valid traffic before reporting decoder relock, keeping recovery periods visible instead of converting the first good frame into an immediate success state.
 - Uses one monotonic replay clock for play, pause, seek, rate changes, the timeline playhead, current values, diagnostics, and incident context. Times remain integer microsecond offsets from a UTC session start.
 - Projects preset incidents into exact half-open ranges (`[startUs, endUs)`) with delivery, loss, signal, jitter, availability, and decode-confidence statistics.
 - Persists operator markers and notes per session in browser local storage.
 - Builds and downloads a real `.nlb` ZIP archive for the selected incident, with a manifest, exact inclusion list, and SHA-256 checksum for every evidence artifact.
 - Includes focused automated tests for validation, decoding, replay-clock behavior, range semantics, and deterministic evidence packaging.
+
+## Typical incident workflow
+
+1. Load the bundled fixture or choose **Open local replay** for a `.json` or `.nlsession` file.
+2. Select an incident, then use **Play replay**, seeking, and rate controls to inspect its context on the shared timeline.
+3. Correlate the Narrative, Details, and Stats views with decoder, diagnostic, marker, packet-family, and decoded-signal lanes.
+4. Use **Add marker** and the session-wide note to preserve operator context locally.
+5. Choose the evidence groups to include and review the exact archive preview.
+6. Select **Create incident bundle** to download the verifiable `.nlb` archive.
 
 ## Run it locally
 
@@ -42,6 +58,8 @@ npm run check
 
 ## Record live UDP
 
+![NarrowsLink live UDP capture setup](docs/design/live-capture-setup.jpg)
+
 Start the Vite app, then launch the local bridge in another terminal:
 
 ```bash
@@ -52,7 +70,7 @@ npm run dev
 npm run capture:bridge
 ```
 
-The bridge prints one JSON line containing its loopback `controlUrl` and a newly generated `token`. In NarrowsLink, choose **New live capture**, paste those values, select the UDP bind host and port, and start recording. The control API listens only on `127.0.0.1`; the token prevents another local page from controlling the socket.
+The bridge prints one JSON line containing its loopback `controlUrl` and a newly generated `token`. In NarrowsLink, choose **Live capture → UDP bridge**, paste those values, select the UDP bind host and port, and start recording. The control API listens only on `127.0.0.1`; the token prevents another local page from controlling the socket.
 
 To exercise the complete flow without hardware, start a capture on `127.0.0.1:9104` and run:
 
@@ -61,6 +79,8 @@ npm run capture:demo
 ```
 
 The demo sends 480 exact datagrams from the checked-in fixture. Stop the capture with **Stop, save & replay**; NarrowsLink downloads the `.nlsession`, reopens it, and selects its full captured interval for investigation and evidence export.
+
+![NarrowsLink replaying and investigating a captured UDP burst](docs/design/live-capture-replay.jpg)
 
 For multicast, bind an address in the same IP family and provide the group in the dialog. Bridge defaults can be supplied on the command line, but the dialog's bind host and port are explicit per-capture values; mirror `0.0.0.0` and `9104` there when using this example. `0.0.0.0` listens on every local IPv4 interface, so use a narrower interface address when appropriate.
 
@@ -75,7 +95,7 @@ Use `npm run capture:bridge -- --help` and `npm run capture:demo -- --help` for 
 
 ## Record live serial
 
-Choose **New live capture → Serial port**, configure the baud rate, data bits, stop bits, parity, and flow control, then select the device in the browser prompt. Device selection and connection setup are excluded from the capture clock; recording starts only after the port opens.
+Choose **Live capture → Serial port**, configure the baud rate, data bits, stop bits, parity, and flow control, then select the device in the browser prompt. Device selection and connection setup are excluded from the capture clock; recording starts only after the port opens.
 
 Web Serial is available in supported Chromium browsers and requires a secure context. Local development on `localhost` or `127.0.0.1` satisfies that requirement; see [MDN's Web Serial guide](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API) for current browser support. NarrowsLink retains undecodable input rather than silently dropping it. Framing and sync failures remain inspectable records; a read error or disconnect causes the resulting recovery session to be marked incomplete.
 
@@ -88,7 +108,7 @@ Web Serial is available in supported Chromium browsers and requires a secure con
 - Historical source metadata for multicast UDP `239.42.91.4:9104`; the app is replaying a file, not opening that socket.
 - NSL-01 decoder revision `v1.3.7` with all five built-in packet families.
 - Three incident presets covering a link fade and decoder resync, an interference burst, and a clean schema-revision transition.
-- Intentional sequence gaps, CRC failures, missing sync words, and truncated frames for forensic and error-state testing.
+- Varied deterministic packet cadence, a sustained fade and recovery, intentional loss, CRC failures, missing sync words, and truncated frames for forensic and error-state testing.
 
 Regenerate it from the checked-in source script with:
 
@@ -145,14 +165,15 @@ Every time-bearing artifact is filtered to the selected half-open range. `manife
 | `src/capture/nsl01-serial-assembler.ts` | NSL-01 framing, noise retention, and bounded resynchronization |
 | `src/capture/udp-bridge.ts` | Typed, authenticated browser client for the local UDP bridge |
 | `src/data/load-session.ts` | Bundled and user-file loading, size limits, and surfaced load errors |
-| `src/data/session-file.ts` | Canonical compact `.nlsession` serializer and shared 32 MB import/export budget |
+| `src/data/session-file.ts` | Canonical compact `.nlsession` serializer and shared 32 MiB import/export budget |
 | `src/domain/types.ts` | Versioned session schema and core telemetry types |
 | `src/domain/decoder.ts` | Frame envelope, CRC, built-in family decoding, and malformed-frame retention |
 | `src/domain/session.ts` | Validation, metric derivation, diagnostics, incident projection, and range helpers |
 | `src/replay/` | Pure monotonic replay clock and its React subscription hook |
 | `src/storage/session-storage.ts` | Per-session marker and note persistence in local storage |
 | `src/domain/bundle.ts` | Range-filtered, checksummed `.nlb` evidence generation and browser download |
-| `src/lib/` | Timeline sampling, value lookup, and time-zone-aware presentation helpers |
+| `src/lib/telemetry.ts` | Timeline sampling, value lookup, and source-aligned incident view ranges |
+| `src/lib/time.ts` | Time-zone-aware presentation and byte-size helpers |
 | `scripts/capture-bridge.mjs` | Token-protected loopback control plane, UDP socket, multicast membership, and SSE delivery |
 | `scripts/send-demo-udp.mjs` | Replays checked-in fixture records as real UDP datagrams for acceptance testing |
 | `scripts/generate-demo-session.mjs` | Deterministic synthetic fixture generator |
@@ -169,7 +190,7 @@ Local does not automatically mean safe to share. A replay or evidence bundle can
 
 - Live capture supports UDP and Web Serial; TCP and other transports are not implemented.
 - The serial adapter is intentionally bound to the bundled NSL-01 decoder schema. Decoder families are compiled into the application; external schema loading and protocol plug-ins are next-stage work.
-- Sessions are captured, parsed, indexed, and bundled in browser memory. The recorder enforces the same importable-file budget as the 32 MB replay loader, plus the 100,000-record and 24-hour schema limits.
+- Sessions are captured, parsed, indexed, and bundled in browser memory. The recorder enforces the same importable-file budget as the 32 MiB replay loader, plus the 100,000-record and 24-hour schema limits.
 - Version 1 stores immutable source records but has no dedicated transport-event collection. Noise and partial serial input remain durable records; live control errors and any capture-integrity mismatch are surfaced before a clean evidence handoff.
 - Version 1 does not yet persist each UDP sender endpoint or the bridge's internal capture ID in every source record. A clean capture preserves the local bind/group descriptor, exact datagram bytes, ordering, and offsets, and is saved only after bridge stop-time totals reconcile with browser and recorder totals. Recovery sessions preserve retained records with a durable `Incomplete` label; detailed transport events and mismatch totals remain next-stage work.
 - Automated coverage includes capture adapters, the real loopback bridge, decoder/replay behavior, and capture-to-evidence byte/hash verification. Expanded cross-browser and assistive-technology testing remains on the roadmap.

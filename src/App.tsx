@@ -14,7 +14,9 @@ import { createPortal } from "react-dom";
 import {
   BookmarkSimple,
   Broadcast,
+  CaretDown,
   CaretRight,
+  CellSignalFull,
   Check,
   Circle,
   ClockCounterClockwise,
@@ -30,10 +32,9 @@ import {
   SpinnerGap,
   UploadSimple,
   WarningCircle,
-  WifiHigh,
   X,
 } from "@phosphor-icons/react";
-import { Bar, BarChart, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer } from "recharts";
+import { Bar, BarChart, Line, LineChart, ResponsiveContainer } from "recharts";
 
 import {
   buildEvidenceBundle,
@@ -81,7 +82,8 @@ const DEFAULT_NOTE = "Likely multipath from ferry traffic. Antenna re-aimed 5° 
 const BUNDLED_DEMO_ID = "harbor-relay-2026-07-15-213812";
 const BUNDLED_DEMO_STARTED_AT = "2026-07-16T04:38:12.000Z";
 const BUNDLED_DEMO_SCHEMA_HASH = SUPPORTED_DECODER.schemaHash;
-const BUNDLED_DEMO_CONTENT_FINGERPRINT = "3e6a2e1ab9712614978fb17a033ab6d0";
+const BUNDLED_DEMO_CONTENT_FINGERPRINT = "2d75a2cf9bc0fe2941316cc75e394b5b";
+const BUNDLED_DEMO_WORKSPACE_REVISION = "mission-timeline-fidelity-v1";
 const SESSION_IDENTITY_CACHE = new WeakMap<ParsedSession, string>();
 
 function isBundledDemoSession(session: ParsedSession): boolean {
@@ -168,7 +170,7 @@ interface TimelineDiagnosticGroup {
 }
 
 function groupTimelineDiagnostics(events: DiagnosticEvent[], startUs: number, endUs: number): TimelineDiagnosticGroup[] {
-  const binWidthUs = Math.max(1, Math.ceil((endUs - startUs) / 20));
+  const binWidthUs = Math.max(1, Math.ceil((endUs - startUs) / 15));
   const bins = new Map<number, DiagnosticEvent[]>();
   for (const event of events) {
     const bin = Math.floor((event.startUs - startUs) / binWidthUs);
@@ -196,10 +198,16 @@ interface DecoderSegment extends TimelineSegment {
 
 function familySegments(session: ParsedSession, familyName: string, startUs: number, endUs: number): TimelineSegment[] {
   const resolutionUs = Math.max(1_000_000, Math.ceil((endUs - startUs) / 600));
-  const matching = session.buckets.filter(
+  const familyBuckets = session.buckets.filter((bucket) => (bucket.familyCounts[familyName] ?? 0) > 0);
+  const cadenceGaps = familyBuckets.slice(1).flatMap((bucket, index) => {
+    const previous = familyBuckets[index];
+    return previous ? [bucket.offsetUs - previous.offsetUs] : [];
+  }).sort((left, right) => left - right);
+  const medianCadenceUs = cadenceGaps.length > 0 ? cadenceGaps[Math.floor(cadenceGaps.length / 2)] ?? 1_000_000 : 1_000_000;
+  const continuityGapUs = Math.min(10_000_000, Math.max(2_000_000, medianCadenceUs * 2.5));
+  const matching = familyBuckets.filter(
     (bucket) => bucket.offsetUs < endUs
-      && bucket.offsetUs + 1_000_000 > startUs
-      && (bucket.familyCounts[familyName] ?? 0) > 0,
+      && bucket.offsetUs + 1_000_000 > startUs,
   );
   const occupiedBins = new Set(matching.map((bucket) => Math.floor((bucket.offsetUs - startUs) / resolutionUs)));
   const segments: TimelineSegment[] = [];
@@ -207,7 +215,7 @@ function familySegments(session: ParsedSession, familyName: string, startUs: num
     const start = Math.max(startUs, startUs + bin * resolutionUs);
     const end = Math.min(endUs, start + resolutionUs);
     const previous = segments.at(-1);
-    if (previous && start <= previous.endUs) previous.endUs = Math.max(previous.endUs, end);
+    if (previous && start - previous.endUs <= continuityGapUs) previous.endUs = Math.max(previous.endUs, end);
     else segments.push({ startUs: start, endUs: end });
   }
   return segments;
@@ -261,7 +269,7 @@ function initialBundleItems(session: ParsedSession, incident: IncidentProjection
 
 function StatusBars({ rssi }: { rssi: number | null }) {
   const quality = rssi == null ? "muted" : rssi < -90 ? "warn" : "good";
-  return <WifiHigh className={`status-bars ${quality}`} size={20} weight="bold" aria-label={`${quality} signal`} />;
+  return <CellSignalFull className={`status-bars ${quality}`} size={20} weight="fill" aria-label={`${quality} signal`} />;
 }
 
 interface LeftRailProps {
@@ -298,7 +306,7 @@ function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, onRese
           </div>
           <button className="capture-entry" type="button" onClick={onOpenCapture}>
             <Broadcast size={16} />
-            <span><strong>New live capture</strong><small>UDP or serial · local only</small></span>
+            <span><strong>Live capture</strong><small>UDP or serial · local only</small></span>
           </button>
         </section>
         <section className="rail-section active-links">
@@ -364,23 +372,27 @@ function TopBar(props: TopBarProps) {
   return (
     <header className="topbar">
       <div className="session-title">
-        <span>Session review <i>•</i> Recorded <i>•</i> {formatSessionDate(document.startedAt, document.displayTimeZone)}</span>
+        <span>Session review <i>•</i> Recorded</span>
         <div><h1 className="workspace-heading" tabIndex={-1}>{document.title}</h1><NotePencil className="decorative-icon" size={15} aria-hidden="true" /></div>
       </div>
       <div className="session-meta">
-        {formatSessionDate(document.startedAt, document.displayTimeZone)} <i>•</i> {formatClockOffset(document.startedAt, 0, document.displayTimeZone, false)} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, 0)} – {end} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, document.durationUs)} <i>•</i> {formatClockOffset(document.startedAt, props.replayOffsetUs, document.displayTimeZone)} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, props.replayOffsetUs)}
+        {formatSessionDate(document.startedAt, document.displayTimeZone)} <i>•</i> {formatClockOffset(document.startedAt, 0, document.displayTimeZone, false)} – {end} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, document.durationUs)} <i>•</i> {formatDurationUs(document.durationUs)}
       </div>
       <div className="header-actions">
         <button className="secondary-action capture-mobile" type="button" onClick={props.onOpenCapture}><Broadcast size={15} /> Capture</button>
         <button className="secondary-action open-replay-mobile" type="button" onClick={props.onOpenReplay}><UploadSimple size={15} /> Open replay</button>
-        <button className={`secondary-action replay-toggle ${props.replayStatus === "playing" ? "active" : ""}`} type="button" onClick={props.onTogglePlayback}>
-          {props.replayStatus === "playing" ? <Pause size={15} weight="fill" /> : <Play size={15} weight="fill" />}
-          {props.replayStatus === "playing" ? "Pause replay" : props.replayStatus === "ended" ? "Replay again" : "Play replay"}
-        </button>
-        <button className="icon-button replay-reset" type="button" onClick={props.onReset} aria-label="Reset replay"><ClockCounterClockwise size={16} /></button>
-        <label className="speed-control"><span className="visually-hidden">Replay speed</span><select value={props.replayRate} onChange={(event) => props.onRateChange(Number(event.target.value))}>{[0.5, 1, 2, 4, 8, 16].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select></label>
+        <div className="replay-action-group">
+          <button className={`secondary-action replay-toggle ${props.replayStatus === "playing" ? "active" : ""}`} type="button" onClick={props.onTogglePlayback}>
+            {props.replayStatus === "playing" ? <Pause size={15} weight="fill" /> : <Play size={15} weight="fill" />}
+            {props.replayStatus === "playing" ? "Pause replay" : props.replayStatus === "ended" ? "Replay again" : "Play replay"}
+          </button>
+          <label className="speed-control"><span className="visually-hidden">Replay speed</span><select value={props.replayRate} onChange={(event) => props.onRateChange(Number(event.target.value))}>{[0.5, 1, 2, 4, 8, 16].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select></label>
+        </div>
         <button className="secondary-action" type="button" onClick={props.onAddMarker}><BookmarkSimple size={16} /> Add marker</button>
-        <button className="primary-action" type="button" disabled={props.bundleDisabled} onClick={props.onCreateBundle}><DownloadSimple size={17} /> Create incident bundle</button>
+        <div className="primary-action-group">
+          <button className="primary-action" type="button" disabled={props.bundleDisabled} onClick={props.onCreateBundle}><DownloadSimple size={17} /> Create incident bundle</button>
+          <button className="primary-split" type="button" disabled={props.bundleDisabled} onClick={props.onCreateBundle} aria-label="Review incident bundle options"><CaretDown size={14} weight="bold" /></button>
+        </div>
       </div>
     </header>
   );
@@ -396,7 +408,13 @@ interface OverviewProps {
 }
 
 const OverviewSignalChart = memo(function OverviewSignalChart({ data }: { data: ReturnType<typeof downsampleBuckets> }) {
-  return <ResponsiveContainer width="100%" height="100%"><ComposedChart data={data} margin={{ top: 5, right: 2, bottom: 2, left: 2 }}><Bar dataKey="throughput" fill="#6398d6" opacity={0.78} isAnimationActive={false} /><Line type="linear" dataKey="rssi" stroke="#8bc879" strokeWidth={1.2} dot={false} connectNulls={false} isAnimationActive={false} /><Line type="linear" dataKey="loss" stroke="#ea6f66" strokeWidth={1} strokeDasharray="3 2" dot={false} isAnimationActive={false} /></ComposedChart></ResponsiveContainer>;
+  return (
+    <div className="overview-tracks" aria-hidden="true">
+      <div><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 2, right: 1, bottom: 1, left: 1 }}><Line type="linear" dataKey="rssi" stroke="#8bc879" strokeWidth={1.15} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>
+      <div><ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{ top: 1, right: 1, bottom: 0, left: 1 }}><Bar dataKey="throughput" fill="#6398d6" opacity={0.82} isAnimationActive={false} /></BarChart></ResponsiveContainer></div>
+      <div><ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{ top: 0, right: 1, bottom: 1, left: 1 }}><Bar dataKey="loss" fill="#ea6f66" opacity={0.92} isAnimationActive={false} /></BarChart></ResponsiveContainer></div>
+    </div>
+  );
 });
 
 function SessionOverview({ session, incident, markers, replayOffsetUs, onSeek, onSelectIncident }: OverviewProps) {
@@ -415,22 +433,25 @@ function SessionOverview({ session, incident, markers, replayOffsetUs, onSeek, o
   return (
     <section className="overview" aria-label="Session overview" aria-describedby="session-overview-summary">
       <p id="session-overview-summary" className="visually-hidden">{summary}</p>
-      <div className="overview-title"><span>Session overview</span><div><i className="legend green" /> Link quality <i className="legend blue" /> Throughput <i className="legend red" /> Dropped frames <i className="legend purple" /> Markers</div></div>
-      <div className="overview-chart">
-        <OverviewSignalChart data={data} />
-        <div className="overview-marker-strip" aria-hidden="true">{markers.map((marker) => <span key={marker.id} style={{ left: `${percentInRange(marker.offsetUs, 0, durationUs)}%` }} />)}</div>
-        {incident && <div className="overview-selection" style={{ left: `${selectionLeft}%`, width: `${selectionWidth}%` }} />}
-        {session.incidents.map((candidate) => <button key={candidate.id} className="overview-incident-hit" style={{ left: `${percentInRange(candidate.startUs, 0, durationUs)}%`, width: `${Math.max(1.2, percentInRange(candidate.endUs, 0, durationUs) - percentInRange(candidate.startUs, 0, durationUs))}%` }} onClick={() => onSelectIncident(candidate)} aria-label={`Select ${candidate.title}`} />)}
-        <div className="replay-cursor" style={{ left: `${percentInRange(replayOffsetUs, 0, durationUs)}%` }} aria-hidden="true" />
-        <input className="overview-scrubber" type="range" min={0} max={durationUs} step={1_000_000} value={replayOffsetUs} onChange={(event) => onSeek(Number(event.target.value))} aria-label="Replay position" aria-valuetext={`${formatClockOffset(session.document.startedAt, replayOffsetUs, session.document.displayTimeZone)} (${formatDurationUs(replayOffsetUs, true)} elapsed)`} aria-describedby="session-overview-summary" />
-        <div className="overview-times">{ticks.map((offset) => <span key={offset}>{formatClockOffset(session.document.startedAt, offset, session.document.displayTimeZone, false).slice(0, 5)}</span>)}</div>
+      <div className="overview-title"><span>Session overview</span></div>
+      <div className="overview-body">
+        <div className="overview-chart">
+          <OverviewSignalChart data={data} />
+          <div className="overview-marker-strip" aria-hidden="true">{markers.map((marker) => <span key={marker.id} style={{ left: `${percentInRange(marker.offsetUs, 0, durationUs)}%` }} />)}</div>
+          {incident && <div className="overview-selection" style={{ left: `${selectionLeft}%`, width: `${selectionWidth}%` }} />}
+          {session.incidents.map((candidate) => <button key={candidate.id} className="overview-incident-hit" style={{ left: `${percentInRange(candidate.startUs, 0, durationUs)}%`, width: `${Math.max(1.2, percentInRange(candidate.endUs, 0, durationUs) - percentInRange(candidate.startUs, 0, durationUs))}%` }} onClick={() => onSelectIncident(candidate)} aria-label={`Select ${candidate.title}`} />)}
+          <div className="replay-cursor" style={{ left: `${percentInRange(replayOffsetUs, 0, durationUs)}%` }} aria-hidden="true" />
+          <input className="overview-scrubber" type="range" min={0} max={durationUs} step={1_000_000} value={replayOffsetUs} onChange={(event) => onSeek(Number(event.target.value))} aria-label="Replay position" aria-valuetext={`${formatClockOffset(session.document.startedAt, replayOffsetUs, session.document.displayTimeZone)} (${formatDurationUs(replayOffsetUs, true)} elapsed)`} aria-describedby="session-overview-summary" />
+          <div className="overview-times">{ticks.map((offset) => <span key={offset}>{formatClockOffset(session.document.startedAt, offset, session.document.displayTimeZone, false).slice(0, 5)}</span>)}</div>
+        </div>
+        <div className="overview-legend" aria-label="Overview legend"><span><i className="legend green" /> Link quality</span><span><i className="legend blue" /> Throughput</span><span><i className="legend red" /> Dropped frames</span><span><i className="legend purple" /> Markers</span></div>
       </div>
     </section>
   );
 }
 
-function PlotLane({ label, unit, value, children, className = "" }: { label: string; unit?: string; value?: string; children: React.ReactNode; className?: string }) {
-  return <div className={`plot-lane ${className}`} role="group" aria-label={unit ? `${label}, ${unit}` : label}><div className="lane-label"><span><strong>{label}</strong>{unit && <small>{unit}</small>}</span></div><div className="lane-plot">{children}</div>{value && <span className={`lane-value ${value === "Out of view" ? "out-of-view" : ""}`}>{value}</span>}</div>;
+function PlotLane({ label, unit, value, scale, children, className = "" }: { label: string; unit?: string; value?: string; scale?: string[]; children: React.ReactNode; className?: string }) {
+  return <div className={`plot-lane ${className}`} role="group" aria-label={unit ? `${label}, ${unit}` : label}><div className="lane-label"><CaretDown size={10} weight="fill" aria-hidden="true" /><span><strong>{label}</strong>{unit && <small>{unit}{scale && value && <> <i>•</i> {value}</>}</small>}</span></div><div className="lane-plot">{children}</div>{scale ? <span className="lane-scale" aria-hidden="true">{scale.map((tick) => <i key={tick}>{tick}</i>)}</span> : value && <span className={`lane-value ${value === "Out of view" ? "out-of-view" : ""}`}>{value}</span>}</div>;
 }
 
 const SignalChart = memo(function SignalChart({ data, dataKey, color, label, bar = false }: { data: ReturnType<typeof downsampleBuckets>; dataKey: "rssi" | "throughput" | "loss" | "lat" | "lon" | "alt"; color: string; label: string; bar?: boolean }) {
@@ -438,7 +459,7 @@ const SignalChart = memo(function SignalChart({ data, dataKey, color, label, bar
   const summary = values.length > 0
     ? `${label} chart, ${values.length} samples, minimum ${Math.min(...values).toFixed(2)}, maximum ${Math.max(...values).toFixed(2)}.`
     : `${label} chart, no measured samples in this view.`;
-  return <div className="signal-chart" role="img" aria-label={summary}>{bar ? <ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{ top: 3, right: 0, bottom: 2, left: 0 }}><CartesianGrid vertical horizontal={false} stroke="#242824" /><Bar dataKey={dataKey} fill={color} isAnimationActive={false} /></BarChart></ResponsiveContainer> : <ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 5, right: 0, bottom: 5, left: 0 }}><CartesianGrid vertical horizontal={false} stroke="#242824" /><Line type="linear" dataKey={dataKey} stroke={color} strokeWidth={1.3} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer>}</div>;
+  return <div className="signal-chart" role="img" aria-label={summary}>{bar ? <ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{ top: 3, right: 0, bottom: 2, left: 0 }}><Bar dataKey={dataKey} fill={color} isAnimationActive={false} /></BarChart></ResponsiveContainer> : <ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 5, right: 0, bottom: 5, left: 0 }}><Line type="linear" dataKey={dataKey} stroke={color} strokeWidth={1.3} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer>}</div>;
 });
 
 interface FamilyTrackRow {
@@ -449,7 +470,7 @@ interface FamilyTrackRow {
 }
 
 const PacketFamilyTrack = memo(function PacketFamilyTrack({ rows, startUs, endUs }: { rows: FamilyTrackRow[]; startUs: number; endUs: number }) {
-  return <div className="family-list">{rows.map((family) => <div className="family-row" key={family.id}><span><i style={{ background: family.color }} />{family.label}</span><div className="family-segments" aria-label={`${family.label}: ${family.segments.length} observed chart interval${family.segments.length === 1 ? "" : "s"}`}>{family.segments.map((segment) => <b key={`${segment.startUs}-${segment.endUs}`} style={{ background: family.color, left: `${percentInRange(segment.startUs, startUs, endUs)}%`, width: `${percentInRange(segment.endUs, startUs, endUs) - percentInRange(segment.startUs, startUs, endUs)}%` }} />)}</div></div>)}</div>;
+  return <div className="family-list">{rows.map((family) => <div className="family-row" key={family.id}><span><i style={{ background: family.color }} />{family.label}</span><div className="family-segments" aria-label={`${family.label}: ${family.segments.length} cadence-presence interval${family.segments.length === 1 ? "" : "s"}`}>{family.segments.map((segment) => <b key={`${segment.startUs}-${segment.endUs}`} style={{ background: family.color, left: `${percentInRange(segment.startUs, startUs, endUs)}%`, width: `${percentInRange(segment.endUs, startUs, endUs) - percentInRange(segment.startUs, startUs, endUs)}%` }} />)}</div></div>)}</div>;
 });
 
 interface TimelineProps {
@@ -467,12 +488,19 @@ function MissionTimeline({ session, incident, markers, replayOffsetUs, onSeek }:
   const current = playheadInView ? valueAtOffset(session.buckets, replayOffsetUs) : null;
   const selectionLeft = percentInRange(incident.startUs, view.startUs, view.endUs);
   const selectionWidth = percentInRange(incident.endUs, view.startUs, view.endUs) - selectionLeft;
-  const ticks = useMemo(() => Array.from({ length: 7 }, (_, index) => view.startUs + ((view.endUs - view.startUs) * index) / 6), [view.endUs, view.startUs]);
+  const ticks = useMemo(() => {
+    const sessionStartEpochUs = Date.parse(session.document.startedAt) * 1_000;
+    const firstMinuteEpochUs = Math.ceil((sessionStartEpochUs + view.startUs) / 60_000_000) * 60_000_000;
+    return Array.from({ length: 7 }, (_, index) => firstMinuteEpochUs + index * 60_000_000 - sessionStartEpochUs)
+      .filter((offsetUs) => offsetUs >= view.startUs && offsetUs < view.endUs);
+  }, [session.document.startedAt, view.endUs, view.startUs]);
   const visibleDiagnostics = useMemo(() => session.diagnostics.filter((event) => event.startUs >= view.startUs && event.startUs < view.endUs), [session.diagnostics, view.endUs, view.startUs]);
   const diagnosticGroups = useMemo(() => groupTimelineDiagnostics(visibleDiagnostics, view.startUs, view.endUs), [visibleDiagnostics, view.endUs, view.startUs]);
   const visibleMarkers = useMemo(() => markers.filter((marker) => marker.offsetUs >= view.startUs && marker.offsetUs < view.endUs), [markers, view.endUs, view.startUs]);
   const decoderStateSegments = useMemo(() => decoderSegments(session.diagnostics, view.startUs, view.endUs), [session.diagnostics, view.endUs, view.startUs]);
   const familyRows = useMemo(() => FAMILY_ROWS.map((family) => ({ ...family, segments: familySegments(session, family.id, view.startUs, view.endUs) })), [session, view.endUs, view.startUs]);
+  const throughputScaleMax = Math.max(2, Math.ceil(Math.max(...data.map((point) => point.throughput), 0) / 2) * 2);
+  const lossScaleMax = Math.max(5, Math.ceil(Math.max(...data.map((point) => point.loss), 0) / 5) * 5);
   const clock = incidentClock(session, incident);
   const replayLeft = percentInRange(replayOffsetUs, view.startUs, view.endUs);
   const viewZoneStart = timeZoneAbbreviation(session.document.startedAt, session.document.displayTimeZone, view.startUs);
@@ -481,14 +509,14 @@ function MissionTimeline({ session, incident, markers, replayOffsetUs, onSeek }:
 
   return (
     <section className="timeline-panel" aria-label="Mission telemetry timeline">
-      <div className="time-ruler"><span className="time-zone" aria-label={`Time zone ${session.document.displayTimeZone}`}>Time ({viewZoneLabel})</span><div className="time-buttons">{ticks.map((offset) => { const active = replayOffsetUs >= offset && replayOffsetUs < offset + (view.endUs - view.startUs) / 6; return <button key={offset} type="button" className={active ? "active" : ""} aria-current={active ? "time" : undefined} onClick={() => onSeek(offset)}>{formatClockOffset(session.document.startedAt, offset, session.document.displayTimeZone, false).slice(0, 5)}</button>; })}</div></div>
+      <div className="time-ruler"><span className="time-zone" aria-label={`Time zone ${session.document.displayTimeZone}`}><small>Time ({viewZoneLabel})</small><strong>{formatClockOffset(session.document.startedAt, replayOffsetUs, session.document.displayTimeZone, false).slice(0, 5)}</strong></span><div className="time-buttons">{ticks.map((offset) => { const active = replayOffsetUs >= offset && replayOffsetUs < offset + 60_000_000; return <button key={offset} type="button" style={{ left: `${percentInRange(offset, view.startUs, view.endUs)}%` }} className={active ? "active" : ""} aria-current={active ? "time" : undefined} onClick={() => onSeek(offset)}>{formatClockOffset(session.document.startedAt, offset, session.document.displayTimeZone, false).slice(0, 5)}</button>; })}</div></div>
       <div className="timeline-stack">
         <div className="shared-grid" aria-hidden="true" />
-        <div className="selection-band" style={{ left: `calc(var(--label-gutter) + (100% - var(--label-gutter)) * ${selectionLeft / 100})`, width: `calc((100% - var(--label-gutter)) * ${selectionWidth / 100})` }}><button className="selection-chip" type="button" onClick={() => onSeek(incident.startUs)}><BookmarkSimple size={12} weight="fill" /> {clock.start} <span>–</span> {clock.end} <small>({clock.duration})</small></button></div>
-        {replayOffsetUs >= view.startUs && replayOffsetUs <= view.endUs && <div className="timeline-cursor" style={{ left: `calc(var(--label-gutter) + (100% - var(--label-gutter)) * ${replayLeft / 100})` }} aria-hidden="true" />}
-        <PlotLane label="Connection" unit="RSSI (dBm)" value={playheadInView ? finiteOrDash(current?.rssiDbm ?? null, 0) : "Out of view"}><SignalChart data={data} dataKey="rssi" color="#8bc879" label="Connection RSSI" /></PlotLane>
-        <PlotLane label="Throughput" unit="pkt/s (1s avg)" value={playheadInView ? finiteOrDash(current?.throughput ?? null, 0) : "Out of view"}><SignalChart data={data} dataKey="throughput" color="#6398d6" label="Packet throughput" bar /></PlotLane>
-        <PlotLane label="Packet loss" unit="drop % (1s avg)" value={playheadInView ? finiteOrDash(current?.lossPct ?? null, 2, "%") : "Out of view"}><SignalChart data={data} dataKey="loss" color="#ea6f66" label="Packet loss" bar /></PlotLane>
+        <div className="selection-band" style={{ left: `calc(var(--label-gutter) + (100% - var(--label-gutter) - var(--scale-gutter)) * ${selectionLeft / 100})`, width: `calc((100% - var(--label-gutter) - var(--scale-gutter)) * ${selectionWidth / 100})` }}><button className="selection-chip" type="button" onClick={() => onSeek(incident.startUs)}><BookmarkSimple size={12} weight="fill" /> {clock.start} <span>–</span> {clock.end} <small>({clock.duration})</small></button></div>
+        {replayOffsetUs >= view.startUs && replayOffsetUs <= view.endUs && <div className="timeline-cursor" style={{ left: `calc(var(--label-gutter) + (100% - var(--label-gutter) - var(--scale-gutter)) * ${replayLeft / 100})` }} aria-hidden="true" />}
+        <PlotLane label="Connection" unit="RSSI (dBm)" value={playheadInView ? finiteOrDash(current?.rssiDbm ?? null, 0) : "Out of view"} scale={["−40", "−80", "−120"]}><SignalChart data={data} dataKey="rssi" color="#8bc879" label="Connection RSSI" /></PlotLane>
+        <PlotLane label="Throughput" unit="pkt/s (1s avg)" value={playheadInView ? finiteOrDash(current?.throughput ?? null, 0) : "Out of view"} scale={[String(throughputScaleMax), String(throughputScaleMax / 2), "0"]}><SignalChart data={data} dataKey="throughput" color="#6398d6" label="Packet throughput" bar /></PlotLane>
+        <PlotLane label="Packet loss" unit="drop % (1s avg)" value={playheadInView ? finiteOrDash(current?.lossPct ?? null, 2, "%") : "Out of view"} scale={[`${lossScaleMax}%`, `${lossScaleMax / 2}%`, "0%"]}><SignalChart data={data} dataKey="loss" color="#ea6f66" label="Packet loss" bar /></PlotLane>
         <PlotLane label="Packet families" className="families-lane"><PacketFamilyTrack rows={familyRows} startUs={view.startUs} endUs={view.endUs} /></PlotLane>
         <PlotLane label="Decoder" unit={session.document.decoder.id} className="event-lane"><div className="decoder-track">{decoderStateSegments.map((segment) => { const left = percentInRange(segment.startUs, view.startUs, view.endUs); const width = percentInRange(segment.endUs, view.startUs, view.endUs) - left; const label = segment.state === "locked" ? `Locked ${formatDecoderRevision(session.document.decoder.revision)}` : "Resync search"; return <span key={`${segment.state}-${segment.startUs}`} className={`decoder-segment ${segment.state}`} style={{ left: `${left}%`, width: `${width}%` }} aria-label={`${label} from ${formatClockOffset(session.document.startedAt, segment.startUs, session.document.displayTimeZone)} to ${formatClockOffset(session.document.startedAt, segment.endUs, session.document.displayTimeZone)}`} title={label}>{width >= 9 ? label : <span className="visually-hidden">{label}</span>}{segment.state === "resync" && width >= 16 && <small>invalid frames retained</small>}</span>; })}</div></PlotLane>
         <PlotLane label="Diagnostics" className="event-lane"><div className="event-track diagnostics-track">{diagnosticGroups.map((group) => <button key={group.first.id} type="button" style={{ left: `${percentInRange(group.first.startUs, view.startUs, view.endUs)}%` }} onClick={() => onSeek(group.first.startUs)} aria-label={`${group.count} ${group.severity} diagnostic${group.count === 1 ? "" : "s"}; first: ${group.first.title}, ${formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone)}`}>{shortDiagnosticTitle(group.first)}{group.count > 1 && ` +${group.count - 1}`}<small>{formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone, false)}</small></button>)}</div></PlotLane>
@@ -506,6 +534,27 @@ function diagnosticTone(event: DiagnosticEvent): "amber" | "red" | "green" {
   return event.severity === "critical" ? "red" : "amber";
 }
 
+const NARRATIVE_SUMMARY_TYPES: DiagnosticEvent["type"][] = [
+  "link-degraded",
+  "crc-failure",
+  "decoder-resync",
+  "loss-burst",
+  "recovery",
+  "decoder-locked",
+];
+
+function summarizeNarrative(events: DiagnosticEvent[]): DiagnosticEvent[] {
+  const selected = NARRATIVE_SUMMARY_TYPES.flatMap((type) => {
+    const event = events.find((candidate) => candidate.type === type);
+    return event ? [event] : [];
+  });
+  for (const event of events) {
+    if (selected.length >= 6) break;
+    if (!selected.some((candidate) => candidate.id === event.id)) selected.push(event);
+  }
+  return selected.sort((left, right) => left.startUs - right.startUs);
+}
+
 interface IncidentPanelProps {
   session: ParsedSession;
   incident: IncidentProjection | null;
@@ -520,8 +569,8 @@ interface IncidentPanelProps {
 
 function IncidentPanel(props: IncidentPanelProps) {
   const { incident, session } = props;
-  const [narrativeLimit, setNarrativeLimit] = useState(50);
-  useEffect(() => { setNarrativeLimit(50); }, [incident?.id]);
+  const [narrativeLimit, setNarrativeLimit] = useState(6);
+  useEffect(() => { setNarrativeLimit(6); }, [incident?.id]);
   if (!incident) {
     const firstIncident = session.incidents[0];
     return <aside className="incident-panel empty-incident" aria-label="Incident details"><div className="incident-heading"><div><BookmarkSimple size={14} /><span>Incident selection</span></div></div><div className="empty-state"><ClockCounterClockwise size={24} /><h2>{firstIncident ? "No incident selected" : "No incident ranges"}</h2><p>{firstIncident ? "Choose an incident from the session overview to inspect decoded evidence and prepare a handoff bundle." : "This replay does not declare any incident presets. Playback, decoded values, markers, and the session overview remain available."}</p>{firstIncident && <button className="secondary-action" type="button" onClick={() => props.onSelectIncident(firstIncident.id)}>Select first incident</button>}</div></aside>;
@@ -529,6 +578,9 @@ function IncidentPanel(props: IncidentPanelProps) {
   const clock = incidentClock(session, incident);
   const stats = incident.stats;
   const narrative = incident.diagnostics;
+  const narrativeSummary = summarizeNarrative(narrative);
+  const showingAllNarrative = narrativeLimit > 6;
+  const displayedNarrative = showingAllNarrative ? narrative : narrativeSummary;
   const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
@@ -548,7 +600,7 @@ function IncidentPanel(props: IncidentPanelProps) {
       <div className="incident-heading"><div><BookmarkSimple size={14} weight="fill" /><span>Incident selection</span></div><button className="icon-button" type="button" aria-label="Clear incident" onClick={props.onClear}><X size={15} /></button></div>
       <div className="incident-range"><select className="incident-switcher" value={incident.id} onChange={(event) => props.onSelectIncident(event.target.value)} aria-label="Selected incident">{session.incidents.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</select><strong>{clock.start} – {clock.end}</strong><span>{clock.duration}</span></div>
       <div className="incident-tabs" role="tablist" aria-label="Incident information" onKeyDown={handleTabKeyDown}>{INCIDENT_TABS.map((tab) => <button id={`incident-tab-${tab}`} aria-controls={`incident-panel-${tab}`} aria-selected={props.activeTab === tab} role="tab" tabIndex={props.activeTab === tab ? 0 : -1} type="button" key={tab} className={props.activeTab === tab ? "active" : ""} onClick={() => props.onTabChange(tab)}>{tab}</button>)}</div>
-      {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p>{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{narrative.slice(0, narrativeLimit).map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong>{event.title}<span className="visually-hidden"> — {event.severity} severity</span></strong><p>{event.description}</p></div></li>)}</ol>{narrativeLimit < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit((current) => Math.min(narrative.length, current + 50))}>Show next {Math.min(50, narrative.length - narrativeLimit)} events <small>{narrativeLimit} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
+      {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p className="visually-hidden">{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{displayedNarrative.map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong>{event.title}<span className="visually-hidden"> — {event.severity} severity</span></strong><p>{event.description}</p></div></li>)}</ol>{narrativeSummary.length < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit(showingAllNarrative ? 6 : narrative.length)}>{showingAllNarrative ? "Show six key events" : `Show all ${narrative.length} events`} <small>{displayedNarrative.length} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
       {props.activeTab === "details" && <dl className="details-view" id="incident-panel-details" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-details"><div><dt>Source</dt><dd>{formatSource(session)}</dd></div><div><dt>Decoder</dt><dd>{session.document.decoder.id} {formatDecoderRevision(session.document.decoder.revision)}</dd></div><div><dt>Frames in range</dt><dd>{stats.receivedFrames.toLocaleString()}</dd></div><div><dt>Missing</dt><dd className="danger">{stats.missingFrames}</dd></div><div><dt>Loss</dt><dd className="danger">{finiteOrDash(stats.lossPct, 2, "%")}</dd></div><div><dt>Lowest RSSI</dt><dd>{finiteOrDash(stats.lowestRssiDbm, 1, " dBm")}</dd></div><div><dt>Peak jitter</dt><dd>{finiteOrDash(stats.peakJitterMs, 1, " ms")}</dd></div><div><dt>Complete packets</dt><dd>{stats.completePackets.toLocaleString()}</dd></div></dl>}
       {props.activeTab === "stats" && <div className="stats-view" id="incident-panel-stats" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-stats"><StatBar label="Link availability" value={stats.linkAvailabilityPct} /><StatBar label="Decode confidence" value={stats.decodeConfidencePct} /><StatBar label="Delivery" value={stats.lossPct == null ? null : 100 - stats.lossPct} /></div>}
       <div className="operator-notes"><div><span>Session-wide operator note</span><NotePencil size={14} aria-hidden="true" /></div><textarea maxLength={2000} value={props.note} onChange={(event) => props.onNoteChange(event.target.value)} aria-label="Session-wide operator note" /><small className={!props.workspacePersisted ? "storage-warning" : ""}>{props.workspacePersisted ? "Stored in this browser only; included with any range when selected for export" : "Browser storage is unavailable; edits remain in memory until this page closes"}</small></div>
@@ -736,12 +788,16 @@ function Toast({ message }: { message: string }) {
 
 function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSession; onOpenReplay: () => void; onOpenCapture: () => void }) {
   const firstIncident = session.incidents.find((candidate) => candidate.id === "fade") ?? session.incidents[0] ?? null;
-  const replay = useReplay({ durationUs: session.document.durationUs, initialOffsetUs: firstIncident?.startUs ?? 0, initialRate: 1 });
+  const initialReplayOffsetUs = firstIncident ? incidentViewRange(session, firstIncident).startUs : 0;
+  const replay = useReplay({ durationUs: session.document.durationUs, initialOffsetUs: initialReplayOffsetUs, initialRate: 1 });
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(firstIncident?.id ?? null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("narrative");
-  const workspaceIdentity = useMemo(() => sessionWorkspaceIdentity(session), [session]);
-  const stored = useMemo(() => loadSessionWorkspace(workspaceIdentity), [workspaceIdentity]);
   const isBundledDemo = isBundledDemoSession(session);
+  const workspaceIdentity = useMemo(() => {
+    const identity = sessionWorkspaceIdentity(session);
+    return isBundledDemo ? `${identity}:${BUNDLED_DEMO_WORKSPACE_REVISION}` : identity;
+  }, [isBundledDemo, session]);
+  const stored = useMemo(() => loadSessionWorkspace(workspaceIdentity), [workspaceIdentity]);
   const [markers, setMarkers] = useState<Marker[]>(() => stored.updatedAt == null && isBundledDemo ? createSeedMarkers(session) : stored.markers);
   const [note, setNote] = useState(() => stored.updatedAt == null && isBundledDemo ? DEFAULT_NOTE : stored.notes);
   const [markerDialogOpen, setMarkerDialogOpen] = useState(false);
