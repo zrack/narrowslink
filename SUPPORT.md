@@ -15,7 +15,7 @@ Use the structured bug form for a reproducible product defect and the feature fo
 
 GitHub issues are public when this repository is public. Do not post credentials, operational payloads, personal data, precise locations, device identifiers, proprietary protocols, or evidence bundles from real sessions. Prefer the bundled fixture or a minimal synthetic sample and document how it was generated. Sanitizing a capture does not replace authorization to share it.
 
-If a problem cannot be demonstrated without sensitive data, describe its structure and observable failure without attaching the source. Security vulnerabilities belong in [GitHub’s private vulnerability reporting flow](https://github.com/zrack/narrowslink/security/advisories/new), not in support or bug discussions.
+If a problem cannot be demonstrated without sensitive data, describe its structure and observable failure without attaching the source. Security vulnerabilities must follow [SECURITY.md](SECURITY.md), not support or bug discussions.
 
 ## Scope
 
