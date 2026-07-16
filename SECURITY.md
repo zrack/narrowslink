@@ -11,13 +11,11 @@ NarrowsLink is a pre-1.0 project under active development. Security fixes are ma
 
 ## Report a vulnerability privately
 
-Do not open a public issue for a suspected vulnerability. Use GitHub's private vulnerability reporting flow instead:
+Do not open a public issue for a suspected vulnerability.
 
-1. Open the repository's [Security advisories](https://github.com/zrack/narrowslink/security/advisories) page.
-2. Select **Report a vulnerability**.
-3. Describe the affected version or commit, the impact, and the minimum steps needed to reproduce the issue.
+While this repository is private, authorized collaborators should open a draft in the repository's [Security advisories](https://github.com/zrack/narrowslink/security/advisories) area and coordinate with the owner there. Describe the affected version or commit, the impact, and the minimum steps needed to reproduce the issue.
 
-If the private reporting option is unavailable, do not disclose the vulnerability publicly. Contact the repository owner through their GitHub profile and ask for a private reporting channel without including sensitive technical details.
+If you cannot access the repository or its advisory area, contact the repository owner through their [GitHub profile](https://github.com/zrack) and ask for a private reporting channel without including sensitive technical details. Before this repository accepts reports from the public, the owner must enable GitHub private vulnerability reporting or publish another verified private contact method.
 
 The maintainer will acknowledge reports as soon as practical, assess their severity and reproducibility, and coordinate remediation and disclosure through the private advisory. Response and fix timing depends on the issue's impact, complexity, and maintainer availability; this project does not currently offer a response-time SLA.
 

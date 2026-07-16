@@ -14,7 +14,7 @@ Harassment, threats, discriminatory language, sexualized attention, deliberate e
 
 ## Reporting and response
 
-For ordinary project concerns, contact the repository owner privately through their GitHub profile. Report security vulnerabilities through [GitHub’s private vulnerability reporting flow](https://github.com/zrack/narrowslink/security/advisories/new), not in a public issue.
+For ordinary project concerns, contact the repository owner privately through their GitHub profile. Report security vulnerabilities by following [SECURITY.md](SECURITY.md), not in a public issue.
 
 Maintainers may edit or remove content, limit participation, or ban contributors when needed to protect the project and its community. Reports will be evaluated on their evidence and impact, with information shared only as needed to resolve the concern. Good-faith reporters will not face retaliation.
 
