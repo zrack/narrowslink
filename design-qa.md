@@ -2,14 +2,22 @@
 
 ## Comparison target
 
-- Source visual truth: `docs/design/narrowslink-mission-timeline-source.png`
-- Final browser-rendered implementation: `docs/design/implementation-final-production.png`
-- Full source/implementation comparison: `docs/design/comparison-production-final.png`
-- Focused comparison: `docs/design/comparison-production-focused.png`
-- Responsive implementation: `docs/design/implementation-functional-mobile.png`
+- Source visual truth: [mission-timeline source](docs/design/narrowslink-mission-timeline-source.png)
+- Final browser-rendered implementation: [desktop implementation](docs/design/implementation-final-production.png)
+- Full source/implementation comparison: [full comparison](docs/design/comparison-production-final.png)
+- Focused comparison: [focused comparison](docs/design/comparison-production-focused.png)
+- Responsive implementation: [responsive implementation](docs/design/implementation-functional-mobile.png)
 - Desktop viewport: `1487 × 1058`, matching the source image.
 - Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`.
 - State: bundled Harbor relay replay; replay paused at the source-like `23:38` view start; link-fade incident selected; Narrative tab; all five evidence groups selected; deterministic default marker and operator note present.
+
+### Accepted desktop comparison
+
+[![Approved source beside the final NarrowsLink implementation](docs/design/comparison-production-final.png)](docs/design/comparison-production-final.png)
+
+### Accepted responsive result
+
+[![NarrowsLink responsive implementation at 390 by 844 pixels](docs/design/implementation-functional-mobile.png)](docs/design/implementation-functional-mobile.png)
 
 ## Final findings
 
@@ -26,7 +34,7 @@ Four visible differences are intentional and accepted product/data constraints:
 
 ## Focused comparison evidence
 
-- Timeline: the final comparison confirms equivalent label and scale gutters, minute-aligned ticks, connection/throughput/loss order, five packet-family bands, extended decoder-resync state, diagnostic and marker lanes, geographic traces, and selected-range treatment.
+- Timeline: the final comparison confirms equivalent label and scale gutters, minute-aligned ticks, connection/received-packet-rate/inferred-missing-frame order (labeled Connection, Throughput, and Loss in the UI), five packet-family bands, extended decoder-resync state, diagnostic and marker lanes, geographic traces, and selected-range treatment.
 - Incident rail: the final comparison confirms equivalent range summary, selector, semantic tabs, compact chronological narrative, severity dots, and session-wide operator-note region.
 - Evidence workspace: the final comparison confirms equivalent summary-to-table hierarchy, five inclusion rows, operator context, estimated size/group count, and source-aligned primary export placement.
 - Source rail and header: widths, dividers, title/meta hierarchy, compact replay actions, source navigation, and capture entry align with the prototype while remaining truthful to the one loaded replay.
@@ -40,16 +48,16 @@ Four visible differences are intentional and accepted product/data constraints:
 ### Pass 1 — composition and visual-system alignment
 
 - Fixes: aligned the three-column shell, warmer palette, compact command geometry, independent overview bands, shared timeline grid, family-lane anatomy, six-event narrative, and evidence-panel proportions.
-- Remaining findings: the fixture produced overly flat throughput, a very short resynchronization state, and an artificial overview spike.
+- Remaining findings: the fixture produced an overly flat received packet rate, a very short resynchronization state, and an artificial overview spike.
 
 ### Pass 2 — evidence-backed replay shaping
 
-- Fixes: regenerated the deterministic fixture with varied cadence, a real fade, packet loss, malformed-frame retention, and a longer decoder-resynchronization sequence; added pure-domain assertions for those properties.
+- Fixes: regenerated the deterministic fixture with varied cadence, a real fade, inferred missing-frame episodes, malformed-frame retention, and a longer decoder-resynchronization sequence; added pure-domain assertions for those properties.
 - Remaining finding: global cadence modulation still created a visually artificial overview peak.
 
 ### Pass 3 — final axis and fixture alignment
 
-- Evidence: `docs/design/implementation-final-production.png`, `docs/design/comparison-production-final.png`, `docs/design/comparison-production-focused.png`, and `docs/design/implementation-functional-mobile.png`.
+- Evidence: [desktop implementation](docs/design/implementation-final-production.png), [full comparison](docs/design/comparison-production-final.png), [focused comparison](docs/design/comparison-production-focused.png), and [responsive implementation](docs/design/implementation-functional-mobile.png).
 - Fixes: removed the artificial fixture spike, aligned the initial replay window and minute ticks, reserved the right scale gutter, tuned chart domains and incident extent, and corrected compact family-lane label spacing.
 - Result: no actionable P0, P1, or P2 differences remain.
 
@@ -57,7 +65,7 @@ Four visible differences are intentional and accepted product/data constraints:
 
 - Fonts and typography: bundled Inter carries interface copy and IBM Plex Mono carries times, values, and protocol metadata. Uppercase micro-labels, numeric alignment, weight, and dense line heights were checked in the focused comparison.
 - Spacing and layout rhythm: the viewport, rail and incident-panel widths, header and overview heights, label/scale gutters, lane baselines, evidence proportions, dividers, and square corners were compared against the source at identical dimensions.
-- Colors and visual tokens: warm near-black surfaces, muted gray structure, amber incident selection, green link/position data, blue throughput, red loss, purple markers, cyan packet-family data, and pale-blue primary actions preserve the source semantics.
+- Colors and visual tokens: warm near-black surfaces, muted gray structure, amber incident selection, green link/position data, blue received packet rate, red inferred missing frames, purple markers, cyan packet-family data, and pale-blue primary actions preserve the source semantics.
 - Image and icon fidelity: the repository's NarrowsLink mark is reused as a real image asset. The source contains no photography or illustration. Recharts renders data plots and Phosphor supplies the icon family; no placeholder art, emoji, or improvised CSS/SVG illustration was introduced.
 - Copy and content: session metadata, diagnostics, units, decoder state, bundle contents, and privacy language remain coherent and derived from the same replay pipeline instead of reproducing contradictory prototype numbers.
 - Responsiveness: at `390 × 844`, the page has no horizontal body overflow, labels no longer collide, the command strip remains reachable, the telemetry surface uses its deliberate internal scroller, and panels preserve the desktop hierarchy.

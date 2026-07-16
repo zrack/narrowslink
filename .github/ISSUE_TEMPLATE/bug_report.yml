@@ -1,0 +1,122 @@
+name: Bug report
+description: Report a reproducible problem in capture, replay, investigation, or export.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve NarrowsLink. Do not attach operational telemetry, credentials, device identifiers, precise locations, or other sensitive evidence. Prefer the bundled fixture or a minimal synthetic sample. For a security vulnerability, use the private reporting link in the issue chooser instead.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and its operator impact.
+      placeholder: The replay playhead stopped while decoded values continued to advance, making the incident range unreliable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: State the expected behavior or invariant.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: workflow_path
+    attributes:
+      label: Workflow path
+      description: Where did the problem occur?
+      options:
+        - Live UDP capture
+        - Live serial capture
+        - Bundled replay fixture
+        - User-imported session
+        - Session replay
+        - Incident selection or investigation
+        - Evidence bundle preview or export
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source_type
+    attributes:
+      label: Telemetry source
+      description: Select the source used to reproduce the problem.
+      options:
+        - Bundled synthetic fixture
+        - Synthetic UDP stream
+        - Synthetic serial stream
+        - Sanitized imported file
+        - Operational UDP stream (do not attach)
+        - Operational serial stream (do not attach)
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include NarrowsLink commit or version, operating system, browser and version, and relevant hardware or bridge details. Redact hostnames and identifiers.
+      placeholder: |
+        NarrowsLink commit: abc1234
+        OS: macOS 15.5
+        Browser: Chrome 138
+        Bridge/device: local capture bridge; synthetic source
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Sanitized reproduction steps
+      description: Give the smallest deterministic sequence that reproduces the issue. Use synthetic values and relative time offsets where possible.
+      placeholder: |
+        1. Load the bundled Harbor Relay fixture.
+        2. Seek to +05:10.000.
+        3. Select [startUs, endUs) from ... to ....
+        4. Choose Review bundle.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste concise console output, validation errors, hashes, or schema versions. Remove payloads, secrets, device IDs, locations, and filesystem usernames. Do not upload an evidence bundle from an operational session.
+      render: shell
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: Minimal synthetic sample
+      description: If needed, link to or paste a newly generated, non-sensitive fixture that demonstrates the problem. Explain how it was generated; never substitute redaction for consent.
+
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Affected guarantees
+      description: Select every area that may be affected.
+      options:
+        - label: Replay clock or time alignment
+        - label: Raw-record immutability or validation
+        - label: Decoder output or malformed-frame diagnostics
+        - label: Half-open incident range semantics
+        - label: Evidence contents, integrity, or verification
+        - label: Compatibility with existing sessions or fixtures
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I have not included secrets, personal data, operational payloads, precise locations, device identifiers, or other sensitive telemetry.
+          required: true
+        - label: I searched existing issues and reproduced this on the latest `main` or explained above why I could not.
+          required: true
