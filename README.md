@@ -8,12 +8,26 @@ The application is local-first. UDP ingest uses a local Node.js bridge whose tok
 
 ## Current capabilities
 
-- Capture unicast or multicast UDP datagrams through the token-protected local bridge, or record NSL-01 serial input directly through Web Serial. Stopping a source saves a versioned `.nlsession` and reopens that exact document for replay.
+- Capture unicast or multicast UDP datagrams through the token-protected local bridge, or record NSL-01 serial input directly through Web Serial. Stopping a source saves a versioned `.nlsession` and opens the validated finalized capture for replay.
 - Load the bundled demonstration or a local version 1 or 2 session through the same validation, decoding, diagnostics, incident, and export pipeline. Legacy v1 evidence remains unchanged and carries an explicit unknown capture-integrity assessment.
 - Decode the NSL-01 envelope, CRC-16/CCITT-FALSE integrity, and Heartbeat, Power, Attitude, Position, and Thermal families while retaining malformed, partial, checksum-failed, and unknown frames as inspectable diagnostics.
 - Correlate connection health, packet cadence, decoder state, diagnostics, markers, and decoded signals on one monotonic microsecond replay clock.
-- Create, rename, classify, resize, and precisely edit operator-owned half-open incident ranges; markers, ranges, and notes persist per session without mutating the source replay.
+- Create, rename, classify, resize, and precisely edit operator-owned half-open incident ranges; markers, ranges, and notes persist per session when browser storage is available, without mutating the source replay.
 - Export the selected range as a local `.nlb` archive with an exact manifest, mandatory transport events and capture-integrity receipt, and a SHA-256 checksum for every emitted artifact.
+
+## Operator use cases
+
+NarrowsLink currently supports five end-to-end operator outcomes:
+
+| ID | Use case | Primary output |
+| --- | --- | --- |
+| UC-001 | Record live field telemetry | Version 2 `.nlsession` |
+| UC-002 | Investigate a recorded telemetry fault | Exact operator-authored incident range |
+| UC-003 | Audit capture-path integrity | Integrity assessment and transport evidence |
+| UC-004 | Run decoder and session regressions | Repeatable decoded and diagnostic results |
+| UC-005 | Hand off a verifiable incident bundle | Checksummed `.nlb` archive |
+
+See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, current constraints, and implementation evidence.
 
 ## Typical incident workflow
 
