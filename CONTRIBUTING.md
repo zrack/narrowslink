@@ -2,6 +2,29 @@
 
 NarrowsLink is a local-first telemetry capture, replay, incident-analysis, and evidence-export application. Contributions should preserve timing semantics, source provenance, visible failure states, deterministic derivation, and the ability to reproduce an incident from exported evidence. Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md); use the [support guide](SUPPORT.md) for usage questions and the [security policy](SECURITY.md) for private vulnerability reporting.
 
+## Documentation ownership
+
+| Document | Owns |
+| --- | --- |
+| [README.md](README.md) | Current product orientation, setup, workflows, formats, and limitations |
+| [CHANGELOG.md](CHANGELOG.md) | The sole chronological record of notable completed changes and releases |
+| [ROADMAP.md](ROADMAP.md) | Planned work and exit criteria only |
+| [design-qa.md](design-qa.md) | The current accepted visual baseline and verification evidence |
+| [AGENTS.md](AGENTS.md) | Durable product direction and project constraints for coding agents |
+| [CONTRIBUTING.md](CONTRIBUTING.md) and the pull-request template | Current contributor and review policy |
+
+Update a document only when the truth it owns changes. Do not append delivered milestones, commit summaries, or release notes to the README, roadmap, design QA record, agent guidance, or collaboration files.
+
+### Changelog policy
+
+Add a concise, user-facing entry under `CHANGELOG.md` → `[Unreleased]` for every pull request that changes operator behavior, installation or contributor requirements, compatibility, security or privacy, session or bundle formats, evidence contents, or supported workflows.
+
+Use only the applicable categories: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, and `Security`. Describe outcomes rather than implementation details, state migration or compatibility effects explicitly, and append the pull-request number when one exists.
+
+Do not add entries for formatting, tests-only changes, internal refactors, regenerated screenshots or fixtures, or routine dependency updates unless they change supported behavior, contributor requirements, or security posture. Do not copy unfinished roadmap work into the changelog. When planned work is completed, remove it from the roadmap and record the delivered outcome in the changelog instead of relabeling the roadmap section as delivered.
+
+Only a maintainer may convert `[Unreleased]` into a dated version section, and only while publishing a matching Git tag and GitHub Release. Keep `[Unreleased]` at the top for subsequent work; `package.json` metadata alone does not establish a release.
+
 ## Development setup
 
 Use Node.js 20.19 or newer. The repository declares this minimum in `package.json`.
@@ -100,7 +123,7 @@ Treat visible differences from the approved source as regressions unless the pul
 4. Verify the responsive workspace at `390 × 844`, including body overflow, command reachability, timeline labels, incident content, and evidence controls.
 5. Update `docs/assets/narrowslink-dashboard.png`, the current evidence in `docs/design/`, and `design-qa.md` when the accepted appearance changes.
 
-Screenshots are evidence, not the review itself: record the visible mismatch, the implemented correction, remaining intentional differences, interaction coverage, and the final pass/block result in `design-qa.md`.
+Screenshots are evidence, not the review itself. Keep `design-qa.md` focused on the currently accepted source and implementation evidence, remaining intentional differences, current interaction coverage, and final pass/block result. Put change-by-change correction history in the pull request and record the notable delivered outcome in `CHANGELOG.md`.
 
 ## Tests and review expectations
 
@@ -127,7 +150,7 @@ Screenshots are evidence, not the review itself: record the visible mismatch, th
    ```
 
    If the clone uses `origin` for this repository rather than a fork, substitute `origin` for `upstream`.
-4. Make one coherent change, add focused tests, update affected documentation, and run `npm run check`. For visual changes, also complete the evidence workflow in [Visual changes](#visual-changes).
+4. Make one coherent change, add focused tests, update affected current-state documentation, and add an `[Unreleased]` changelog entry when the [changelog policy](#changelog-policy) applies. Run `npm run check`. For visual changes, also complete the evidence workflow in [Visual changes](#visual-changes).
 5. Push the branch to your fork or repository remote and open a pull request against `main`. Complete every applicable section of the pull request template, link the tracking issue with `Closes #123` when appropriate, and call out session-format, decoder, incident-range, persisted-data, privacy, or evidence compatibility changes.
 6. Wait for the repository's required GitHub Actions checks to pass and address review feedback with additional commits. Do not rewrite another contributor's branch without their agreement.
 7. A maintainer squash-merges an approved pull request after required checks pass, then deletes the merged branch. The pull request title should therefore be a useful imperative commit summary.
@@ -135,6 +158,7 @@ Screenshots are evidence, not the review itself: record the visible mismatch, th
 ## Pull request expectations
 
 - Explain the operator outcome, not only the implementation, and keep the change focused on that outcome.
+- Add a concise `[Unreleased]` changelog entry for notable changes, or explain why the policy does not apply.
 - Include screenshots for material UI changes, document the viewport and replay state used, and update `design-qa.md` when the accepted appearance changes.
 - Report the exact local checks run, including `npm run check`; a local pass complements rather than replaces repository CI.
 - State whether file formats, decoder behavior, timing or half-open range semantics, browser storage, archive inclusions, or verification behavior changed.
