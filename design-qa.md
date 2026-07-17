@@ -7,9 +7,10 @@
 - Full source/implementation comparison: [full comparison](docs/design/comparison-production-final.png)
 - Focused comparison: [focused comparison](docs/design/comparison-production-focused.png)
 - Responsive implementation: [responsive implementation](docs/design/implementation-functional-mobile.png)
+- Capture-integrity functional evidence: [incomplete UDP capture replay](docs/design/implementation-capture-integrity.png)
 - Desktop viewport: `1487 × 1058`, matching the source image.
 - Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`.
-- State: bundled Harbor relay replay; replay paused at the source-like `23:38` view start; link-fade incident selected; Narrative tab; all five evidence groups selected; deterministic default marker and operator note present.
+- State: bundled Harbor relay replay; replay paused inside the link-fade incident at `23:40`; Narrative tab; all six evidence groups selected; one local operator marker and a session-wide note present.
 
 ### Accepted desktop comparison
 
@@ -19,25 +20,31 @@
 
 [![NarrowsLink responsive implementation at 390 by 844 pixels](docs/design/implementation-functional-mobile.png)](docs/design/implementation-functional-mobile.png)
 
+### Accepted capture-integrity result
+
+[![NarrowsLink showing an incomplete UDP capture as durable capture-path evidence](docs/design/implementation-capture-integrity.png)](docs/design/implementation-capture-integrity.png)
+
 ## Final findings
 
 No actionable P0, P1, or P2 visual findings remain.
 
 The final implementation matches the source's primary composition and geometry: `232 px` source rail, compact session command bar, stacked overview plots, shared time grid, labeled telemetry lanes, `280 px` incident rail, amber half-open incident selection, and the full-width evidence workspace. The interface also retains square controls, quiet one-pixel structure, restrained warm-black surfaces, dense instrument typography, semantic chart colors, and a pale-blue export action.
 
-Four visible differences are intentional and accepted product/data constraints:
+Five visible differences are intentional and accepted product/data constraints:
 
 - The source mocks several active and recent sessions. The implementation shows the one session actually loaded and does not present invented sessions as available data.
 - The source shows a live-follow control. A recorded session truthfully exposes replay controls, while live capture remains available from the source rail and command bar.
 - Packet-family gaps, decoder resynchronization, diagnostics, estimates, and bundle metadata are derived from the validated fixture rather than copied as decorative source values.
 - Evidence rows describe the real local NarrowsLink archive contents and sizes rather than the source's illustrative PCAP and `24.7 MB` copy.
+- The evidence table has a sixth required Capture integrity row so optional derived diagnostics remain independently selectable while the transport event log and receipt cannot be removed from a verifiable archive.
 
 ## Focused comparison evidence
 
 - Timeline: the final comparison confirms equivalent label and scale gutters, minute-aligned ticks, connection/received-packet-rate/inferred-missing-frame order (labeled Connection, Throughput, and Loss in the UI), five packet-family bands, extended decoder-resync state, diagnostic and marker lanes, geographic traces, and selected-range treatment.
 - Incident rail: the final comparison confirms equivalent range summary, selector, semantic tabs, compact chronological narrative, severity dots, and session-wide operator-note region.
-- Evidence workspace: the final comparison confirms equivalent summary-to-table hierarchy, five inclusion rows, operator context, estimated size/group count, and source-aligned primary export placement.
+- Evidence workspace: the current full and focused comparisons confirm the summary-to-table hierarchy, operator context, estimated size/group count, source-aligned primary export placement, and a fully visible six-row table. Optional Diagnostics remains independently selectable while the sixth Capture integrity row is required.
 - Source rail and header: widths, dividers, title/meta hierarchy, compact replay actions, source navigation, and capture entry align with the prototype while remaining truthful to the one loaded replay.
+- Capture integrity: the functional evidence confirms that an incomplete v2 receipt is visible in session context, its immutable UDP anomaly appears in the shared Diagnostics lane and Narrative as `Capture path`, and the evidence workspace keeps Capture integrity mandatory while Diagnostics remains optional.
 
 ## Comparison history
 
@@ -81,11 +88,14 @@ Four visible differences are intentional and accepted product/data constraints:
 - Reloaded the page and confirmed the authored range survived versioned per-session local persistence.
 - Renamed and extended the range in the shared editor, then exercised the guarded delete flow and kept the sample range.
 - Built and downloaded a `15.2 KB` `.nlb` for the exact authored range; the success state reported the generated filename and verifiable local evidence.
+- Imported a purpose-built v2 UDP failure replay and confirmed the incomplete receipt, sequence-discontinuity event, exact capture-path diagnostic, and narrative entry survived reopen and projected into the selected incident range.
+- Built and downloaded `capture-integrity-browser-review-capture-integrity-incident.nlb`; the success state reported six selected groups and verifiable local evidence with Capture integrity locked on while Diagnostics remained independently selectable.
 - Opened and closed the live UDP/serial capture setup.
 - Verified the final desktop document is exactly `1487 × 1058` with no page overflow.
 - Verified the operator range editor at `390 × 844`; exact boundary fields stack cleanly and the primary action remains visible.
 - Checked browser warnings and errors after a clean reload: none.
-- Ran `npm run check`: TypeScript validation, `117` tests across `16` files, and the production Vite build passed.
+- Checked and saved the capture-integrity replay at a `1487 × 1058` browser viewport with no document overflow; the header, required Capture integrity row, and all optional evidence controls remain visible in the accepted frame.
+- Ran `npm run check`: TypeScript validation, `141` tests across `16` files, and the production Vite build passed.
 
 ## Follow-up polish
 
@@ -98,6 +108,7 @@ Four visible differences are intentional and accepted product/data constraints:
 - [x] Match source and implementation at the same viewport and replay state.
 - [x] Keep the fixture and imported sources on the same validation, decode, replay, incident, and export pipeline.
 - [x] Preserve malformed and partial frames as inspectable diagnostics.
+- [x] Preserve capture-path anomalies and the terminal integrity receipt through replay, operator range projection, and checksummed export.
 - [x] Verify desktop, responsive, and primary interaction states.
 - [x] Resolve every P0, P1, and P2 visual QA finding.
 

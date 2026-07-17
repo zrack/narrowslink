@@ -60,10 +60,15 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 - Route bundled and user-imported sessions through the same validation and decoding functions.
 - Route finalized live captures through that same validation and decoding path before replay.
 - Never let a control client stop or adopt a UDP capture it did not start; reconcile bridge sequence, datagram, and byte totals before claiming a capture is complete.
+- New live captures must finalize as session v2 with immutable transport events and a terminal receipt. Preserve strict v1 import behavior and never infer verified integrity for legacy evidence.
+- Never substitute browser or recorder counts for an unavailable transport-reported count. Preserve null observations, use the truthful incomplete assessment basis, and require explicit adapter evidence before verification.
+- Reconcile receipt issue codes, counters, and immutable events for incomplete as well as verified captures. If the bounded event log is exhausted, mark it incomplete and retain every known receipt-level fact rather than fabricating an event.
+- Classify observed capture failures as `capture-path` evidence; CRC or partial-frame detection alone does not prove whether the source, link, decoder, or local capture path caused the corruption.
 - Bound live recording by the serialized `.nlsession` size, not only the binary payload size, so every accepted capture remains importable.
 - Preserve malformed, partial, checksum-failed, and unknown frames with explicit integrity status and source linkage.
 - Keep decoder, replay, range, incident, and bundle behavior pure where practical and add automated tests for changes.
 - Make evidence manifests truthful: every listed file must exist, every inclusion toggle must be honored, and hashes must cover the exact emitted bytes.
+- Always emit and hash `transport/events.json` and `transport/integrity-receipt.json`; transport evidence is a mandatory bundle baseline, not an optional group.
 - Do not add a required cloud dependency for capture, replay, analysis, or export.
 
 ## Where changes belong
@@ -106,6 +111,7 @@ Screenshots are evidence, not the review itself: record the visible mismatch, th
 - Verify evidence changes by inspecting archive paths, manifest metadata, record counts, and SHA-256 values rather than only checking that a download occurred.
 - For UI changes, exercise the bundled replay, file-import error state, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
 - For capture changes, exercise a real loopback UDP socket from start through stop, re-import, replay, annotation, and bundle export. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage.
+- For integrity changes, add a failure round trip through capture finalization, JSON serialization, replay parsing, operator-authored half-open range projection, bundle inspection, and independent SHA-256 verification. Cover both a UDP and serial path when the contract affects both.
 
 ## Contribution workflow
 

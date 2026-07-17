@@ -2,6 +2,7 @@ import { zipSync, type Zippable } from "fflate";
 
 import { DECODER_SCHEMA } from "./decoder";
 import type {
+  CaptureIntegrityReceipt,
   DecodedField,
   DecodedFrame,
   DiagnosticEvent,
@@ -9,6 +10,7 @@ import type {
   Marker,
   ParsedSession,
   SourceRecord,
+  TransportEvent,
 } from "./types";
 
 export const EVIDENCE_BUNDLE_MEDIA_TYPE = "application/vnd.narrowslink.evidence-bundle+zip";
@@ -36,6 +38,8 @@ export interface EvidenceBundleInclusions {
   markers: boolean;
   notes: boolean;
   schema: boolean;
+  /** Mandatory provenance artifacts; caller overrides cannot disable them. */
+  transportEvidence: true;
 }
 
 export interface BuildEvidenceBundleOptions {
@@ -58,7 +62,7 @@ export interface EvidenceBundleArtifact {
 
 export interface EvidenceBundleManifest {
   format: "narrowslink/evidence-bundle";
-  formatVersion: 1;
+  formatVersion: 2;
   generatedAt: string;
   session: {
     id: string;
@@ -69,6 +73,7 @@ export interface EvidenceBundleManifest {
     decoderId: string;
     decoderRevision: string;
     schemaHash: string;
+    captureIntegrity: CaptureIntegrityReceipt;
   };
   selection: {
     id: string | null;
@@ -94,6 +99,7 @@ const DEFAULT_INCLUSIONS: EvidenceBundleInclusions = {
   markers: true,
   notes: true,
   schema: true,
+  transportEvidence: true,
 };
 
 const TEXT_ENCODER = new TextEncoder();
@@ -186,12 +192,13 @@ function makeDecodedCsv(frames: readonly DecodedFrame[]): string {
 
 function makeDiagnosticsCsv(events: readonly DiagnosticEvent[]): string {
   const rows: unknown[][] = [
-    ["diagnostic_id", "type", "severity", "start_us", "end_us", "title", "description", "frame_ids"],
+    ["diagnostic_id", "type", "domain", "severity", "start_us", "end_us", "title", "description", "frame_ids"],
   ];
   for (const event of events) {
     rows.push([
       event.id,
       event.type,
+      event.domain,
       event.severity,
       event.startUs,
       event.endUs,
@@ -225,6 +232,18 @@ function diagnosticsForRange(events: readonly DiagnosticEvent[], range: Evidence
       ? inHalfOpenRange(event.startUs, range)
       : event.startUs < range.endUs && event.endUs > range.startUs)
     .sort((left, right) => left.startUs - right.startUs || compareText(left.id, right.id));
+}
+
+function transportEventIntersectsRange(event: TransportEvent, range: EvidenceRange): boolean {
+  if (event.scope.kind === "session") return true;
+  if (event.scope.kind === "point") return inHalfOpenRange(event.scope.offsetUs, range);
+  return event.scope.startUs < range.endUs && event.scope.endUs > range.startUs;
+}
+
+function transportEventsForRange(events: readonly TransportEvent[], range: EvidenceRange): TransportEvent[] {
+  return events
+    .filter((event) => transportEventIntersectsRange(event, range))
+    .sort((left, right) => left.index - right.index || compareText(left.id, right.id));
 }
 
 function markersForRange(markers: readonly Marker[], range: EvidenceRange): Marker[] {
@@ -305,6 +324,11 @@ function schemaArtifact(session: ParsedSession): object {
       rangeSemantics: "half-open [startUs, endUs)",
       sessionStartedAt: session.document.startedAt,
     },
+    transportEvidence: {
+      eventRangeSemantics: "point events at start are included; point events at end are excluded; interval events use half-open overlap",
+      sessionScopeEvents: "included in every selected range",
+      integrityReceiptScope: "whole session",
+    },
     decoder: DECODER_SCHEMA,
   };
 }
@@ -317,16 +341,39 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
   const { session } = options;
   const range: EvidenceRange = options.range;
   const generatedAt = options.generatedAt ?? new Date().toISOString();
-  const inclusions: EvidenceBundleInclusions = { ...DEFAULT_INCLUSIONS, ...options.include };
+  const inclusions: EvidenceBundleInclusions = { ...DEFAULT_INCLUSIONS, ...options.include, transportEvidence: true };
   assertRange(session, range);
   assertGeneratedAt(generatedAt);
 
   const records = recordsForRange(session.document.records, range);
   const frames = framesForRange(session.frames, range);
   const diagnostics = diagnosticsForRange(session.diagnostics, range);
+  const transportEvents = transportEventsForRange(session.transportEvents, range);
   const markers = markersForRange(options.markers ?? [], range);
   const notes = notesForRange(options.notes ?? [], range);
   const pendingArtifacts: PendingArtifact[] = [];
+
+  addTextArtifact(
+    pendingArtifacts,
+    "transport/events.json",
+    "application/json",
+    canonicalJson({
+      range: {
+        startUs: range.startUs,
+        endUs: range.endUs,
+        rangeSemantics: "half-open [startUs, endUs)",
+      },
+      events: transportEvents,
+    }, true),
+    transportEvents.length,
+  );
+  addTextArtifact(
+    pendingArtifacts,
+    "transport/integrity-receipt.json",
+    "application/json",
+    canonicalJson(session.captureIntegrity, true),
+    1,
+  );
 
   if (inclusions.rawRecords) {
     addTextArtifact(
@@ -407,7 +454,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
   );
   const manifest: EvidenceBundleManifest = {
     format: "narrowslink/evidence-bundle",
-    formatVersion: 1,
+    formatVersion: 2,
     generatedAt,
     session: {
       id: session.document.id,
@@ -418,6 +465,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
       decoderId: session.document.decoder.id,
       decoderRevision: session.document.decoder.revision,
       schemaHash: session.document.decoder.schemaHash,
+      captureIntegrity: session.captureIntegrity,
     },
     selection: {
       id: range.id ?? null,

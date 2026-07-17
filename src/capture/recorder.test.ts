@@ -52,14 +52,31 @@ describe("CaptureRecorder", () => {
       signal: { rssiDbm: -71, snrDb: 18, provenance: "gateway-sidecar" },
     });
     recorder.append({ offsetUs: 250_000, bytes: new Uint8Array([0xde, 0xad, 0xbe, 0xef]) });
-    const document = recorder.finalize(1_000_000);
+    const capturedBytes = frame.length + 4;
+    const document = recorder.finalize(1_000_000, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 1_000_000,
+      eventLogComplete: true,
+      observedUnits: 2,
+      observedBytes: capturedBytes,
+      transportReportedUnits: 2,
+      transportReportedBytes: capturedBytes,
+    });
     const parsed = parseSession(document);
 
     expect(document).toMatchObject({
       format: "narrowslink/session",
-      formatVersion: 1,
+      formatVersion: 2,
       durationUs: 1_000_000,
       decoder: SUPPORTED_DECODER,
+      transportEvents: [],
+      captureIntegrity: {
+        status: "verified",
+        assessmentBasis: "udp-bridge-reconciled",
+        stopDisposition: "confirmed",
+        retained: { records: 2, bytes: capturedBytes },
+        issueCodes: [],
+      },
       incidents: [{
         id: "capture-interval",
         title: "Captured interval",
@@ -72,6 +89,11 @@ describe("CaptureRecorder", () => {
     expect(Object.isFrozen(document)).toBe(true);
     expect(Object.isFrozen(document.records)).toBe(true);
     expect(Object.isFrozen(document.records[0])).toBe(true);
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+    expect(Object.isFrozen(document.transportEvents)).toBe(true);
+    expect(Object.isFrozen(document.captureIntegrity)).toBe(true);
+    expect(Object.isFrozen(document.captureIntegrity.input)).toBe(true);
+    expect(Object.isFrozen(document.captureIntegrity.retained)).toBe(true);
     expect(document.records[0]).toMatchObject({
       id: "capture-record-000001",
       index: 0,
@@ -239,5 +261,209 @@ describe("CaptureRecorder", () => {
 
     expect(() => recorder.append({ offsetUs: 1, bytes: new Uint8Array([2]) })).toThrow(CaptureRecorderError);
     expect(() => recorder.finalize(2)).toThrow("already been finalized");
+  });
+
+  it("never certifies recorder-only finalization without adapter stop evidence", () => {
+    const recorder = udpRecorder();
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1, 2]) });
+
+    const document = recorder.finalize(5);
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+
+    expect(document.captureIntegrity).toEqual({
+      schemaVersion: 1,
+      status: "incomplete",
+      assessmentBasis: "recorder-only",
+      stopDisposition: "unconfirmed",
+      stopOffsetUs: 5,
+      eventLogComplete: false,
+      input: {
+        unit: "datagram",
+        observedUnits: null,
+        observedBytes: null,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: { records: 1, bytes: 2 },
+      issueCodes: ["shutdown-unconfirmed", "event-log-incomplete"],
+    });
+    expect(document.transportEvents).toEqual([expect.objectContaining({
+      type: "shutdown-unconfirmed",
+      transport: "udp",
+      scope: { kind: "session" },
+      code: "recorder-finalization-unassessed",
+    })]);
+  });
+
+  it("persists immutable transport events and derives an incomplete receipt", () => {
+    const recorder = udpRecorder();
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1, 2]) });
+    recorder.appendTransportEvent({
+      type: "udp-event-sequence-discontinuity",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: 0 },
+      severity: "critical",
+      message: "SSE sequence 4 arrived where 3 was expected.",
+      expectedSequence: 3,
+      observedSequence: 4,
+    });
+
+    const document = recorder.finalize(1, {
+      eventLogComplete: true,
+      observedUnits: 1,
+      observedBytes: 2,
+      transportReportedUnits: 1,
+      transportReportedBytes: 2,
+      stopDisposition: "confirmed",
+      stopOffsetUs: 1,
+    });
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+
+    expect(document.transportEvents).toEqual([expect.objectContaining({
+      id: "capture-transport-event-000001",
+      index: 0,
+      type: "udp-event-sequence-discontinuity",
+      expectedSequence: 3,
+      observedSequence: 4,
+    })]);
+    expect(document.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      eventLogComplete: true,
+      issueCodes: ["udp-event-sequence-discontinuity"],
+    });
+    expect(Object.isFrozen(document.transportEvents[0])).toBe(true);
+    expect(Object.isFrozen(document.transportEvents[0]?.scope)).toBe(true);
+  });
+
+  it("creates exact UDP counter and shutdown evidence from final observations", () => {
+    const recorder = udpRecorder();
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1, 2]) });
+
+    const document = recorder.finalize(5, {
+      eventLogComplete: true,
+      observedUnits: 1,
+      observedBytes: 2,
+      transportReportedUnits: 2,
+      transportReportedBytes: 5,
+      stopDisposition: "unconfirmed",
+      stopOffsetUs: 5,
+      shutdown: { code: "bridge-unreachable", message: "The bridge did not answer the stop request." },
+    });
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+
+    expect(document.transportEvents.map((event) => event.type)).toEqual([
+      "shutdown-unconfirmed",
+      "udp-counter-mismatch",
+    ]);
+    expect(document.transportEvents[1]).toMatchObject({
+      bridgeDatagrams: 2,
+      bridgeBytes: 5,
+      browserDatagrams: 1,
+      browserBytes: 2,
+      retainedRecords: 1,
+      retainedBytes: 2,
+    });
+    expect(document.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      stopDisposition: "unconfirmed",
+      input: {
+        observedUnits: 1,
+        observedBytes: 2,
+        transportReportedUnits: 2,
+        transportReportedBytes: 5,
+      },
+      issueCodes: ["udp-counter-mismatch", "shutdown-unconfirmed"],
+    });
+  });
+
+  it("records a dedicated serial counter mismatch without mislabeling the event log", () => {
+    const recorder = new CaptureRecorder({
+      sessionId: "serial-counter-mismatch",
+      title: "Serial counter mismatch",
+      startedAt: "2026-07-16T01:00:00.000Z",
+      displayTimeZone: "UTC",
+      source: { id: "serial-live", kind: "serial", label: "Serial loopback" },
+    });
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1]) });
+
+    const document = recorder.finalize(5, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 5,
+      eventLogComplete: true,
+      observedUnits: 1,
+      observedBytes: 2,
+      transportReportedUnits: null,
+      transportReportedBytes: null,
+    });
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+
+    expect(document.transportEvents).toEqual([expect.objectContaining({
+      type: "serial-counter-mismatch",
+      observedReads: 1,
+      observedBytes: 2,
+      retainedRecords: 1,
+      retainedBytes: 1,
+    })]);
+    expect(document.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      assessmentBasis: "web-serial-observed",
+      eventLogComplete: true,
+      issueCodes: ["serial-counter-mismatch"],
+    });
+  });
+
+  it("budgets serialized transport evidence and preserves it across a finalization retry", () => {
+    const recorder = udpRecorder({ maxSessionFileBytes: 16_000 });
+    recorder.append({ offsetUs: 10, bytes: new Uint8Array([1]) });
+    const beforeEvent = recorder.projectedSessionFileBytes;
+    recorder.appendTransportEvent({
+      type: "udp-bridge-error",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: 10 },
+      severity: "warning",
+      message: "Transient local bridge warning.",
+      code: "bridge-warning",
+      fatal: false,
+    });
+    expect(recorder.projectedSessionFileBytes).toBeGreaterThan(beforeEvent);
+
+    expect(() => recorder.finalize(9)).toThrow("precedes the last record");
+    const document = recorder.finalize(11, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 11,
+      eventLogComplete: true,
+      observedUnits: 1,
+      observedBytes: 1,
+      transportReportedUnits: 1,
+      transportReportedBytes: 1,
+    });
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+    expect(document.transportEvents).toEqual([expect.objectContaining({
+      id: "capture-transport-event-000001",
+      index: 0,
+      code: "bridge-warning",
+    })]);
+    expect(encodeSessionDocument(document).byteLength).toBeLessThanOrEqual(16_000);
+  });
+
+  it("pairs a not-observed stop disposition with a null stop offset", () => {
+    const recorder = udpRecorder();
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1]) });
+    const document = recorder.finalize(1, {
+      stopDisposition: "not-observed",
+      eventLogComplete: false,
+      observedUnits: 1,
+      observedBytes: 1,
+      transportReportedUnits: 1,
+      transportReportedBytes: 1,
+    });
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+    expect(document.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      stopDisposition: "not-observed",
+      stopOffsetUs: null,
+      eventLogComplete: false,
+      issueCodes: ["event-log-incomplete"],
+    });
   });
 });

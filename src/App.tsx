@@ -46,7 +46,7 @@ import {
 import { CaptureDialog } from "./capture/CaptureDialog";
 import { SUPPORTED_DECODER } from "./domain/decoder";
 import { parseSession, projectIncident, rowsInRange, validateIncidentPreset } from "./domain/session";
-import { MAX_INCIDENT_TITLE_LENGTH, type AuthoredIncidentRange, type DiagnosticEvent, type IncidentProjection, type Marker, type ParsedSession, type SessionDocument } from "./domain/types";
+import { MAX_INCIDENT_TITLE_LENGTH, type AuthoredIncidentRange, type DiagnosticEvent, type IncidentProjection, type Marker, type ParsedSession, type SessionDocument, type TransportEvent } from "./domain/types";
 import { loadBundledSession, loadSessionFile, SessionLoadError } from "./data/load-session";
 import { downsampleBuckets, finiteOrDash, incidentViewRange, percentInRange, valueAtOffset } from "./lib/telemetry";
 import { formatBytes, formatClockOffset, formatDurationUs, formatOffsetUsInput, formatSessionDate, parseOffsetUsInput, timeZoneAbbreviation } from "./lib/time";
@@ -60,7 +60,7 @@ type LoadState =
   | { status: "ready"; session: ParsedSession }
   | { status: "error"; error: SessionLoadError };
 
-type BundleItemId = "rawRecords" | "decodedPackets" | "schema" | "diagnostics" | "notes";
+type BundleItemId = "rawRecords" | "decodedPackets" | "schema" | "diagnostics" | "captureIntegrity" | "notes";
 
 interface BundleItem {
   id: BundleItemId;
@@ -69,6 +69,7 @@ interface BundleItem {
   source: string;
   estimatedBytes: number;
   selected: boolean;
+  required?: boolean;
 }
 
 const FAMILY_ROWS = [
@@ -160,8 +161,40 @@ function shortDiagnosticTitle(event: DiagnosticEvent): string {
     "decoder-locked": "Decoder locked",
     "crc-failure": "CRC failure",
     "partial-frame": "Partial frame",
+    "capture-path-event": "Capture path",
   };
   return titles[event.type];
+}
+
+const FAILURE_DOMAIN_LABELS: Record<DiagnosticEvent["domain"], string> = {
+  link: "Link",
+  decoder: "Decoder",
+  "capture-path": "Capture path",
+  unknown: "Unknown",
+};
+
+function failureDomainLabel(domain: DiagnosticEvent["domain"]): string {
+  return FAILURE_DOMAIN_LABELS[domain];
+}
+
+function captureIntegrityLabel(session: ParsedSession): string {
+  if (session.captureIntegrity.status === "verified") return "Verified";
+  if (session.captureIntegrity.status === "incomplete") return "Incomplete";
+  if (session.captureIntegrity.assessmentBasis === "legacy-v1") return "Unknown · legacy replay";
+  if (session.captureIntegrity.assessmentBasis === "file-source-unassessed") return "Unknown · file replay";
+  return "Unknown";
+}
+
+function diagnosticIntersectsRange(event: DiagnosticEvent, startUs: number, endUs: number): boolean {
+  return event.endUs == null
+    ? event.startUs >= startUs && event.startUs < endUs
+    : event.startUs < endUs && event.endUs > startUs;
+}
+
+function transportEventIntersectsRange(event: TransportEvent, startUs: number, endUs: number): boolean {
+  if (event.scope.kind === "session") return true;
+  if (event.scope.kind === "point") return event.scope.offsetUs >= startUs && event.scope.offsetUs < endUs;
+  return event.scope.startUs < endUs && event.scope.endUs > startUs;
 }
 
 interface TimelineDiagnosticGroup {
@@ -174,7 +207,7 @@ function groupTimelineDiagnostics(events: DiagnosticEvent[], startUs: number, en
   const binWidthUs = Math.max(1, Math.ceil((endUs - startUs) / 15));
   const bins = new Map<number, DiagnosticEvent[]>();
   for (const event of events) {
-    const bin = Math.floor((event.startUs - startUs) / binWidthUs);
+    const bin = Math.floor((Math.max(event.startUs, startUs) - startUs) / binWidthUs);
     const grouped = bins.get(bin) ?? [];
     grouped.push(event);
     bins.set(bin, grouped);
@@ -263,13 +296,17 @@ function initialBundleItems(session: ParsedSession, incident: IncidentProjection
   const records = rowsInRange(session.document.records, incident.startUs, incident.endUs);
   const frames = rowsInRange(session.frames, incident.startUs, incident.endUs);
   const diagnostics = incident.diagnostics;
+  const transportEvents = session.transportEvents.filter((event) => transportEventIntersectsRange(event, incident.startUs, incident.endUs));
   const rawEstimate = records.reduce((sum, record) => sum + record.dataHex.length + 250, 0);
   const decodedEstimate = Math.max(1, frames.length) * 260;
+  const integrityEstimate = JSON.stringify(session.captureIntegrity).length
+    + transportEvents.reduce((sum, event) => sum + JSON.stringify(event).length, 0);
   return [
     { id: "rawRecords", name: "Raw source records (NDJSON)", description: "Lossless captured records in the selected range", source: "Local", estimatedBytes: rawEstimate, selected: true },
     { id: "decodedPackets", name: "Decoded packets (CSV)", description: "Fields, integrity, and source provenance", source: `${session.document.decoder.id} ${formatDecoderRevision(session.document.decoder.revision)}`, estimatedBytes: decodedEstimate, selected: true },
     { id: "schema", name: "Decoder schema", description: "Envelope, families, and timing semantics", source: `${session.document.decoder.id} ${formatDecoderRevision(session.document.decoder.revision)}`, estimatedBytes: 4_600, selected: true },
-    { id: "diagnostics", name: "Diagnostics (JSON + CSV)", description: "Link, loss, CRC, and decoder events", source: "Derived locally", estimatedBytes: Math.max(1, diagnostics.length) * 620, selected: true },
+    { id: "diagnostics", name: "Diagnostics", description: "Derived decoder, link, and capture-path events in the selected range", source: "Local evidence", estimatedBytes: Math.max(1, diagnostics.length) * 620, selected: true },
+    { id: "captureIntegrity", name: "Capture integrity", description: "Range transport event log and whole-session integrity receipt", source: "Required provenance", estimatedBytes: integrityEstimate, selected: true, required: true },
     { id: "notes", name: "Operator context", description: "Session-wide note plus markers inside the range", source: "Local workspace", estimatedBytes: 3_200, selected: true },
   ];
 }
@@ -349,6 +386,7 @@ function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, onRese
             <div><dt>Start</dt><dd>{formatClockOffset(document.startedAt, 0, document.displayTimeZone, false)}</dd></div>
             <div><dt>End</dt><dd>{endClock}</dd></div>
             <div><dt>Duration</dt><dd>{formatDurationUs(document.durationUs)}</dd></div>
+            <div><dt>Integrity</dt><dd>{captureIntegrityLabel(session)}</dd></div>
             <div><dt>Saved</dt><dd className="saved"><Circle size={7} weight="fill" /> Local only</dd></div>
           </dl>
         </section>
@@ -559,7 +597,7 @@ function MissionTimeline({ session, incident, incidentEditable, markers, replayO
     return Array.from({ length: 7 }, (_, index) => firstMinuteEpochUs + index * 60_000_000 - sessionStartEpochUs)
       .filter((offsetUs) => offsetUs >= view.startUs && offsetUs < view.endUs);
   }, [session.document.startedAt, view.endUs, view.startUs]);
-  const visibleDiagnostics = useMemo(() => session.diagnostics.filter((event) => event.startUs >= view.startUs && event.startUs < view.endUs), [session.diagnostics, view.endUs, view.startUs]);
+  const visibleDiagnostics = useMemo(() => session.diagnostics.filter((event) => diagnosticIntersectsRange(event, view.startUs, view.endUs)), [session.diagnostics, view.endUs, view.startUs]);
   const diagnosticGroups = useMemo(() => groupTimelineDiagnostics(visibleDiagnostics, view.startUs, view.endUs), [visibleDiagnostics, view.endUs, view.startUs]);
   const visibleMarkers = useMemo(() => markers.filter((marker) => marker.offsetUs >= view.startUs && marker.offsetUs < view.endUs), [markers, view.endUs, view.startUs]);
   const decoderStateSegments = useMemo(() => decoderSegments(session.diagnostics, view.startUs, view.endUs), [session.diagnostics, view.endUs, view.startUs]);
@@ -585,7 +623,7 @@ function MissionTimeline({ session, incident, incidentEditable, markers, replayO
         <PlotLane label="Packet loss" unit="drop % (1s avg)" value={playheadInView ? finiteOrDash(current?.lossPct ?? null, 2, "%") : "Out of view"} scale={[`${lossScaleMax}%`, `${lossScaleMax / 2}%`, "0%"]}><SignalChart data={data} dataKey="loss" color="#ea6f66" label="Packet loss" bar /></PlotLane>
         <PlotLane label="Packet families" className="families-lane"><PacketFamilyTrack rows={familyRows} startUs={view.startUs} endUs={view.endUs} /></PlotLane>
         <PlotLane label="Decoder" unit={session.document.decoder.id} className="event-lane"><div className="decoder-track">{decoderStateSegments.map((segment) => { const left = percentInRange(segment.startUs, view.startUs, view.endUs); const width = percentInRange(segment.endUs, view.startUs, view.endUs) - left; const label = segment.state === "locked" ? `Locked ${formatDecoderRevision(session.document.decoder.revision)}` : "Resync search"; return <span key={`${segment.state}-${segment.startUs}`} className={`decoder-segment ${segment.state}`} style={{ left: `${left}%`, width: `${width}%` }} aria-label={`${label} from ${formatClockOffset(session.document.startedAt, segment.startUs, session.document.displayTimeZone)} to ${formatClockOffset(session.document.startedAt, segment.endUs, session.document.displayTimeZone)}`} title={label}>{width >= 9 ? label : <span className="visually-hidden">{label}</span>}{segment.state === "resync" && width >= 16 && <small>invalid frames retained</small>}</span>; })}</div></PlotLane>
-        <PlotLane label="Diagnostics" className="event-lane"><div className="event-track diagnostics-track">{diagnosticGroups.map((group) => <button key={group.first.id} type="button" style={{ left: `${percentInRange(group.first.startUs, view.startUs, view.endUs)}%` }} onClick={() => onSeek(group.first.startUs)} aria-label={`${group.count} ${group.severity} diagnostic${group.count === 1 ? "" : "s"}; first: ${group.first.title}, ${formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone)}`}>{shortDiagnosticTitle(group.first)}{group.count > 1 && ` +${group.count - 1}`}<small>{formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone, false)}</small></button>)}</div></PlotLane>
+        <PlotLane label="Diagnostics" className="event-lane"><div className="event-track diagnostics-track">{diagnosticGroups.map((group) => { const anchorUs = Math.max(view.startUs, group.first.startUs); return <button key={group.first.id} type="button" style={{ left: `${percentInRange(anchorUs, view.startUs, view.endUs)}%` }} onClick={() => onSeek(anchorUs)} aria-label={`${group.count} ${group.severity} diagnostic${group.count === 1 ? "" : "s"}; ${failureDomainLabel(group.first.domain)} domain; first: ${group.first.title}, ${formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone)}${group.first.startUs < view.startUs ? "; began before this view" : ""}`}>{shortDiagnosticTitle(group.first)}{group.count > 1 && ` +${group.count - 1}`}<small>{formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone, false)}</small></button>; })}</div></PlotLane>
         <PlotLane label="Markers" className="event-lane"><div className="event-track marker-track">{visibleMarkers.map((marker) => <button key={marker.id} type="button" style={{ left: `${percentInRange(marker.offsetUs, view.startUs, view.endUs)}%` }} onClick={() => onSeek(marker.offsetUs)}><BookmarkSimple size={12} weight="fill" /> {marker.title}<small>{formatClockOffset(session.document.startedAt, marker.offsetUs, session.document.displayTimeZone)}</small></button>)}</div></PlotLane>
         <PlotLane label="Latitude" unit="deg" value={playheadInView ? finiteOrDash(current?.latitude ?? null, 4) : "Out of view"}><SignalChart data={data} dataKey="lat" color="#8bc879" label="Latitude" /></PlotLane>
         <PlotLane label="Longitude" unit="deg" value={playheadInView ? finiteOrDash(current?.longitude ?? null, 4) : "Out of view"}><SignalChart data={data} dataKey="lon" color="#8bc879" label="Longitude" /></PlotLane>
@@ -601,6 +639,7 @@ function diagnosticTone(event: DiagnosticEvent): "amber" | "red" | "green" {
 }
 
 const NARRATIVE_SUMMARY_TYPES: DiagnosticEvent["type"][] = [
+  "capture-path-event",
   "link-degraded",
   "crc-failure",
   "decoder-resync",
@@ -647,6 +686,11 @@ function IncidentPanel(props: IncidentPanelProps) {
   const clock = incidentClock(session, incident);
   const stats = incident.stats;
   const narrative = incident.diagnostics;
+  const domainOrder: DiagnosticEvent["domain"][] = ["capture-path", "link", "decoder", "unknown"];
+  const evidenceDomains = domainOrder.filter((domain) => narrative.some((event) => event.domain === domain));
+  const evidenceDomainSummary = evidenceDomains.length > 0
+    ? evidenceDomains.map(failureDomainLabel).join(", ")
+    : "No attributed events";
   const narrativeSummary = summarizeNarrative(narrative);
   const showingAllNarrative = narrativeLimit > 6;
   const displayedNarrative = showingAllNarrative ? narrative : narrativeSummary;
@@ -669,8 +713,8 @@ function IncidentPanel(props: IncidentPanelProps) {
       <div className="incident-heading"><div><BookmarkSimple size={14} weight="fill" /><span>Incident selection</span></div><div className="incident-heading-actions"><button className="icon-button" type="button" aria-label={props.incidentEditable ? "Edit operator range" : "Refine replay preset as a local range"} title={props.incidentEditable ? "Edit operator range" : "Refine as local range"} onClick={props.onEditRange}><NotePencil size={15} /></button><button className="icon-button" type="button" aria-label="Clear incident" onClick={props.onClear}><X size={15} /></button></div></div>
       <div className="incident-range"><select className="incident-switcher" value={incident.id} onChange={(event) => props.onSelectIncident(event.target.value)} aria-label="Selected incident">{props.incidents.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</select><strong>{clock.start} – {clock.end}</strong><span>{props.incidentEditable ? "Local range" : "Replay preset"} · {clock.duration}</span></div>
       <div className="incident-tabs" role="tablist" aria-label="Incident information" onKeyDown={handleTabKeyDown}>{INCIDENT_TABS.map((tab) => <button id={`incident-tab-${tab}`} aria-controls={`incident-panel-${tab}`} aria-selected={props.activeTab === tab} role="tab" tabIndex={props.activeTab === tab ? 0 : -1} type="button" key={tab} className={props.activeTab === tab ? "active" : ""} onClick={() => props.onTabChange(tab)}>{tab}</button>)}</div>
-      {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p className="visually-hidden">{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{displayedNarrative.map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong>{event.title}<span className="visually-hidden"> — {event.severity} severity</span></strong><p>{event.description}</p></div></li>)}</ol>{narrativeSummary.length < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit(showingAllNarrative ? 6 : narrative.length)}>{showingAllNarrative ? "Show six key events" : `Show all ${narrative.length} events`} <small>{displayedNarrative.length} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
-      {props.activeTab === "details" && <dl className="details-view" id="incident-panel-details" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-details"><div><dt>Source</dt><dd>{formatSource(session)}</dd></div><div><dt>Decoder</dt><dd>{session.document.decoder.id} {formatDecoderRevision(session.document.decoder.revision)}</dd></div><div><dt>Frames in range</dt><dd>{stats.receivedFrames.toLocaleString()}</dd></div><div><dt>Missing</dt><dd className="danger">{stats.missingFrames}</dd></div><div><dt>Loss</dt><dd className="danger">{finiteOrDash(stats.lossPct, 2, "%")}</dd></div><div><dt>Lowest RSSI</dt><dd>{finiteOrDash(stats.lowestRssiDbm, 1, " dBm")}</dd></div><div><dt>Peak jitter</dt><dd>{finiteOrDash(stats.peakJitterMs, 1, " ms")}</dd></div><div><dt>Complete packets</dt><dd>{stats.completePackets.toLocaleString()}</dd></div></dl>}
+      {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p className="visually-hidden">{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{displayedNarrative.map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong>{event.title}<small> · {failureDomainLabel(event.domain)}</small><span className="visually-hidden"> — {event.severity} severity</span></strong><p>{event.description}</p></div></li>)}</ol>{narrativeSummary.length < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit(showingAllNarrative ? 6 : narrative.length)}>{showingAllNarrative ? "Show six key events" : `Show all ${narrative.length} events`} <small>{displayedNarrative.length} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
+      {props.activeTab === "details" && <dl className="details-view" id="incident-panel-details" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-details"><div><dt>Source</dt><dd>{formatSource(session)}</dd></div><div><dt>Capture integrity</dt><dd>{captureIntegrityLabel(session)}</dd></div><div><dt>Evidence domains</dt><dd>{evidenceDomainSummary}</dd></div><div><dt>Decoder</dt><dd>{session.document.decoder.id} {formatDecoderRevision(session.document.decoder.revision)}</dd></div><div><dt>Frames in range</dt><dd>{stats.receivedFrames.toLocaleString()}</dd></div><div><dt>Missing</dt><dd className="danger">{stats.missingFrames}</dd></div><div><dt>Loss</dt><dd className="danger">{finiteOrDash(stats.lossPct, 2, "%")}</dd></div><div><dt>Lowest RSSI</dt><dd>{finiteOrDash(stats.lowestRssiDbm, 1, " dBm")}</dd></div><div><dt>Peak jitter</dt><dd>{finiteOrDash(stats.peakJitterMs, 1, " ms")}</dd></div><div><dt>Complete packets</dt><dd>{stats.completePackets.toLocaleString()}</dd></div></dl>}
       {props.activeTab === "stats" && <div className="stats-view" id="incident-panel-stats" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-stats"><StatBar label="Link availability" value={stats.linkAvailabilityPct} /><StatBar label="Decode confidence" value={stats.decodeConfidencePct} /><StatBar label="Delivery" value={stats.lossPct == null ? null : 100 - stats.lossPct} /></div>}
       <div className="operator-notes"><div><span>Session-wide operator note</span><NotePencil size={14} aria-hidden="true" /></div><textarea maxLength={2000} value={props.note} onChange={(event) => props.onNoteChange(event.target.value)} aria-label="Session-wide operator note" /><small className={!props.workspacePersisted ? "storage-warning" : ""}>{props.workspacePersisted ? "Stored in this browser only; included with any range when selected for export" : "Browser storage is unavailable; edits remain in memory until this page closes"}</small></div>
     </aside>
@@ -694,14 +738,14 @@ interface BundlePanelProps {
 }
 
 function BundlePanel(props: BundlePanelProps) {
-  const selected = props.incident ? props.items.filter((item) => item.selected) : [];
+  const selected = props.incident ? props.items.filter((item) => item.required || item.selected) : [];
   const estimatedBytes = selected.reduce((sum, item) => sum + item.estimatedBytes, 0);
   const clock = props.incident ? incidentClock(props.session, props.incident) : null;
-  const toggle = (id: BundleItemId) => props.onItemsChange(props.items.map((item) => item.id === id ? { ...item, selected: !item.selected } : item));
+  const toggle = (id: BundleItemId) => props.onItemsChange(props.items.map((item) => item.id === id && !item.required ? { ...item, selected: !item.selected } : item));
   return (
     <section className="bundle-panel" aria-label="Incident bundle preview">
       <div className="bundle-summary"><div><span>Incident bundle preview</span><p>A local, verifiable archive for reproducing and investigating the selected incident.</p></div><dl><div><dt>Time range</dt><dd>{clock ? <>{clock.start} – {clock.end}<small>{clock.duration}</small></> : <span className="no-selection-copy">No incident selected</span>}</dd></div><div><dt>Size (est.)</dt><dd>{formatBytes(estimatedBytes)}</dd></div><div><dt>Groups</dt><dd>{selected.length}</dd></div></dl><button className="primary-action bundle-create" type="button" disabled={!props.incident || selected.length === 0} onClick={props.onCreateBundle}><DownloadSimple size={17} /> Create incident bundle</button></div>
-      <div className="bundle-body"><div className="bundle-table-wrap" role="table" aria-label="Evidence bundle contents"><div className="bundle-table-head" role="row"><span role="columnheader">Include</span><span role="columnheader">Item</span><span role="columnheader">Description</span><span role="columnheader">Source</span><span role="columnheader">Size (est.)</span></div><div className="bundle-table" role="rowgroup">{props.items.map((item) => <label className={!item.selected ? "excluded" : ""} key={item.id} role="row"><span className="checkbox" role="cell"><input type="checkbox" checked={item.selected} disabled={!props.incident} onChange={() => toggle(item.id)} /></span><strong role="cell">{item.name}</strong><span role="cell">{item.description}</span><span role="cell">{item.source}</span><span role="cell">{formatBytes(item.estimatedBytes)}</span></label>)}</div></div><label className="bundle-notes"><span>Session-wide note for bundle</span><small className={!props.workspacePersisted ? "storage-warning" : ""}>{props.workspacePersisted ? "This note applies to the session and is included with the selected range." : "Browser storage is unavailable; this note remains in memory and can still be included now."}</small><textarea disabled={!props.incident} value={props.note} maxLength={2000} onChange={(event) => props.onNoteChange(event.target.value)} /><b>{props.note.length} / 2000</b></label></div>
+      <div className="bundle-body"><div className="bundle-table-wrap" role="table" aria-label="Evidence bundle contents"><div className="bundle-table-head" role="row"><span role="columnheader">Include</span><span role="columnheader">Item</span><span role="columnheader">Description</span><span role="columnheader">Source</span><span role="columnheader">Size (est.)</span></div><div className="bundle-table" role="rowgroup">{props.items.map((item) => <label className={!item.selected && !item.required ? "excluded" : ""} key={item.id} role="row"><span className="checkbox" role="cell"><input type="checkbox" checked={item.required || item.selected} disabled={!props.incident || item.required} title={item.required ? "Required in every verifiable archive" : undefined} onChange={() => toggle(item.id)} /></span><strong role="cell">{item.name}</strong><span role="cell">{item.description}</span><span role="cell">{item.source}</span><span role="cell">{formatBytes(item.estimatedBytes)}</span></label>)}</div></div><label className="bundle-notes"><span>Session-wide note for bundle</span><small className={!props.workspacePersisted ? "storage-warning" : ""}>{props.workspacePersisted ? "This note applies to the session and is included with the selected range." : "Browser storage is unavailable; this note remains in memory and can still be included now."}</small><textarea disabled={!props.incident} value={props.note} maxLength={2000} onChange={(event) => props.onNoteChange(event.target.value)} /><b>{props.note.length} / 2000</b></label></div>
     </section>
   );
 }
@@ -907,7 +951,7 @@ function BundleDialog({ session, incident, items, markers, note, onClose }: Bund
   const [status, setStatus] = useState<"confirm" | "building" | "success" | "error">("confirm");
   const [artifact, setArtifact] = useState<{ filename: string; bytes: number } | null>(null);
   const [error, setError] = useState("");
-  const selected = items.filter((item) => item.selected);
+  const selected = items.filter((item) => item.required || item.selected);
   const clock = incidentClock(session, incident);
   useModalFocus(dialogRef, onClose, status !== "building");
   useEffect(() => {
@@ -977,7 +1021,7 @@ function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSe
     setBundleItems((current) => {
       if (!preserveSelections) return nextItems;
       const selectedById = new Map(current.map((item) => [item.id, item.selected]));
-      return nextItems.map((item) => ({ ...item, selected: selectedById.get(item.id) ?? item.selected }));
+      return nextItems.map((item) => ({ ...item, selected: item.required ? true : (selectedById.get(item.id) ?? item.selected) }));
     });
     bundleIncidentIdRef.current = selectedIncident?.id ?? null;
   }, [selectedIncident?.endUs, selectedIncident?.id, selectedIncident?.startUs, session]);

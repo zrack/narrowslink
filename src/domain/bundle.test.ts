@@ -4,61 +4,40 @@ import { describe, expect, it } from "vitest";
 import {
   buildEvidenceBundle,
   suggestEvidenceBundleFilename,
+  type EvidenceBundleInclusions,
   type EvidenceBundleManifest,
   type EvidenceNote,
   type EvidenceRange,
 } from "./bundle";
+import { bytesToHex, encodeFrame, SUPPORTED_DECODER } from "./decoder";
+import { parseSession } from "./session";
 import type {
-  DecodedFrame,
+  CaptureIntegrityReceipt,
   DiagnosticEvent,
   Marker,
   ParsedSession,
-  SessionDocument,
+  SessionDocumentV2,
   SourceRecord,
+  TransportEvent,
 } from "./types";
 
 function sourceRecord(id: string, index: number, offsetUs: number): SourceRecord {
+  const bytes = encodeFrame({
+    familyId: 0x02,
+    sequence: index,
+    deviceTimeMs: Math.floor(offsetUs / 1_000),
+    payload: new Uint8Array(8),
+  });
   return {
     id,
     index,
     sourceId: "gateway-1",
     offsetUs,
-    dataHex: "A55A010200000000000000000000",
-    captureBytes: 14,
-    wireBytes: 14,
+    dataHex: bytesToHex(bytes),
+    captureBytes: bytes.byteLength,
+    wireBytes: bytes.byteLength,
     transport: { kind: "udp", kernelDropCounter: 0 },
     signal: { rssiDbm: -72, snrDb: 11, provenance: "gateway-sidecar" },
-  };
-}
-
-function frame(record: SourceRecord): DecodedFrame {
-  return {
-    id: `frame-${record.id}`,
-    ordinal: record.index,
-    offsetUs: record.offsetUs,
-    sourceRecord: record,
-    protocolVersion: 1,
-    familyId: 0x02,
-    familyName: "Heartbeat",
-    sequence: record.index,
-    deviceTimeMs: Math.floor(record.offsetUs / 1000),
-    payloadLength: 0,
-    integrity: { status: "valid", checksum: 0 },
-    status: "complete",
-    fields: [{ name: "mode", raw: 2, value: "Nominal", quality: "valid" }],
-  };
-}
-
-function diagnostic(id: string, startUs: number, endUs?: number): DiagnosticEvent {
-  return {
-    id,
-    type: "crc-failure",
-    severity: "critical",
-    startUs,
-    ...(endUs == null ? {} : { endUs }),
-    title: `Diagnostic ${id}`,
-    description: `Description, with comma for ${id}`,
-    frameIds: [],
   };
 }
 
@@ -73,42 +52,132 @@ function marker(id: string, offsetUs: number): Marker {
   };
 }
 
-function makeSession(): ParsedSession {
+function makeSession(options: { insideOffsetUs?: number } = {}): ParsedSession {
   const records = [
     sourceRecord("record-before", 0, 999),
     sourceRecord("record-start", 1, 1_000),
-    sourceRecord("record-inside", 2, 1_999),
+    sourceRecord("record-inside", 2, options.insideOffsetUs ?? 1_999),
     sourceRecord("record-end", 3, 2_000),
   ];
-  const document: SessionDocument = {
+  const retainedBytes = records.reduce((total, record) => total + record.captureBytes, 0);
+  const bridgeDatagrams = records.length + 1;
+  const bridgeBytes = retainedBytes + (records[0]?.captureBytes ?? 1);
+  const transportEvents: TransportEvent[] = [
+    {
+      id: "transport-ends-at-start",
+      index: 0,
+      type: "udp-bridge-error",
+      transport: "udp",
+      scope: { kind: "interval", startUs: 500, endUs: 1_000 },
+      severity: "warning",
+      message: "Ends exactly at the selected start",
+      code: "bridge-warning",
+      fatal: false,
+    },
+    {
+      id: "transport-overlaps-start",
+      index: 1,
+      type: "udp-bridge-error",
+      transport: "udp",
+      scope: { kind: "interval", startUs: 500, endUs: 1_001 },
+      severity: "critical",
+      message: "Overlaps the selected start",
+      code: "bridge-failed",
+      fatal: true,
+    },
+    {
+      id: "transport-before",
+      index: 2,
+      type: "udp-event-sequence-discontinuity",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: 999 },
+      severity: "warning",
+      message: "Before the selected range",
+      expectedSequence: 1,
+      observedSequence: 2,
+    },
+    {
+      id: "transport-start",
+      index: 3,
+      type: "udp-event-sequence-discontinuity",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: 1_000 },
+      severity: "warning",
+      message: "At the selected start",
+      expectedSequence: 3,
+      observedSequence: 4,
+    },
+    {
+      id: "transport-inside",
+      index: 4,
+      type: "udp-event-sequence-discontinuity",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: 1_999 },
+      severity: "warning",
+      message: "Inside the selected range",
+      expectedSequence: 5,
+      observedSequence: 6,
+    },
+    {
+      id: "transport-end",
+      index: 5,
+      type: "udp-event-sequence-discontinuity",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: 2_000 },
+      severity: "warning",
+      message: "At the excluded end",
+      expectedSequence: 7,
+      observedSequence: 8,
+    },
+    {
+      id: "transport-session",
+      index: 6,
+      type: "udp-counter-mismatch",
+      transport: "udp",
+      scope: { kind: "session" },
+      severity: "critical",
+      message: "Whole-session counter mismatch",
+      bridgeDatagrams,
+      bridgeBytes,
+      browserDatagrams: records.length,
+      browserBytes: retainedBytes,
+      retainedRecords: records.length,
+      retainedBytes,
+    },
+  ];
+  const captureIntegrity: CaptureIntegrityReceipt = {
+    schemaVersion: 1,
+    status: "incomplete",
+    assessmentBasis: "udp-bridge-reconciled",
+    stopDisposition: "confirmed",
+    stopOffsetUs: 3_000,
+    eventLogComplete: true,
+    input: {
+      unit: "datagram",
+      observedUnits: records.length,
+      observedBytes: retainedBytes,
+      transportReportedUnits: bridgeDatagrams,
+      transportReportedBytes: bridgeBytes,
+    },
+    retained: { records: records.length, bytes: retainedBytes },
+    issueCodes: ["udp-event-sequence-discontinuity", "udp-bridge-error", "udp-counter-mismatch"],
+  };
+  const document: SessionDocumentV2 = {
     format: "narrowslink/session",
-    formatVersion: 1,
+    formatVersion: 2,
     id: "Harbor Relay / 07",
     title: "Harbor Relay Session 07",
     startedAt: "2026-07-16T04:38:12.000Z",
     displayTimeZone: "America/Los_Angeles",
     durationUs: 3_000,
     source: { id: "gateway-1", kind: "udp", label: "Gateway 1", address: "127.0.0.1", port: 9120 },
-    decoder: { id: "NSL-01", revision: "2026.7", schemaHash: "b79f6edc8a123456b79f6edc8a123456b79f6edc8a123456b79f6edc8a123456" },
+    decoder: { ...SUPPORTED_DECODER },
     records,
     incidents: [],
+    transportEvents,
+    captureIntegrity,
   };
-  const frames = records.map(frame);
-  return {
-    document,
-    frames,
-    buckets: [],
-    diagnostics: [
-      diagnostic("diag-ends-at-start", 500, 1_000),
-      diagnostic("diag-overlaps-start", 500, 1_001),
-      diagnostic("diag-before", 999),
-      diagnostic("diag-start", 1_000),
-      diagnostic("diag-inside", 1_999),
-      diagnostic("diag-end", 2_000),
-    ],
-    incidents: [],
-    framesById: new Map(frames.map((item) => [item.id, item])),
-  };
+  return parseSession(document);
 }
 
 function decodeText(archive: Record<string, Uint8Array>, path: string): string {
@@ -166,6 +235,8 @@ describe("buildEvidenceBundle", () => {
       "notes/notes.json",
       "raw/source-records.ndjson",
       "schema/schema.json",
+      "transport/events.json",
+      "transport/integrity-receipt.json",
     ]);
 
     const rawIds = decodeText(archive, "raw/source-records.ndjson")
@@ -190,7 +261,33 @@ describe("buildEvidenceBundle", () => {
     const diagnosticDocument = JSON.parse(decodeText(archive, "diagnostics/diagnostics.json")) as {
       diagnostics: DiagnosticEvent[];
     };
-    expect(diagnosticDocument.diagnostics.map((item) => item.id)).toEqual(["diag-overlaps-start", "diag-start", "diag-inside"]);
+    expect(diagnosticDocument.diagnostics.map((item) => item.id)).toEqual([
+      "transport-transport-session",
+      "transport-transport-overlaps-start",
+      "transport-transport-start",
+      "transport-transport-inside",
+    ]);
+
+    const transportDocument = JSON.parse(decodeText(archive, "transport/events.json")) as {
+      range: { startUs: number; endUs: number; rangeSemantics: string };
+      events: TransportEvent[];
+    };
+    expect(transportDocument.range).toEqual({
+      startUs: 1_000,
+      endUs: 2_000,
+      rangeSemantics: "half-open [startUs, endUs)",
+    });
+    expect(transportDocument.events.map((event) => event.id)).toEqual([
+      "transport-overlaps-start",
+      "transport-start",
+      "transport-inside",
+      "transport-session",
+    ]);
+
+    const integrityReceipt = JSON.parse(decodeText(archive, "transport/integrity-receipt.json")) as CaptureIntegrityReceipt;
+    expect(integrityReceipt).toEqual(session.captureIntegrity);
+    expect(integrityReceipt.input.transportReportedUnits).not.toBe(integrityReceipt.input.observedUnits);
+    expect(integrityReceipt.input.transportReportedBytes).not.toBe(integrityReceipt.input.observedBytes);
 
     const markerDocument = JSON.parse(decodeText(archive, "markers/markers.json")) as { markers: Marker[] };
     expect(markerDocument.markers.map((item) => item.id)).toEqual(["marker-start", "marker-inside"]);
@@ -200,6 +297,9 @@ describe("buildEvidenceBundle", () => {
 
     const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
     expect(manifest.format).toBe("narrowslink/evidence-bundle");
+    expect(manifest.formatVersion).toBe(2);
+    expect(manifest.session.captureIntegrity).toEqual(session.captureIntegrity);
+    expect(manifest.inclusions.transportEvidence).toBe(true);
     expect(manifest.selection).toMatchObject({
       id: "link-fade",
       startUs: 1_000,
@@ -208,6 +308,8 @@ describe("buildEvidenceBundle", () => {
     });
     expect(manifest.artifacts.find((item) => item.path === "raw/source-records.ndjson")?.recordCount).toBe(2);
     expect(manifest.artifacts.find((item) => item.path === "markers/markers.json")?.recordCount).toBe(2);
+    expect(manifest.artifacts.find((item) => item.path === "transport/events.json")?.recordCount).toBe(4);
+    expect(manifest.artifacts.find((item) => item.path === "transport/integrity-receipt.json")?.recordCount).toBe(1);
 
     const checksumLines = new Map(
       decodeText(archive, "SHA256SUMS")
@@ -236,14 +338,28 @@ describe("buildEvidenceBundle", () => {
         markers: false,
         notes: false,
         schema: false,
-      },
+        transportEvidence: false,
+      } as unknown as Partial<EvidenceBundleInclusions>,
       generatedAt: "2026-07-16T06:00:00.000Z",
     });
     const archive = unzipSync(bytes);
-    expect(Object.keys(archive).sort()).toEqual(["SHA256SUMS", "manifest.json"]);
+    expect(Object.keys(archive).sort()).toEqual([
+      "SHA256SUMS",
+      "manifest.json",
+      "transport/events.json",
+      "transport/integrity-receipt.json",
+    ]);
     const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
-    expect(manifest.artifacts).toEqual([]);
-    expect(manifest.checksums.covers).toEqual(["manifest.json"]);
+    expect(manifest.inclusions.transportEvidence).toBe(true);
+    expect(manifest.artifacts.map((artifact) => artifact.path)).toEqual([
+      "transport/events.json",
+      "transport/integrity-receipt.json",
+    ]);
+    expect(manifest.checksums.covers).toEqual([
+      "manifest.json",
+      "transport/events.json",
+      "transport/integrity-receipt.json",
+    ]);
   });
 
   it("produces stable bytes when generatedAt and inputs are stable", async () => {
@@ -258,13 +374,7 @@ describe("buildEvidenceBundle", () => {
   });
 
   it("preserves capture index order for records sharing a timestamp", async () => {
-    const session = makeSession();
-    const startRecord = session.document.records[1];
-    const insideRecord = session.document.records[2];
-    const insideFrame = session.frames[2];
-    if (!startRecord || !insideRecord || !insideFrame) throw new Error("Expected range fixtures");
-    insideRecord.offsetUs = startRecord.offsetUs;
-    insideFrame.offsetUs = startRecord.offsetUs;
+    const session = makeSession({ insideOffsetUs: 1_000 });
 
     const bytes = await buildEvidenceBundle({ session, range, generatedAt: "2026-07-16T06:00:00.000Z" });
     const archive = unzipSync(bytes);
@@ -304,7 +414,7 @@ describe("buildEvidenceBundle", () => {
   it("neutralizes spreadsheet formulas in exported CSV string cells", async () => {
     const session = makeSession();
     const selectedFrame = session.frames[1];
-    const selectedDiagnostic = session.diagnostics[1];
+    const selectedDiagnostic = session.diagnostics.find((event) => event.id === "transport-transport-overlaps-start");
     if (!selectedFrame || !selectedDiagnostic) throw new Error("Expected selected fixture rows");
     selectedFrame.familyName = "=2+3";
     selectedDiagnostic.title = "@SUM(A1:A2)";

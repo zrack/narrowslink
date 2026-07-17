@@ -11,15 +11,18 @@ import {
 import { createPortal } from "react-dom";
 import { DownloadSimple, SpinnerGap, WarningCircle, X } from "@phosphor-icons/react";
 
-import type { SessionDocument } from "../domain/types";
+import type { CaptureIntegrityIssueCode, CaptureIntegrityReceipt, SessionDocument } from "../domain/types";
 import { serializeSessionDocument } from "../data/session-file";
 import { formatBytes, formatDurationUs } from "../lib/time";
 import { Nsl01SerialFrameAssembler } from "./nsl01-serial-assembler";
 import {
   CaptureRecorder,
+  CaptureRecorderError,
   MAX_CAPTURE_BYTES,
   MAX_CAPTURE_RECORDS,
+  type CaptureFinalizationEvidence,
   type CapturedBytes,
+  type TransportEventDraft,
 } from "./recorder";
 import {
   DEFAULT_UDP_BRIDGE_URL,
@@ -56,6 +59,7 @@ interface PendingUdpRecorderConfig {
 interface PendingFinalization {
   durationUs: number;
   incompleteReason: string | null;
+  evidence: CaptureFinalizationEvidence;
 }
 
 export interface CaptureDialogProps {
@@ -116,6 +120,115 @@ export function boundFinalizationDuration(
     : { durationUs: requestedDurationUs, wasCapped: false };
 }
 
+export interface CaptureFinalizationSnapshot {
+  transport: CaptureTransport;
+  durationUs: number;
+  stopDisposition: CaptureIntegrityReceipt["stopDisposition"];
+  eventLogComplete: boolean;
+  observedUnits: number;
+  observedBytes: number;
+  transportReportedUnits: number | null;
+  transportReportedBytes: number | null;
+  issueCodes?: readonly CaptureIntegrityIssueCode[];
+  shutdown?: CaptureFinalizationEvidence["shutdown"];
+}
+
+/**
+ * Preserves the evidence actually observed at stop. In particular, a missing
+ * UDP terminal status remains null rather than being replaced by browser-side
+ * counters that cannot certify bridge reconciliation.
+ */
+export function captureFinalizationEvidence(
+  snapshot: CaptureFinalizationSnapshot,
+): CaptureFinalizationEvidence {
+  const stopDisposition = snapshot.stopDisposition === "not-observed"
+    ? "unconfirmed"
+    : snapshot.stopDisposition;
+  return {
+    stopDisposition,
+    stopOffsetUs: snapshot.durationUs,
+    eventLogComplete: snapshot.eventLogComplete,
+    observedUnits: snapshot.observedUnits,
+    observedBytes: snapshot.observedBytes,
+    transportReportedUnits: snapshot.transport === "udp" ? snapshot.transportReportedUnits : null,
+    transportReportedBytes: snapshot.transport === "udp" ? snapshot.transportReportedBytes : null,
+    issueCodes: snapshot.issueCodes,
+    shutdown: snapshot.shutdown,
+  };
+}
+
+export type CapturedInputOrigin = "live" | "pre-status-buffer" | "serial-tail";
+
+export function canRetainCapturedInput(
+  inputClosed: boolean,
+  ingestPaused: boolean,
+  origin: CapturedInputOrigin = "live",
+): boolean {
+  if (origin === "pre-status-buffer") return !inputClosed;
+  if (origin === "serial-tail") return !ingestPaused;
+  return !inputClosed && !ingestPaused;
+}
+
+export function retainSerialAssemblerTail(
+  assembler: Nsl01SerialFrameAssembler,
+  append: (input: CapturedBytes, origin: "serial-tail") => boolean,
+): { records: number; bytes: number } {
+  let records = 0;
+  let bytes = 0;
+  for (const assembly of assembler.finish()) {
+    if (!append({ offsetUs: assembly.offsetUs, bytes: assembly.bytes }, "serial-tail")) continue;
+    records += 1;
+    bytes += assembly.bytes.byteLength;
+  }
+  return { records, bytes };
+}
+
+export function flushOwnedBufferedUdpDatagrams(
+  pending: readonly UdpBridgeDatagram[],
+  ownedCaptureId: string,
+  accept: (datagram: UdpBridgeDatagram, allowPausedRetention: boolean) => boolean,
+): { observed: number; retained: number } {
+  let observed = 0;
+  let retained = 0;
+  let bufferedRetentionAvailable = true;
+  for (const datagram of pending) {
+    if (datagram.captureId !== ownedCaptureId) continue;
+    observed += 1;
+    const didRetain = accept(datagram, bufferedRetentionAvailable);
+    if (didRetain) retained += 1;
+    else bufferedRetentionAvailable = false;
+  }
+  return { observed, retained };
+}
+
+export function ensureDurationLimitTransportEvent(
+  recorder: CaptureRecorder,
+  input: {
+    alreadyRecorded: boolean;
+    transport: CaptureTransport;
+    maximumDurationUs: number;
+    observedDurationUs: number;
+    message: string;
+  },
+): boolean {
+  if (input.alreadyRecorded) return true;
+  return recorder.appendTerminalTransportEvent({
+    type: "capture-limit",
+    transport: input.transport,
+    scope: { kind: "session" },
+    severity: "critical",
+    message: input.message.slice(0, 1_000),
+    component: "recorder",
+    limit: "duration",
+    limitValue: input.maximumDurationUs,
+    observedValue: input.observedDurationUs,
+  }) !== null;
+}
+
+function isDurationLimitEvent(event: TransportEventDraft): boolean {
+  return event.type === "capture-limit" && event.limit === "duration";
+}
+
 function createSessionId(): string {
   const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
   return `capture-${Date.now().toString(36)}-${random}`;
@@ -129,6 +242,37 @@ function errorMessage(cause: unknown, fallback: string): string {
 function udpErrorMessage(error: UdpBridgeErrorDetail | UdpBridgeProtocolError): string {
   if (error instanceof UdpBridgeProtocolError) return `${error.message} (${error.code})`;
   return `${error.message} (${error.code}${error.fatal ? ", fatal" : ""})`;
+}
+
+export function udpSequenceDiscontinuityEvent(
+  datagram: Pick<UdpBridgeDatagram, "offsetUs" | "sequence">,
+  expectedSequence: number,
+): TransportEventDraft {
+  return {
+    type: "udp-event-sequence-discontinuity",
+    transport: "udp",
+    scope: { kind: "point", offsetUs: datagram.offsetUs },
+    severity: "critical",
+    message: `UDP event-stream sequence ${datagram.sequence} arrived where ${expectedSequence} was expected.`,
+    expectedSequence,
+    observedSequence: datagram.sequence,
+  };
+}
+
+export function serialTransportFailureEvent(
+  type: "serial-read-error" | "serial-disconnected" | "serial-tail-recovery-failed",
+  offsetUs: number,
+  message: string,
+  code: string,
+): TransportEventDraft {
+  return {
+    type,
+    transport: "serial",
+    scope: { kind: "point", offsetUs },
+    severity: "critical",
+    message: message.slice(0, 1_000),
+    code: code.slice(0, 128),
+  };
 }
 
 export class UdpCaptureOwnershipError extends Error {
@@ -226,17 +370,6 @@ export function assertUdpCaptureIntegrity(
       `UDP capture integrity check failed; clean save was refused because ${failures.join("; ")}. Check the local bridge event stream and record a new capture.`,
     );
   }
-}
-
-function markCaptureRecoveryIncomplete(session: SessionDocument): SessionDocument {
-  return {
-    ...session,
-    // Replace the recorder's existing incident instead of growing a document
-    // that was already budgeted against the exact 32 MiB serialized limit.
-    incidents: session.incidents.map((incident) => incident.id === "capture-interval"
-      ? { ...incident, title: "Incomplete", severity: "warning" as const }
-      : incident),
-  };
 }
 
 function strictInteger(value: string, label: string, minimum: number, maximum: number): number {
@@ -381,6 +514,15 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
   const lastUdpSequenceRef = useRef(-1);
   const udpSequenceIssueRef = useRef<string | null>(null);
   const transportIntegrityIssueRef = useRef<string | null>(null);
+  const pendingTransportEventsRef = useRef<TransportEventDraft[]>([]);
+  const recordedUdpErrorKeysRef = useRef<Set<string>>(new Set());
+  const transportEventLogCompleteRef = useRef(true);
+  const transportReportedUnitsRef = useRef<number | null>(null);
+  const transportReportedBytesRef = useRef<number | null>(null);
+  const stopDispositionRef = useRef<"confirmed" | "unconfirmed" | "not-observed">("not-observed");
+  const shutdownEvidenceRef = useRef<{ code: string; message: string } | undefined>(undefined);
+  const finalizationIssueCodesRef = useRef<CaptureIntegrityIssueCode[]>([]);
+  const durationLimitEventRecordedRef = useRef(false);
   const serialCaptureRef = useRef<WebSerialCapture | null>(null);
   const serialAssemblerRef = useRef<Nsl01SerialFrameAssembler | null>(null);
   const serialDisconnectedRef = useRef(false);
@@ -541,6 +683,15 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     lastUdpSequenceRef.current = -1;
     udpSequenceIssueRef.current = null;
     transportIntegrityIssueRef.current = null;
+    pendingTransportEventsRef.current = [];
+    recordedUdpErrorKeysRef.current = new Set();
+    transportEventLogCompleteRef.current = true;
+    transportReportedUnitsRef.current = null;
+    transportReportedBytesRef.current = null;
+    stopDispositionRef.current = "not-observed";
+    shutdownEvidenceRef.current = undefined;
+    finalizationIssueCodesRef.current = [];
+    durationLimitEventRecordedRef.current = false;
     setTotals(EMPTY_TOTALS);
     setIssue("");
     setNotice("");
@@ -557,6 +708,15 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     lastUdpSequenceRef.current = -1;
     udpSequenceIssueRef.current = null;
     transportIntegrityIssueRef.current = null;
+    pendingTransportEventsRef.current = [];
+    recordedUdpErrorKeysRef.current = new Set();
+    transportEventLogCompleteRef.current = true;
+    transportReportedUnitsRef.current = null;
+    transportReportedBytesRef.current = null;
+    stopDispositionRef.current = "not-observed";
+    shutdownEvidenceRef.current = undefined;
+    finalizationIssueCodesRef.current = [];
+    durationLimitEventRecordedRef.current = false;
     pendingUdpDatagramsRef.current = [];
     pendingUdpBytesRef.current = 0;
     observedUdpDatagramsRef.current = 0;
@@ -575,11 +735,99 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     verifiedStopDurationUsRef.current = 0;
   };
 
+  const captureEventOffsetUs = (): number => {
+    const durationUs = durationFrozenRef.current
+      ? frozenDurationUsRef.current
+      : monotonicCaptureDurationUs(
+          captureStartMsRef.current,
+          nowMonotonicMs(),
+          lastDurationUsRef.current,
+          transportRef.current === "udp" ? udpStatusRef.current?.capture?.durationUs ?? 0 : 0,
+        );
+    // Session duration is an exclusive boundary, so an event observed at the
+    // current edge belongs to the preceding active microsecond.
+    return Math.max(0, durationUs - 1);
+  };
+
+  const recordTransportEvent = (event: TransportEventDraft): void => {
+    const recorder = recorderRef.current;
+    if (!recorder) {
+      if (pendingTransportEventsRef.current.length < 256) pendingTransportEventsRef.current.push(event);
+      else transportEventLogCompleteRef.current = false;
+      return;
+    }
+    const boundedEvent = event.scope.kind === "point" && event.scope.offsetUs >= recorder.limits.maxDurationUs
+      ? { ...event, scope: { kind: "point" as const, offsetUs: recorder.limits.maxDurationUs - 1 } } as TransportEventDraft
+      : event;
+    try {
+      const appended = recorder.appendTransportEvent(boundedEvent);
+      if (!appended) transportEventLogCompleteRef.current = false;
+      else if (isDurationLimitEvent(boundedEvent)) durationLimitEventRecordedRef.current = true;
+    } catch {
+      transportEventLogCompleteRef.current = false;
+      recorder.markEventLogIncomplete();
+    }
+  };
+
+  const flushPendingTransportEvents = (recorder: CaptureRecorder): void => {
+    const pending = pendingTransportEventsRef.current;
+    pendingTransportEventsRef.current = [];
+    for (const event of pending) {
+      const boundedEvent = event.scope.kind === "point" && event.scope.offsetUs >= recorder.limits.maxDurationUs
+        ? { ...event, scope: { kind: "point" as const, offsetUs: recorder.limits.maxDurationUs - 1 } } as TransportEventDraft
+        : event;
+      try {
+        const appended = recorder.appendTransportEvent(boundedEvent);
+        if (!appended) transportEventLogCompleteRef.current = false;
+        else if (isDurationLimitEvent(boundedEvent)) durationLimitEventRecordedRef.current = true;
+      } catch {
+        transportEventLogCompleteRef.current = false;
+        recorder.markEventLogIncomplete();
+      }
+    }
+    if (!transportEventLogCompleteRef.current) recorder.markEventLogIncomplete();
+  };
+
+  const recordUdpError = (error: UdpBridgeErrorDetail | UdpBridgeProtocolError): void => {
+    if (!ownedUdpCaptureIdRef.current) return;
+    const code = error instanceof UdpBridgeProtocolError ? error.code : error.code;
+    const message = error.message;
+    const fatal = error instanceof UdpBridgeProtocolError ? true : error.fatal;
+    const type = error instanceof UdpBridgeProtocolError && error.code === "event-stream-disconnected"
+      ? "udp-event-stream-disconnected"
+      : "udp-bridge-error";
+    const key = `${type}\u0000${code}\u0000${error instanceof UdpBridgeProtocolError ? message : error.at}`;
+    if (recordedUdpErrorKeysRef.current.has(key)) return;
+    recordedUdpErrorKeysRef.current.add(key);
+    recordTransportEvent({
+      type,
+      transport: "udp",
+      scope: { kind: "point", offsetUs: captureEventOffsetUs() },
+      severity: fatal ? "critical" : "warning",
+      message: message.slice(0, 1_000),
+      code: code.slice(0, 128),
+      fatal,
+    });
+  };
+
   const pauseIngest = (cause: unknown): void => {
     if (ingestPausedRef.current) return;
     ingestPausedRef.current = true;
     const message = errorMessage(cause, "Captured input could not be retained.");
     transportIntegrityIssueRef.current = message;
+    const recorderError = cause instanceof CaptureRecorderError ? cause : null;
+    if (recorderError?.limit === "duration") durationLimitEventRecordedRef.current = true;
+    recordTransportEvent({
+      type: recorderError?.limit ? "capture-limit" : "capture-backpressure",
+      transport: transportRef.current ?? transport,
+      scope: { kind: "point", offsetUs: captureEventOffsetUs() },
+      severity: "critical",
+      message: message.slice(0, 1_000),
+      component: "recorder",
+      limit: recorderError?.limit ?? "unknown",
+      limitValue: recorderError?.limitValue ?? null,
+      observedValue: recorderError?.observedValue ?? null,
+    });
     setIssue(`${message} Recording is paused; stop to preserve the records already retained.`);
   };
 
@@ -595,27 +843,34 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     return frozenDurationUsRef.current;
   };
 
-  const appendCapturedBytes = (input: CapturedBytes): void => {
-    if (ingestPausedRef.current) return;
+  const appendCapturedBytes = (input: CapturedBytes, origin: CapturedInputOrigin = "live"): boolean => {
+    if (!canRetainCapturedInput(
+      captureInputClosedRef.current,
+      ingestPausedRef.current,
+      origin,
+    )) return false;
     const recorder = recorderRef.current;
-    if (!recorder) return;
+    if (!recorder) return false;
     try {
       recorder.append(input);
       lastRetainedOffsetUsRef.current = Math.max(lastRetainedOffsetUsRef.current, input.offsetUs);
+      return true;
     } catch (cause) {
       pauseIngest(cause);
+      return false;
     }
   };
 
-  const acceptOwnedUdpDatagram = (datagram: UdpBridgeDatagram): void => {
+  const acceptOwnedUdpDatagram = (datagram: UdpBridgeDatagram, allowPausedRetention = false): boolean => {
     const ownedCaptureId = ownedUdpCaptureIdRef.current;
     if (!ownedCaptureId || datagram.captureId !== ownedCaptureId) {
       setIssue("The bridge emitted a datagram from a capture this dialog does not own; it was left untouched and not retained.");
-      return;
+      return false;
     }
     const expectedSequence = lastUdpSequenceRef.current + 1;
     if (datagram.sequence !== expectedSequence && !udpSequenceIssueRef.current) {
       udpSequenceIssueRef.current = `SSE sequence ${datagram.sequence} arrived where ${expectedSequence} was expected`;
+      recordTransportEvent(udpSequenceDiscontinuityEvent(datagram, expectedSequence));
       setIssue(`UDP event-stream sequence discontinuity detected at ${datagram.sequence}; clean save will be refused.`);
     }
     lastUdpSequenceRef.current = datagram.sequence;
@@ -624,12 +879,11 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     }
     observedUdpDatagramsRef.current += 1;
     observedUdpBytesRef.current += datagram.byteLength;
-    if (captureInputClosedRef.current) return;
-    appendCapturedBytes({
+    return appendCapturedBytes({
       offsetUs: datagram.offsetUs,
       bytes: datagram.data,
       wireBytes: datagram.byteLength,
-    });
+    }, allowPausedRetention ? "pre-status-buffer" : "live");
   };
 
   const establishOwnedUdpCapture = (status: UdpBridgeStatus): void => {
@@ -662,15 +916,17 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
       },
     });
     recorderRef.current = recorder;
+    flushPendingTransportEvents(recorder);
     captureStartMsRef.current = nowMonotonicMs() - status.capture.durationUs / 1_000;
 
     const pending = pendingUdpDatagramsRef.current;
     pendingUdpDatagramsRef.current = [];
     pendingUdpBytesRef.current = 0;
-    for (const datagram of pending) {
-      if (datagram.captureId !== status.capture.id) continue;
-      acceptOwnedUdpDatagram(datagram);
-    }
+    flushOwnedBufferedUdpDatagrams(
+      pending,
+      status.capture.id,
+      (datagram, allowPausedRetention) => acceptOwnedUdpDatagram(datagram, allowPausedRetention),
+    );
   };
 
   const acceptUdpStatus = (status: UdpBridgeStatus): void => {
@@ -681,7 +937,10 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
       if (!durationFrozenRef.current) {
       lastDurationUsRef.current = Math.max(lastDurationUsRef.current, status.capture.durationUs);
       }
-      if (status.lastError && mountedRef.current) setIssue(udpErrorMessage(status.lastError));
+      if (status.lastError) {
+        recordUdpError(status.lastError);
+        if (mountedRef.current) setIssue(udpErrorMessage(status.lastError));
+      }
     }
   };
 
@@ -723,7 +982,23 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
             pendingUdpDatagramsRef.current.push(datagram);
             pendingUdpBytesRef.current += datagram.byteLength;
           } else {
-            pauseIngest(new Error("Early UDP datagrams exceeded the local pre-status buffer limit."));
+            const message = "Early UDP datagrams exceeded the local pre-status buffer limit.";
+            ingestPausedRef.current = true;
+            transportIntegrityIssueRef.current = message;
+            recordTransportEvent({
+              type: "capture-backpressure",
+              transport: "udp",
+              scope: { kind: "session" },
+              severity: "critical",
+              message,
+              component: "udp-prestatus-buffer",
+              limit: pendingUdpDatagramsRef.current.length >= MAX_CAPTURE_RECORDS ? "records" : "captured-bytes",
+              limitValue: pendingUdpDatagramsRef.current.length >= MAX_CAPTURE_RECORDS ? MAX_CAPTURE_RECORDS : MAX_CAPTURE_BYTES,
+              observedValue: pendingUdpDatagramsRef.current.length >= MAX_CAPTURE_RECORDS
+                ? pendingUdpDatagramsRef.current.length + 1
+                : pendingUdpBytesRef.current + datagram.byteLength,
+            });
+            setIssue(`${message} Recording is paused; stop to preserve the records already retained.`);
           }
         },
         onError: (error) => {
@@ -735,6 +1010,7 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
             captureInputClosedRef.current = true;
             transportIntegrityIssueRef.current = udpErrorMessage(error);
           }
+          recordUdpError(error);
           setIssue(udpErrorMessage(error));
         },
       });
@@ -849,6 +1125,7 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
         captureStartMsRef.current = nowMonotonicMs();
         lastDurationUsRef.current = 0;
         recorderRef.current = recorder;
+        flushPendingTransportEvents(recorder);
         serialAssemblerRef.current = new Nsl01SerialFrameAssembler();
         setSerialDevice(device.label);
         setSerialState("open");
@@ -876,6 +1153,12 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
         freezeCaptureDuration();
         captureInputClosedRef.current = true;
         transportIntegrityIssueRef.current = error.message;
+        recordTransportEvent(serialTransportFailureEvent(
+          "serial-read-error",
+          captureEventOffsetUs(),
+          error.message,
+          error.name || "serial-read-error",
+        ));
         setSerialState("error");
         setIssue(`${error.message} Stop and save the records retained before the serial error.`);
       },
@@ -883,6 +1166,12 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
         freezeCaptureDuration();
         captureInputClosedRef.current = true;
         transportIntegrityIssueRef.current = "The serial stream disconnected before the operator stopped it.";
+        recordTransportEvent(serialTransportFailureEvent(
+          "serial-disconnected",
+          captureEventOffsetUs(),
+          "The serial stream disconnected before the operator stopped it.",
+          "serial-stream-ended",
+        ));
         serialDisconnectedRef.current = true;
         setSerialState("disconnected");
         setIssue("The serial stream disconnected. Stop and save the records retained before the disconnect.");
@@ -932,6 +1221,22 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
         ) {
           await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 20));
         }
+        if (
+          observedUdpDatagramsRef.current < status.capture.datagrams
+          || observedUdpBytesRef.current < status.capture.bytes
+        ) {
+          const message = "The UDP event stream did not deliver the bridge's final counters before the stop-drain deadline.";
+          recordTransportEvent({
+            type: "udp-event-stream-disconnected",
+            transport: "udp",
+            scope: { kind: "point", offsetUs: captureEventOffsetUs() },
+            severity: "critical",
+            message,
+            code: "stop-drain-timeout",
+            fatal: true,
+          });
+          transportIntegrityIssueRef.current = message;
+        }
       }
       captureInputClosedRef.current = true;
       verifiedDurationUs = verifiedCaptureDurationUs({
@@ -941,6 +1246,11 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
         lastRetainedOffsetUs: lastRetainedOffsetUsRef.current,
       });
       verifiedStopDurationUsRef.current = verifiedDurationUs;
+      transportReportedUnitsRef.current = status.capture?.datagrams ?? null;
+      transportReportedBytesRef.current = status.capture?.bytes ?? null;
+      stopDispositionRef.current = status.state === "stopped" && status.capture?.id === ownedCaptureId
+        ? "confirmed"
+        : "unconfirmed";
       client.disconnect();
       udpClientRef.current = null;
       transportRef.current = null;
@@ -963,15 +1273,16 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
       setSerialState("closed");
       const assembler = serialAssemblerRef.current;
       if (assembler && !ingestPausedRef.current) {
-        for (const assembly of assembler.finish()) {
-          appendCapturedBytes({ offsetUs: assembly.offsetUs, bytes: assembly.bytes });
-        }
+        retainSerialAssemblerTail(assembler, appendCapturedBytes);
       }
       verifiedDurationUs = verifiedCaptureDurationUs({
         frozenDurationUs: verifiedDurationUs,
         lastRetainedOffsetUs: lastRetainedOffsetUsRef.current,
       });
       verifiedStopDurationUsRef.current = verifiedDurationUs;
+      transportReportedUnitsRef.current = null;
+      transportReportedBytesRef.current = null;
+      stopDispositionRef.current = "confirmed";
       serialAssemblerRef.current = null;
       transportRef.current = null;
       captureStartMsRef.current = 0;
@@ -1025,22 +1336,38 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     const boundedDuration = boundFinalizationDuration(context.durationUs, recorder.limits.maxDurationUs);
     let requestedDurationUs = boundedDuration.durationUs;
     let incompleteReason = context.incompleteReason;
+    const issueCodes = new Set<CaptureIntegrityIssueCode>(context.evidence.issueCodes ?? []);
     if (boundedDuration.wasCapped) {
       const durationReason = `Capture ran for ${formatDurationUs(context.durationUs, true)}, beyond the ${formatDurationUs(recorder.limits.maxDurationUs)} session limit; the retained replay duration was capped and marked incomplete.`;
       incompleteReason = incompleteReason ? `${incompleteReason}; ${durationReason}` : durationReason;
+      issueCodes.add("duration-capped");
+      durationLimitEventRecordedRef.current = ensureDurationLimitTransportEvent(recorder, {
+        alreadyRecorded: durationLimitEventRecordedRef.current,
+        transport,
+        maximumDurationUs: recorder.limits.maxDurationUs,
+        observedDurationUs: context.durationUs,
+        message: durationReason,
+      });
     }
+    const evidence: CaptureFinalizationEvidence = {
+      ...context.evidence,
+      stopOffsetUs: context.evidence.stopDisposition === "not-observed"
+        ? null
+        : Math.min(requestedDurationUs, context.evidence.stopOffsetUs ?? requestedDurationUs),
+      issueCodes: [...issueCodes],
+    };
 
     let finalized: SessionDocument;
     try {
-      finalized = recorder.finalize(requestedDurationUs);
+      finalized = recorder.finalize(requestedDurationUs, evidence);
     } catch (cause) {
-      pendingFinalizationRef.current = { durationUs: requestedDurationUs, incompleteReason };
+      pendingFinalizationRef.current = { durationUs: requestedDurationUs, incompleteReason, evidence };
       setPhase("finalize-error");
       setIssue(`${errorMessage(cause, "The retained capture could not be finalized.")} ${recorder.recordCount.toLocaleString()} retained records remain in memory; retry finalization or explicitly discard them.`);
       return;
     }
 
-    const session = incompleteReason ? markCaptureRecoveryIncomplete(finalized) : finalized;
+    const session = finalized;
     pendingFinalizationRef.current = null;
     setTotals({
       inputUnits: transport === "udp" ? observedUdpDatagramsRef.current : observedSerialReadsRef.current,
@@ -1050,8 +1377,9 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     });
     recorderRef.current = null;
     serialAssemblerRef.current = null;
-    if (incompleteReason) {
-      setNotice(`Recovery capture is durably labeled incomplete: ${incompleteReason.slice(0, 800)}`);
+    if (session.formatVersion === 2 && session.captureIntegrity.status === "incomplete") {
+      const reason = incompleteReason ?? session.captureIntegrity.issueCodes.join(", ");
+      setNotice(`Recovery capture includes durable integrity evidence: ${reason.slice(0, 800)}`);
     }
     await deliverFinalizedSession(session);
   };
@@ -1070,6 +1398,21 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     } catch (cause) {
       const stopReason = errorMessage(cause, "The transport did not confirm a clean stop.");
       incompleteReason = incompleteReason ? `${incompleteReason}; ${stopReason}` : stopReason;
+      if (stopDispositionRef.current !== "confirmed") {
+        stopDispositionRef.current = "unconfirmed";
+        shutdownEvidenceRef.current = {
+          code: cause instanceof UdpBridgeProtocolError ? cause.code : "transport-stop-unconfirmed",
+          message: stopReason,
+        };
+        recordTransportEvent({
+          type: "shutdown-unconfirmed",
+          transport,
+          scope: { kind: "session" },
+          severity: "critical",
+          message: stopReason.slice(0, 1_000),
+          code: shutdownEvidenceRef.current.code.slice(0, 128),
+        });
+      }
       captureInputClosedRef.current = true;
       udpClientRef.current?.disconnect();
       const serialCapture = serialCaptureRef.current;
@@ -1077,11 +1420,16 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
       const assembler = serialAssemblerRef.current;
       if (transportRef.current === "serial" && assembler && !ingestPausedRef.current) {
         try {
-          for (const assembly of assembler.finish()) {
-            appendCapturedBytes({ offsetUs: assembly.offsetUs, bytes: assembly.bytes });
-          }
+          retainSerialAssemblerTail(assembler, appendCapturedBytes);
         } catch (assemblyCause) {
-          incompleteReason += ` Serial tail recovery also failed: ${errorMessage(assemblyCause, "unknown assembly error")}`;
+          const tailReason = errorMessage(assemblyCause, "unknown assembly error");
+          incompleteReason += ` Serial tail recovery also failed: ${tailReason}`;
+          recordTransportEvent(serialTransportFailureEvent(
+            "serial-tail-recovery-failed",
+            captureEventOffsetUs(),
+            tailReason,
+            "serial-tail-recovery-failed",
+          ));
         }
       }
       transportRef.current = null;
@@ -1095,7 +1443,22 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
 
     try {
       setPhase("saving");
-      await finalizeRetainedCapture({ durationUs: finalDurationUs, incompleteReason });
+      await finalizeRetainedCapture({
+        durationUs: finalDurationUs,
+        incompleteReason,
+        evidence: captureFinalizationEvidence({
+          transport,
+          durationUs: finalDurationUs,
+          stopDisposition: stopDispositionRef.current,
+          eventLogComplete: transportEventLogCompleteRef.current,
+          observedUnits: transport === "udp" ? observedUdpDatagramsRef.current : observedSerialReadsRef.current,
+          observedBytes: transport === "udp" ? observedUdpBytesRef.current : observedSerialBytesRef.current,
+          transportReportedUnits: transportReportedUnitsRef.current,
+          transportReportedBytes: transportReportedBytesRef.current,
+          issueCodes: finalizationIssueCodesRef.current,
+          shutdown: shutdownEvidenceRef.current,
+        }),
+      });
     } catch (cause) {
       if (mountedRef.current) {
         setPhase("finalize-error");

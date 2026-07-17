@@ -3,6 +3,8 @@ import {
   incidentPresetSchema,
   MAX_SESSION_DURATION_US,
   sessionDocumentSchema,
+  type CaptureIntegrityIssueCode,
+  type CaptureIntegrityReceipt,
   type DecodedFrame,
   type DiagnosticEvent,
   type IncidentPreset,
@@ -11,11 +13,51 @@ import {
   type OffsetUs,
   type ParsedSession,
   type SessionDocument,
+  type SessionDocumentV2,
+  type TransportEvent,
 } from "./types";
 
 const SECOND_US = 1_000_000;
 const DECODER_RELOCK_STABILITY_US = 40 * SECOND_US;
 const DECODER_RELOCK_MIN_VALID_FRAMES = 3;
+
+const TRANSPORT_EVENT_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new Set([
+  "udp-event-sequence-discontinuity",
+  "udp-counter-mismatch",
+  "udp-bridge-error",
+  "udp-event-stream-disconnected",
+  "capture-backpressure",
+  "capture-limit",
+  "serial-read-error",
+  "serial-disconnected",
+  "serial-tail-recovery-failed",
+  "serial-counter-mismatch",
+  "shutdown-unconfirmed",
+]);
+
+const UDP_CAPTURE_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new Set([
+  "udp-event-sequence-discontinuity",
+  "udp-counter-mismatch",
+  "udp-bridge-error",
+  "udp-event-stream-disconnected",
+  "capture-backpressure",
+  "capture-limit",
+  "shutdown-unconfirmed",
+  "duration-capped",
+  "event-log-incomplete",
+]);
+
+const SERIAL_CAPTURE_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new Set([
+  "capture-backpressure",
+  "capture-limit",
+  "serial-read-error",
+  "serial-disconnected",
+  "serial-tail-recovery-failed",
+  "serial-counter-mismatch",
+  "shutdown-unconfirmed",
+  "duration-capped",
+  "event-log-incomplete",
+]);
 
 export class SessionValidationError extends Error {
   readonly details: string[];
@@ -58,11 +100,337 @@ export function validateIncidentPreset(input: unknown, durationUs: OffsetUs): In
   return result.data;
 }
 
+function transportEventStartUs(event: TransportEvent): number | null {
+  if (event.scope.kind === "point") return event.scope.offsetUs;
+  if (event.scope.kind === "interval") return event.scope.startUs;
+  return null;
+}
+
+function assertV2CaptureEvidence(document: SessionDocumentV2): void {
+  const eventIds = new Set<string>();
+  let previousTimedStartUs = -1;
+  for (const [position, event] of document.transportEvents.entries()) {
+    if (eventIds.has(event.id)) {
+      throw new SessionValidationError("The replay contains duplicate transport event IDs.", [
+        `Duplicate transport event ID: ${event.id}`,
+      ]);
+    }
+    eventIds.add(event.id);
+    if (event.index !== position) {
+      throw new SessionValidationError("Transport event indices must be contiguous and zero-based.", [
+        `${event.id} declares index ${event.index}; expected ${position}`,
+      ]);
+    }
+    if (event.transport !== document.source.kind) {
+      throw new SessionValidationError("A transport event does not match the declared session source.", [
+        `${event.id} uses ${event.transport}; source uses ${document.source.kind}`,
+      ]);
+    }
+
+    const startUs = transportEventStartUs(event);
+    if (startUs != null) {
+      if (startUs >= document.durationUs) {
+        throw new SessionValidationError("A transport event falls outside the declared session duration.", [
+          `${event.id} starts at ${startUs}µs; duration is ${document.durationUs}µs`,
+        ]);
+      }
+      if (startUs < previousTimedStartUs) {
+        throw new SessionValidationError("Transport event timestamps are not monotonic.", [
+          `${event.id} at ${startUs}µs follows ${previousTimedStartUs}µs`,
+        ]);
+      }
+      previousTimedStartUs = startUs;
+    }
+    if (event.scope.kind === "interval") {
+      if (event.scope.endUs <= event.scope.startUs || event.scope.endUs > document.durationUs) {
+        throw new SessionValidationError("A transport event interval is outside the declared session duration.", [
+          `${event.id} declares [${event.scope.startUs}, ${event.scope.endUs}) within duration ${document.durationUs}µs`,
+        ]);
+      }
+    }
+    if (
+      event.type === "udp-event-sequence-discontinuity"
+      && event.expectedSequence === event.observedSequence
+    ) {
+      throw new SessionValidationError("A UDP sequence-discontinuity event does not describe a discontinuity.", [
+        `${event.id} expected and observed sequence ${event.expectedSequence}`,
+      ]);
+    }
+    if (event.type === "udp-counter-mismatch") {
+      const countersReconcile = event.bridgeDatagrams === event.browserDatagrams
+        && event.bridgeBytes === event.browserBytes
+        && event.browserDatagrams === event.retainedRecords
+        && event.browserBytes === event.retainedBytes;
+      if (countersReconcile) {
+        throw new SessionValidationError("A UDP counter-mismatch event contains matching counters.", [event.id]);
+      }
+    }
+    if (event.type === "serial-counter-mismatch" && event.observedBytes === event.retainedBytes) {
+      throw new SessionValidationError("A serial counter-mismatch event contains matching byte counts.", [event.id]);
+    }
+    if (
+      (event.type === "capture-backpressure" || event.type === "capture-limit")
+      && event.component === "udp-prestatus-buffer"
+      && event.transport !== "udp"
+    ) {
+      throw new SessionValidationError("Only UDP events may reference the pre-status buffer.", [event.id]);
+    }
+  }
+
+  const receipt = document.captureIntegrity;
+  const retainedBytes = document.records.reduce((total, record) => total + record.captureBytes, 0);
+  if (receipt.retained.records !== document.records.length || receipt.retained.bytes !== retainedBytes) {
+    throw new SessionValidationError("The capture-integrity receipt does not match retained session records.", [
+      `Receipt declares ${receipt.retained.records} records and ${receipt.retained.bytes} bytes; document contains ${document.records.length} records and ${retainedBytes} bytes`,
+    ]);
+  }
+  if ((receipt.stopDisposition === "not-observed") !== (receipt.stopOffsetUs === null)) {
+    throw new SessionValidationError("The capture-integrity stop disposition and offset are inconsistent.");
+  }
+  if (receipt.stopOffsetUs != null && receipt.stopOffsetUs > document.durationUs) {
+    throw new SessionValidationError("The capture-integrity stop offset exceeds the session duration.", [
+      `${receipt.stopOffsetUs}µs exceeds ${document.durationUs}µs`,
+    ]);
+  }
+
+  const issueCodes = new Set(receipt.issueCodes);
+  if (issueCodes.size !== receipt.issueCodes.length) {
+    throw new SessionValidationError("The capture-integrity receipt contains duplicate issue codes.");
+  }
+  const eventTypes = new Set(document.transportEvents.map((event) => event.type));
+  for (const event of document.transportEvents) {
+    if (!issueCodes.has(event.type)) {
+      throw new SessionValidationError("A transport event is not represented in the capture-integrity receipt.", [
+        `${event.id} requires issue code ${event.type}`,
+      ]);
+    }
+    if (event.type === "udp-counter-mismatch") {
+      const input = receipt.input;
+      if (
+        event.bridgeDatagrams !== input.transportReportedUnits
+        || event.bridgeBytes !== input.transportReportedBytes
+        || event.browserDatagrams !== input.observedUnits
+        || event.browserBytes !== input.observedBytes
+        || event.retainedRecords !== receipt.retained.records
+        || event.retainedBytes !== receipt.retained.bytes
+      ) {
+        throw new SessionValidationError("A UDP counter-mismatch event conflicts with the capture-integrity receipt.", [event.id]);
+      }
+    }
+    if (event.type === "serial-counter-mismatch") {
+      const input = receipt.input;
+      if (
+        event.observedReads !== input.observedUnits
+        || event.observedBytes !== input.observedBytes
+        || event.retainedRecords !== receipt.retained.records
+        || event.retainedBytes !== receipt.retained.bytes
+      ) {
+        throw new SessionValidationError("A serial counter-mismatch event conflicts with the capture-integrity receipt.", [event.id]);
+      }
+    }
+  }
+
+  if (document.source.kind !== "file") {
+    const allowedIssueCodes = document.source.kind === "udp" ? UDP_CAPTURE_ISSUE_CODES : SERIAL_CAPTURE_ISSUE_CODES;
+    const invalidIssueCode = receipt.issueCodes.find((code) => !allowedIssueCodes.has(code));
+    if (invalidIssueCode) {
+      throw new SessionValidationError("A capture-integrity issue code does not apply to the declared live source.", [
+        `${invalidIssueCode} is not valid for ${document.source.kind}`,
+      ]);
+    }
+    if (receipt.eventLogComplete === issueCodes.has("event-log-incomplete")) {
+      throw new SessionValidationError("The capture-integrity event-log status and issue codes are inconsistent.");
+    }
+    for (const code of issueCodes) {
+      if (
+        receipt.eventLogComplete
+        && TRANSPORT_EVENT_ISSUE_CODES.has(code)
+        && !eventTypes.has(code as TransportEvent["type"])
+      ) {
+        throw new SessionValidationError("A capture-integrity issue code is not represented by a transport event.", [code]);
+      }
+    }
+  }
+
+  if ((receipt.stopDisposition === "unconfirmed") !== issueCodes.has("shutdown-unconfirmed")) {
+    throw new SessionValidationError("The capture-integrity shutdown status and issue codes are inconsistent.");
+  }
+  const shutdownEvents = document.transportEvents.filter((event) => event.type === "shutdown-unconfirmed");
+  if (
+    (receipt.stopDisposition === "unconfirmed" && (
+      shutdownEvents.length > 1
+      || (receipt.eventLogComplete && shutdownEvents.length !== 1)
+    ))
+    || (receipt.stopDisposition !== "unconfirmed" && shutdownEvents.length !== 0)
+  ) {
+    throw new SessionValidationError("The capture-integrity shutdown status is not represented by its terminal transport event.");
+  }
+
+  const durationLimitEvents = document.transportEvents.filter(
+    (event) => event.type === "capture-limit" && event.limit === "duration",
+  );
+  const hasDurationCappedCode = issueCodes.has("duration-capped");
+  if (
+    durationLimitEvents.length > 1
+    || (!hasDurationCappedCode && durationLimitEvents.length > 0)
+    || (hasDurationCappedCode && receipt.eventLogComplete && durationLimitEvents.length !== 1)
+  ) {
+    throw new SessionValidationError("The duration-capped receipt issue and capture-limit event are inconsistent.");
+  }
+
+  const input = receipt.input;
+  const udpMismatchEvents = document.transportEvents.filter((event) => event.type === "udp-counter-mismatch");
+  const serialMismatchEvents = document.transportEvents.filter((event) => event.type === "serial-counter-mismatch");
+  if (document.source.kind === "udp") {
+    if (input.unit !== "datagram") {
+      throw new SessionValidationError("A UDP capture-integrity receipt requires datagram counters.");
+    }
+    if (receipt.assessmentBasis === "udp-bridge-reconciled") {
+      if (
+        input.observedUnits == null
+        || input.observedBytes == null
+        || input.transportReportedUnits == null
+        || input.transportReportedBytes == null
+      ) {
+        throw new SessionValidationError("A bridge-assessed UDP receipt requires bridge and browser counters.");
+      }
+      const countersReconcile = input.observedUnits === input.transportReportedUnits
+        && input.observedBytes === input.transportReportedBytes
+        && receipt.retained.records === input.observedUnits
+        && receipt.retained.bytes === input.observedBytes;
+      const hasMismatchCode = issueCodes.has("udp-counter-mismatch");
+      if (countersReconcile && (hasMismatchCode || udpMismatchEvents.length > 0)) {
+        throw new SessionValidationError("A reconciled UDP receipt declares a counter mismatch.");
+      }
+      if (!countersReconcile && (
+        !hasMismatchCode
+        || udpMismatchEvents.length > 1
+        || (receipt.eventLogComplete && udpMismatchEvents.length !== 1)
+      )) {
+        throw new SessionValidationError("Unreconciled UDP counters require one matching counter-mismatch issue and event.");
+      }
+    } else if (receipt.assessmentBasis === "udp-browser-observed") {
+      if (
+        receipt.status !== "incomplete"
+        || receipt.stopDisposition !== "unconfirmed"
+        || input.observedUnits == null
+        || input.observedBytes == null
+        || input.transportReportedUnits !== null
+        || input.transportReportedBytes !== null
+      ) {
+        throw new SessionValidationError("A browser-observed UDP receipt must honestly describe unavailable terminal bridge counters.");
+      }
+      if (issueCodes.has("udp-counter-mismatch") || udpMismatchEvents.length > 0) {
+        throw new SessionValidationError("A browser-only UDP receipt cannot claim bridge counter reconciliation or mismatch.");
+      }
+    } else if (receipt.assessmentBasis === "recorder-only") {
+      if (
+        receipt.status !== "incomplete"
+        || receipt.stopDisposition !== "unconfirmed"
+        || receipt.eventLogComplete
+        || input.observedUnits !== null
+        || input.observedBytes !== null
+        || input.transportReportedUnits !== null
+        || input.transportReportedBytes !== null
+      ) {
+        throw new SessionValidationError("A recorder-only UDP receipt must remain incomplete and contain no adapter observations.");
+      }
+      if (issueCodes.has("udp-counter-mismatch") || udpMismatchEvents.length > 0) {
+        throw new SessionValidationError("A recorder-only UDP receipt cannot claim a counter mismatch without observations.");
+      }
+    } else {
+      throw new SessionValidationError("A UDP session contains capture-integrity provenance for another source.");
+    }
+  } else if (document.source.kind === "serial") {
+    if (input.unit !== "serial-read") {
+      throw new SessionValidationError("A serial capture-integrity receipt requires serial-read counters.");
+    }
+    if (receipt.assessmentBasis === "web-serial-observed") {
+      if (
+        input.observedUnits == null
+        || input.observedBytes == null
+        || input.transportReportedUnits !== null
+        || input.transportReportedBytes !== null
+      ) {
+        throw new SessionValidationError("A Web Serial capture-integrity receipt contains invalid input counters.");
+      }
+      const bytesReconcile = receipt.retained.bytes === input.observedBytes;
+      const hasMismatchCode = issueCodes.has("serial-counter-mismatch");
+      if (bytesReconcile && (hasMismatchCode || serialMismatchEvents.length > 0)) {
+        throw new SessionValidationError("A reconciled serial receipt declares a counter mismatch.");
+      }
+      if (!bytesReconcile && (
+        !hasMismatchCode
+        || serialMismatchEvents.length > 1
+        || (receipt.eventLogComplete && serialMismatchEvents.length !== 1)
+      )) {
+        throw new SessionValidationError("Unreconciled serial byte counts require one matching counter-mismatch issue and event.");
+      }
+    } else if (receipt.assessmentBasis === "recorder-only") {
+      if (
+        receipt.status !== "incomplete"
+        || receipt.stopDisposition !== "unconfirmed"
+        || receipt.eventLogComplete
+        || input.observedUnits !== null
+        || input.observedBytes !== null
+        || input.transportReportedUnits !== null
+        || input.transportReportedBytes !== null
+      ) {
+        throw new SessionValidationError("A recorder-only serial receipt must remain incomplete and contain no adapter observations.");
+      }
+      if (issueCodes.has("serial-counter-mismatch") || serialMismatchEvents.length > 0) {
+        throw new SessionValidationError("A recorder-only serial receipt cannot claim a counter mismatch without observations.");
+      }
+    } else {
+      throw new SessionValidationError("A serial session contains capture-integrity provenance for another source.");
+    }
+  } else {
+    if (
+      receipt.assessmentBasis !== "file-source-unassessed"
+      || receipt.status !== "unknown"
+      || receipt.stopDisposition !== "not-observed"
+      || receipt.eventLogComplete
+      || document.transportEvents.length > 0
+      || input.unit !== "unknown"
+      || input.observedUnits !== null
+      || input.observedBytes !== null
+      || input.transportReportedUnits !== null
+      || input.transportReportedBytes !== null
+      || receipt.issueCodes.length !== 1
+      || receipt.issueCodes[0] !== "file-source-unassessed"
+    ) {
+      throw new SessionValidationError("A file-source session must declare unassessed capture integrity.");
+    }
+  }
+
+  if (receipt.status === "verified") {
+    if (
+      receipt.stopDisposition !== "confirmed"
+      || !receipt.eventLogComplete
+      || receipt.issueCodes.length > 0
+      || document.transportEvents.length > 0
+    ) {
+      throw new SessionValidationError("A verified capture-integrity receipt contains unresolved issues.");
+    }
+  } else if (receipt.status === "incomplete") {
+    if (
+      receipt.issueCodes.length === 0
+      && document.transportEvents.length === 0
+      && receipt.eventLogComplete
+      && receipt.stopDisposition === "confirmed"
+    ) {
+      throw new SessionValidationError("An incomplete capture-integrity receipt does not identify an integrity issue.");
+    }
+  } else if (document.source.kind !== "file") {
+    throw new SessionValidationError("Only an unassessed file-source session may use unknown capture integrity in version 2.");
+  }
+}
+
 export function validateSessionDocument(input: unknown): SessionDocument {
   const result = sessionDocumentSchema.safeParse(input);
   if (!result.success) {
     throw new SessionValidationError(
-      "The replay file does not match NarrowsLink session format version 1.",
+      "The replay file does not match NarrowsLink session format version 1 or 2.",
       result.error.issues.slice(0, 8).map((issue) => `${issue.path.join(".") || "document"}: ${issue.message}`),
     );
   }
@@ -134,6 +502,8 @@ export function validateSessionDocument(input: unknown): SessionDocument {
     incidentIds.add(incident.id);
     assertIncidentWithinDuration(incident, document.durationUs);
   }
+
+  if (document.formatVersion === 2) assertV2CaptureEvidence(document);
 
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: document.displayTimeZone }).format();
@@ -273,21 +643,61 @@ function createMetricBuckets(document: SessionDocument, frames: readonly Decoded
 }
 
 function makeDiagnostic(
-  type: DiagnosticEvent["type"],
+  type: Exclude<DiagnosticEvent["type"], "capture-path-event">,
   severity: DiagnosticEvent["severity"],
   startUs: number,
   title: string,
   description: string,
   frameIds: string[] = [],
 ): DiagnosticEvent {
+  const domain: DiagnosticEvent["domain"] = type === "link-degraded"
+    || type === "loss-burst"
+    || type === "recovery"
+    ? "link"
+    : type === "crc-failure" || type === "partial-frame"
+      ? "unknown"
+      : "decoder";
   return {
     id: `${type}-${startUs}${frameIds.length > 0 ? `-${frameIds.join("-")}` : ""}`,
     type,
+    domain,
     severity,
     startUs,
     title,
     description,
     frameIds,
+  };
+}
+
+const TRANSPORT_EVENT_TITLES: Record<TransportEvent["type"], string> = {
+  "udp-event-sequence-discontinuity": "UDP event-stream sequence discontinuity",
+  "udp-counter-mismatch": "UDP capture counters did not reconcile",
+  "udp-bridge-error": "UDP bridge error",
+  "udp-event-stream-disconnected": "UDP event stream disconnected",
+  "capture-backpressure": "Capture backpressure",
+  "capture-limit": "Capture limit reached",
+  "serial-read-error": "Serial read error",
+  "serial-disconnected": "Serial device disconnected",
+  "serial-tail-recovery-failed": "Serial tail recovery failed",
+  "serial-counter-mismatch": "Serial capture bytes did not reconcile",
+  "shutdown-unconfirmed": "Capture shutdown unconfirmed",
+};
+
+function transportEventDiagnostic(event: TransportEvent, durationUs: number): DiagnosticEvent {
+  const bounds = event.scope.kind === "point"
+    ? { startUs: event.scope.offsetUs }
+    : event.scope.kind === "interval"
+      ? { startUs: event.scope.startUs, endUs: event.scope.endUs }
+      : { startUs: 0, endUs: durationUs };
+  return {
+    id: `transport-${event.id}`,
+    type: "capture-path-event",
+    domain: "capture-path",
+    severity: event.severity,
+    ...bounds,
+    title: TRANSPORT_EVENT_TITLES[event.type],
+    description: event.message,
+    frameIds: [],
   };
 }
 
@@ -499,17 +909,65 @@ export function projectIncident(
   };
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value == null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
+}
+
+function normalizedCaptureEvidence(document: SessionDocument): {
+  transportEvents: readonly TransportEvent[];
+  captureIntegrity: CaptureIntegrityReceipt;
+} {
+  if (document.formatVersion === 2) {
+    return {
+      transportEvents: document.transportEvents,
+      captureIntegrity: document.captureIntegrity,
+    };
+  }
+  const retainedBytes = document.records.reduce((total, record) => total + record.captureBytes, 0);
+  return deepFreeze({
+    transportEvents: [] as TransportEvent[],
+    captureIntegrity: {
+      schemaVersion: 1,
+      status: "unknown",
+      assessmentBasis: "legacy-v1",
+      stopDisposition: "not-observed",
+      stopOffsetUs: null,
+      eventLogComplete: false,
+      input: {
+        unit: "unknown",
+        observedUnits: null,
+        observedBytes: null,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: {
+        records: document.records.length,
+        bytes: retainedBytes,
+      },
+      issueCodes: ["legacy-session-unassessed"],
+    } satisfies CaptureIntegrityReceipt,
+  });
+}
+
 export function parseSession(input: unknown): ParsedSession {
-  const document = validateSessionDocument(input);
+  const document = deepFreeze(validateSessionDocument(input));
+  const captureEvidence = normalizedCaptureEvidence(document);
   const frames = document.records.map((record, ordinal) => decodeRecord(record, ordinal));
   const buckets = createMetricBuckets(document, frames);
-  const diagnostics = deriveDiagnostics(frames, buckets);
+  const diagnostics = [
+    ...deriveDiagnostics(frames, buckets),
+    ...captureEvidence.transportEvents.map((event) => transportEventDiagnostic(event, document.durationUs)),
+  ].sort((left, right) => left.startUs - right.startUs || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   const incidentPresets: IncidentPreset[] = document.incidents.length > 0
     ? document.incidents
     : [{ id: "full-session", title: "Full session review", startUs: 0, endUs: document.durationUs, severity: "info" }];
   const incidents = incidentPresets.map((preset) => projectIncident(preset, frames, diagnostics));
   return {
     document,
+    transportEvents: captureEvidence.transportEvents,
+    captureIntegrity: captureEvidence.captureIntegrity,
     frames,
     buckets,
     diagnostics,

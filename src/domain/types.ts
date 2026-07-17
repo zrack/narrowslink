@@ -4,6 +4,7 @@ export type OffsetUs = number;
 
 export const MAX_SESSION_DURATION_US = 24 * 60 * 60 * 1_000_000;
 export const MAX_INCIDENT_TITLE_LENGTH = 240;
+export const MAX_TRANSPORT_EVENTS = 10_000;
 
 export const familyIds = [0x02, 0x17, 0x19, 0x31, 0x44] as const;
 export type FamilyId = (typeof familyIds)[number];
@@ -54,9 +55,8 @@ export interface AuthoredIncidentRange extends IncidentPreset {
   updatedAt: string;
 }
 
-export interface SessionDocument {
+interface SessionDocumentBase {
   format: "narrowslink/session";
-  formatVersion: 1;
   id: string;
   title: string;
   startedAt: string;
@@ -67,6 +67,131 @@ export interface SessionDocument {
   records: SourceRecord[];
   incidents: IncidentPreset[];
 }
+
+export interface SessionDocumentV1 extends SessionDocumentBase {
+  formatVersion: 1;
+}
+
+export type TransportEventScope =
+  | { kind: "point"; offsetUs: OffsetUs }
+  | { kind: "interval"; startUs: OffsetUs; endUs: OffsetUs }
+  | { kind: "session" };
+
+export interface TransportEventBase {
+  id: string;
+  index: number;
+  transport: "udp" | "serial";
+  scope: TransportEventScope;
+  severity: "warning" | "critical";
+  message: string;
+}
+
+export type TransportEvent =
+  | (TransportEventBase & {
+      type: "udp-event-sequence-discontinuity";
+      transport: "udp";
+      scope: { kind: "point"; offsetUs: OffsetUs };
+      expectedSequence: number;
+      observedSequence: number;
+    })
+  | (TransportEventBase & {
+      type: "udp-counter-mismatch";
+      transport: "udp";
+      scope: { kind: "session" };
+      bridgeDatagrams: number;
+      bridgeBytes: number;
+      browserDatagrams: number;
+      browserBytes: number;
+      retainedRecords: number;
+      retainedBytes: number;
+    })
+  | (TransportEventBase & {
+      type: "udp-bridge-error" | "udp-event-stream-disconnected";
+      transport: "udp";
+      code: string;
+      fatal: boolean;
+    })
+  | (TransportEventBase & {
+      type: "capture-backpressure" | "capture-limit";
+      component: "udp-prestatus-buffer" | "recorder";
+      limit: "records" | "captured-bytes" | "session-file-bytes" | "duration" | "unknown";
+      limitValue: number | null;
+      observedValue: number | null;
+    })
+  | (TransportEventBase & {
+      type: "serial-read-error" | "serial-disconnected" | "serial-tail-recovery-failed";
+      transport: "serial";
+      code: string;
+    })
+  | (TransportEventBase & {
+      type: "serial-counter-mismatch";
+      transport: "serial";
+      scope: { kind: "session" };
+      observedReads: number;
+      observedBytes: number;
+      retainedRecords: number;
+      retainedBytes: number;
+    })
+  | (TransportEventBase & {
+      type: "shutdown-unconfirmed";
+      scope: { kind: "session" };
+      code: string;
+    });
+
+export const captureIntegrityIssueCodes = [
+  "udp-event-sequence-discontinuity",
+  "udp-counter-mismatch",
+  "udp-bridge-error",
+  "udp-event-stream-disconnected",
+  "capture-backpressure",
+  "capture-limit",
+  "serial-read-error",
+  "serial-disconnected",
+  "serial-tail-recovery-failed",
+  "serial-counter-mismatch",
+  "shutdown-unconfirmed",
+  "duration-capped",
+  "event-log-incomplete",
+  "legacy-session-unassessed",
+  "file-source-unassessed",
+] as const;
+
+export type CaptureIntegrityIssueCode = (typeof captureIntegrityIssueCodes)[number];
+
+export interface CaptureIntegrityReceipt {
+  schemaVersion: 1;
+  status: "verified" | "incomplete" | "unknown";
+  assessmentBasis:
+    | "udp-bridge-reconciled"
+    | "udp-browser-observed"
+    | "web-serial-observed"
+    | "recorder-only"
+    | "file-source-unassessed"
+    | "legacy-v1";
+  stopDisposition: "confirmed" | "unconfirmed" | "not-observed";
+  stopOffsetUs: OffsetUs | null;
+  eventLogComplete: boolean;
+  input: {
+    unit: "datagram" | "serial-read" | "unknown";
+    observedUnits: number | null;
+    observedBytes: number | null;
+    transportReportedUnits: number | null;
+    transportReportedBytes: number | null;
+  };
+  retained: {
+    records: number;
+    bytes: number;
+  };
+  issueCodes: CaptureIntegrityIssueCode[];
+}
+
+export interface SessionDocumentV2 extends SessionDocumentBase {
+  formatVersion: 2;
+  transportEvents: TransportEvent[];
+  captureIntegrity: CaptureIntegrityReceipt;
+}
+
+export type SessionDocument = SessionDocumentV1 | SessionDocumentV2;
 
 export interface DecodedField {
   name: string;
@@ -122,7 +247,9 @@ export interface DiagnosticEvent {
     | "recovery"
     | "decoder-locked"
     | "crc-failure"
-    | "partial-frame";
+    | "partial-frame"
+    | "capture-path-event";
+  domain: "link" | "decoder" | "capture-path" | "unknown";
   severity: "info" | "warning" | "critical";
   startUs: OffsetUs;
   endUs?: OffsetUs;
@@ -158,6 +285,8 @@ export interface Marker {
 
 export interface ParsedSession {
   document: SessionDocument;
+  transportEvents: readonly TransportEvent[];
+  captureIntegrity: CaptureIntegrityReceipt;
   frames: DecodedFrame[];
   buckets: MetricBucket[];
   diagnostics: DiagnosticEvent[];
@@ -230,6 +359,125 @@ const sourceRecordSchema = z.object({
   }
 });
 
+const safeNonnegativeInteger = z.number().int().nonnegative().safe();
+const nullableSafeNonnegativeInteger = safeNonnegativeInteger.nullable();
+const transportEventIdSchema = wellFormedText(z.string().min(1).max(128));
+const transportEventMessageSchema = wellFormedText(z.string().min(1).max(1_000));
+const transportEventCodeSchema = wellFormedText(z.string().min(1).max(128));
+const transportEventSeveritySchema = z.enum(["warning", "critical"]);
+const transportEventScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("point"), offsetUs: safeNonnegativeInteger }).strict(),
+  z.object({
+    kind: z.literal("interval"),
+    startUs: safeNonnegativeInteger,
+    endUs: z.number().int().positive().safe(),
+  }).strict(),
+  z.object({ kind: z.literal("session") }).strict(),
+]);
+const transportEventBaseShape = {
+  id: transportEventIdSchema,
+  index: safeNonnegativeInteger,
+  severity: transportEventSeveritySchema,
+  message: transportEventMessageSchema,
+};
+const captureLimitShape = {
+  ...transportEventBaseShape,
+  transport: z.enum(["udp", "serial"]),
+  scope: transportEventScopeSchema,
+  component: z.enum(["udp-prestatus-buffer", "recorder"]),
+  limit: z.enum(["records", "captured-bytes", "session-file-bytes", "duration", "unknown"]),
+  limitValue: nullableSafeNonnegativeInteger,
+  observedValue: nullableSafeNonnegativeInteger,
+};
+const udpErrorShape = {
+  ...transportEventBaseShape,
+  transport: z.literal("udp"),
+  scope: transportEventScopeSchema,
+  code: transportEventCodeSchema,
+  fatal: z.boolean(),
+};
+const serialErrorShape = {
+  ...transportEventBaseShape,
+  transport: z.literal("serial"),
+  scope: transportEventScopeSchema,
+  code: transportEventCodeSchema,
+};
+
+export const transportEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    ...transportEventBaseShape,
+    type: z.literal("udp-event-sequence-discontinuity"),
+    transport: z.literal("udp"),
+    scope: z.object({ kind: z.literal("point"), offsetUs: safeNonnegativeInteger }).strict(),
+    expectedSequence: safeNonnegativeInteger,
+    observedSequence: safeNonnegativeInteger,
+  }).strict(),
+  z.object({
+    ...transportEventBaseShape,
+    type: z.literal("udp-counter-mismatch"),
+    transport: z.literal("udp"),
+    scope: z.object({ kind: z.literal("session") }).strict(),
+    bridgeDatagrams: safeNonnegativeInteger,
+    bridgeBytes: safeNonnegativeInteger,
+    browserDatagrams: safeNonnegativeInteger,
+    browserBytes: safeNonnegativeInteger,
+    retainedRecords: safeNonnegativeInteger,
+    retainedBytes: safeNonnegativeInteger,
+  }).strict(),
+  z.object({ ...udpErrorShape, type: z.literal("udp-bridge-error") }).strict(),
+  z.object({ ...udpErrorShape, type: z.literal("udp-event-stream-disconnected") }).strict(),
+  z.object({ ...captureLimitShape, type: z.literal("capture-backpressure") }).strict(),
+  z.object({ ...captureLimitShape, type: z.literal("capture-limit") }).strict(),
+  z.object({ ...serialErrorShape, type: z.literal("serial-read-error") }).strict(),
+  z.object({ ...serialErrorShape, type: z.literal("serial-disconnected") }).strict(),
+  z.object({ ...serialErrorShape, type: z.literal("serial-tail-recovery-failed") }).strict(),
+  z.object({
+    ...transportEventBaseShape,
+    type: z.literal("serial-counter-mismatch"),
+    transport: z.literal("serial"),
+    scope: z.object({ kind: z.literal("session") }).strict(),
+    observedReads: safeNonnegativeInteger,
+    observedBytes: safeNonnegativeInteger,
+    retainedRecords: safeNonnegativeInteger,
+    retainedBytes: safeNonnegativeInteger,
+  }).strict(),
+  z.object({
+    ...transportEventBaseShape,
+    type: z.literal("shutdown-unconfirmed"),
+    transport: z.enum(["udp", "serial"]),
+    scope: z.object({ kind: z.literal("session") }).strict(),
+    code: transportEventCodeSchema,
+  }).strict(),
+]);
+
+export const captureIntegrityReceiptSchema = z.object({
+  schemaVersion: z.literal(1),
+  status: z.enum(["verified", "incomplete", "unknown"]),
+  assessmentBasis: z.enum([
+    "udp-bridge-reconciled",
+    "udp-browser-observed",
+    "web-serial-observed",
+    "recorder-only",
+    "file-source-unassessed",
+    "legacy-v1",
+  ]),
+  stopDisposition: z.enum(["confirmed", "unconfirmed", "not-observed"]),
+  stopOffsetUs: nullableSafeNonnegativeInteger,
+  eventLogComplete: z.boolean(),
+  input: z.object({
+    unit: z.enum(["datagram", "serial-read", "unknown"]),
+    observedUnits: nullableSafeNonnegativeInteger,
+    observedBytes: nullableSafeNonnegativeInteger,
+    transportReportedUnits: nullableSafeNonnegativeInteger,
+    transportReportedBytes: nullableSafeNonnegativeInteger,
+  }).strict(),
+  retained: z.object({
+    records: safeNonnegativeInteger,
+    bytes: safeNonnegativeInteger,
+  }).strict(),
+  issueCodes: z.array(z.enum(captureIntegrityIssueCodes)).max(captureIntegrityIssueCodes.length),
+}).strict();
+
 export const incidentPresetSchema = z
   .object({
     id: wellFormedText(z.string().min(1).max(128)),
@@ -243,9 +491,8 @@ export const incidentPresetSchema = z
     message: "Incident end must be after its start",
   });
 
-export const sessionDocumentSchema = z.object({
+const sessionDocumentBaseShape = {
   format: z.literal("narrowslink/session"),
-  formatVersion: z.literal(1),
   id: wellFormedText(z.string().min(1).max(128)),
   title: wellFormedText(z.string().min(1).max(240)),
   startedAt: wellFormedText(z.string().datetime({ offset: true })),
@@ -255,4 +502,21 @@ export const sessionDocumentSchema = z.object({
   decoder: decoderDescriptorSchema,
   records: z.array(sourceRecordSchema).min(1).max(100_000),
   incidents: z.array(incidentPresetSchema).max(100),
+};
+
+export const sessionDocumentV1Schema = z.object({
+  ...sessionDocumentBaseShape,
+  formatVersion: z.literal(1),
 }).strict();
+
+export const sessionDocumentV2Schema = z.object({
+  ...sessionDocumentBaseShape,
+  formatVersion: z.literal(2),
+  transportEvents: z.array(transportEventSchema).max(MAX_TRANSPORT_EVENTS),
+  captureIntegrity: captureIntegrityReceiptSchema,
+}).strict();
+
+export const sessionDocumentSchema = z.discriminatedUnion("formatVersion", [
+  sessionDocumentV1Schema,
+  sessionDocumentV2Schema,
+]);

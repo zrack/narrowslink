@@ -6,11 +6,18 @@ import {
   utf8ByteLength,
 } from "../data/session-file";
 import {
+  captureIntegrityIssueCodes,
+  MAX_TRANSPORT_EVENTS,
   MAX_SESSION_DURATION_US,
+  transportEventSchema,
+  type CaptureIntegrityIssueCode,
+  type CaptureIntegrityReceipt,
   type DecoderDescriptor,
   type SessionDocument,
+  type SessionDocumentV2,
   type SourceDescriptor,
   type SourceRecord,
+  type TransportEvent,
 } from "../domain/types";
 
 export const MAX_CAPTURE_RECORDS = 100_000;
@@ -45,12 +52,52 @@ export interface CapturedBytes {
   signal?: SourceRecord["signal"];
 }
 
+type WithoutEventIdentity<T> = T extends unknown ? Omit<T, "id" | "index"> : never;
+
+/** A capture event before the recorder assigns its stable identity and order. */
+export type TransportEventDraft = WithoutEventIdentity<TransportEvent>;
+
+export interface CaptureFinalizationEvidence {
+  stopDisposition?: CaptureIntegrityReceipt["stopDisposition"];
+  stopOffsetUs?: number | null;
+  eventLogComplete?: boolean;
+  observedUnits?: number | null;
+  observedBytes?: number | null;
+  transportReportedUnits?: number | null;
+  transportReportedBytes?: number | null;
+  issueCodes?: readonly CaptureIntegrityIssueCode[];
+  shutdown?: {
+    code: string;
+    message: string;
+  };
+}
+
+export type CaptureRecorderLimit = "records" | "captured-bytes" | "session-file-bytes" | "duration" | "unknown";
+
 export class CaptureRecorderError extends Error {
-  constructor(message: string) {
+  readonly limit: CaptureRecorderLimit | null;
+  readonly limitValue: number | null;
+  readonly observedValue: number | null;
+
+  constructor(
+    message: string,
+    details: {
+      limit?: CaptureRecorderLimit;
+      limitValue?: number;
+      observedValue?: number;
+    } = {},
+  ) {
     super(message);
     this.name = "CaptureRecorderError";
+    this.limit = details.limit ?? null;
+    this.limitValue = details.limitValue ?? null;
+    this.observedValue = details.observedValue ?? null;
   }
 }
+
+// The terminal receipt is small and bounded, but reserving space up front keeps
+// a late integrity failure from being crowded out by the final raw record.
+const CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES = 4_096;
 
 const HARD_LIMITS: CaptureLimits = Object.freeze({
   maxRecords: MAX_CAPTURE_RECORDS,
@@ -98,6 +145,7 @@ function assertOffset(offsetUs: number, maximumUs: number): void {
   if (offsetUs >= maximumUs) {
     throw new CaptureRecorderError(
       `Capture offset ${offsetUs}µs reaches the ${maximumUs}µs duration limit; stop before recording it.`,
+      { limit: "duration", limitValue: maximumUs, observedValue: offsetUs },
     );
   }
 }
@@ -112,6 +160,36 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
+function defaultCaptureIntegrity(
+  transport: "udp" | "serial",
+  stopOffsetUs: number,
+  records: number,
+  bytes: number,
+): CaptureIntegrityReceipt {
+  return {
+    schemaVersion: 1,
+    status: "verified",
+    assessmentBasis: transport === "udp" ? "udp-bridge-reconciled" : "web-serial-observed",
+    stopDisposition: "confirmed",
+    stopOffsetUs,
+    eventLogComplete: true,
+    input: {
+      unit: transport === "udp" ? "datagram" : "serial-read",
+      observedUnits: records,
+      observedBytes: bytes,
+      transportReportedUnits: transport === "udp" ? records : null,
+      transportReportedBytes: transport === "udp" ? bytes : null,
+    },
+    retained: { records, bytes },
+    issueCodes: [],
+  };
+}
+
+function orderedIssueCodes(values: Iterable<CaptureIntegrityIssueCode>): CaptureIntegrityIssueCode[] {
+  const present = new Set(values);
+  return captureIntegrityIssueCodes.filter((code) => present.has(code));
+}
+
 /**
  * Collects already-delimited UDP datagrams or serial assembly outputs into the
  * immutable session format consumed by the replay pipeline.
@@ -121,10 +199,13 @@ export class CaptureRecorder {
 
   private readonly options: Omit<CaptureRecorderOptions, "limits" | "startedAt"> & { startedAt: string };
   private readonly capturedRecords: SourceRecord[] = [];
+  private readonly capturedTransportEvents: TransportEvent[] = [];
   private capturedByteCount = 0;
   private serializedRecordBytes = 0;
+  private serializedTransportEventBytes = 0;
   private lastOffsetUs = -1;
   private finalized = false;
+  private eventLogComplete = true;
   private readonly sessionFileEnvelopeBytes: number;
 
   constructor(options: CaptureRecorderOptions) {
@@ -145,7 +226,7 @@ export class CaptureRecorder {
     try {
       validateSessionDocument({
         format: "narrowslink/session",
-        formatVersion: 1,
+        formatVersion: 2,
         id: options.sessionId,
         title: options.title,
         startedAt,
@@ -164,6 +245,8 @@ export class CaptureRecorder {
           transport: { kind: source.kind },
         }],
         incidents: [],
+        transportEvents: [],
+        captureIntegrity: defaultCaptureIntegrity(source.kind, 1, 1, 1),
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Capture metadata is invalid.";
@@ -179,9 +262,14 @@ export class CaptureRecorder {
     };
     this.limits = resolveLimits(options.limits);
     this.sessionFileEnvelopeBytes = sessionDocumentFileByteLength(
-      this.buildDocument(this.limits.maxDurationUs, []),
+      this.buildDocument(
+        this.limits.maxDurationUs,
+        [],
+        [],
+        defaultCaptureIntegrity(source.kind, this.limits.maxDurationUs, 0, 0),
+      ),
     );
-    if (this.sessionFileEnvelopeBytes >= this.limits.maxSessionFileBytes) {
+    if (this.sessionFileEnvelopeBytes + CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES >= this.limits.maxSessionFileBytes) {
       throw new CaptureRecorderError(
         `Capture metadata leaves no room for records within the ${this.limits.maxSessionFileBytes}-byte session-file limit.`,
       );
@@ -196,11 +284,18 @@ export class CaptureRecorder {
     return this.capturedByteCount;
   }
 
+  get transportEventCount(): number {
+    return this.capturedTransportEvents.length;
+  }
+
   /** Compact file size reserved with the configured maximum-duration digits. */
   get projectedSessionFileBytes(): number {
     return this.sessionFileEnvelopeBytes
       + this.serializedRecordBytes
-      + Math.max(0, this.recordCount - 1);
+      + Math.max(0, this.recordCount - 1)
+      + this.serializedTransportEventBytes
+      + Math.max(0, this.transportEventCount - 1)
+      + CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES;
   }
 
   append(input: CapturedBytes): SourceRecord {
@@ -224,16 +319,23 @@ export class CaptureRecorder {
     if (input.bytes.byteLength > MAX_CAPTURE_RECORD_BYTES) {
       throw new CaptureRecorderError(
         `A captured record cannot exceed ${MAX_CAPTURE_RECORD_BYTES} bytes; split the transport input first.`,
+        { limit: "captured-bytes", limitValue: MAX_CAPTURE_RECORD_BYTES, observedValue: input.bytes.byteLength },
       );
     }
     if (this.recordCount >= this.limits.maxRecords) {
       throw new CaptureRecorderError(
         `Capture reached its ${this.limits.maxRecords}-record limit; stop and save this session.`,
+        { limit: "records", limitValue: this.limits.maxRecords, observedValue: this.recordCount + 1 },
       );
     }
     if (this.capturedByteCount + input.bytes.byteLength > this.limits.maxCapturedBytes) {
       throw new CaptureRecorderError(
         `Capture would exceed its ${this.limits.maxCapturedBytes}-byte limit; stop and save this session.`,
+        {
+          limit: "captured-bytes",
+          limitValue: this.limits.maxCapturedBytes,
+          observedValue: this.capturedByteCount + input.bytes.byteLength,
+        },
       );
     }
 
@@ -282,6 +384,11 @@ export class CaptureRecorder {
     if (projectedFileBytes > this.limits.maxSessionFileBytes) {
       throw new CaptureRecorderError(
         `Capture would exceed its ${this.limits.maxSessionFileBytes}-byte replay-file limit after JSON and hex encoding; stop and save this session.`,
+        {
+          limit: "session-file-bytes",
+          limitValue: this.limits.maxSessionFileBytes,
+          observedValue: projectedFileBytes,
+        },
       );
     }
 
@@ -292,7 +399,214 @@ export class CaptureRecorder {
     return record;
   }
 
-  finalize(stoppedAtUs?: number): SessionDocument {
+  appendTransportEvent(input: TransportEventDraft): TransportEvent | null {
+    return this.appendTransportEventWithBudget(input, false);
+  }
+
+  /**
+   * Finalization evidence may consume the receipt reserve so a full capture can
+   * still explain why it is incomplete. The final serialized-size check remains
+   * authoritative and keeps the emitted session within the importer budget.
+   */
+  appendTerminalTransportEvent(input: TransportEventDraft): TransportEvent | null {
+    return this.appendTransportEventWithBudget(input, true);
+  }
+
+  private appendTransportEventWithBudget(
+    input: TransportEventDraft,
+    mayUseReceiptReserve: boolean,
+  ): TransportEvent | null {
+    if (this.finalized) {
+      throw new CaptureRecorderError("Capture has already stopped; transport evidence cannot be appended.");
+    }
+    if (this.transportEventCount >= MAX_TRANSPORT_EVENTS) {
+      this.eventLogComplete = false;
+      return null;
+    }
+
+    const candidate = {
+      ...input,
+      id: `capture-transport-event-${String(this.transportEventCount + 1).padStart(6, "0")}`,
+      index: this.transportEventCount,
+    };
+    const parsed = transportEventSchema.safeParse(candidate);
+    if (!parsed.success) {
+      this.eventLogComplete = false;
+      throw new CaptureRecorderError(
+        `Capture transport evidence is invalid: ${parsed.error.issues[0]?.message ?? "unknown validation error"}`,
+      );
+    }
+
+    const event = deepFreeze(parsed.data as TransportEvent);
+    const eventBytes = utf8ByteLength(JSON.stringify(event));
+    const projectedFileBytes = this.projectedSessionFileBytes
+      + eventBytes
+      + (this.transportEventCount > 0 ? 1 : 0);
+    const evidenceBudget = this.limits.maxSessionFileBytes
+      + (mayUseReceiptReserve ? CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES : 0);
+    if (projectedFileBytes > evidenceBudget) {
+      this.eventLogComplete = false;
+      return null;
+    }
+
+    this.capturedTransportEvents.push(event);
+    this.serializedTransportEventBytes += eventBytes;
+    return event;
+  }
+
+  markEventLogIncomplete(): void {
+    if (this.finalized) {
+      throw new CaptureRecorderError("Capture has already stopped; its event-log assessment is immutable.");
+    }
+    this.eventLogComplete = false;
+  }
+
+  private buildCaptureIntegrity(
+    durationUs: number,
+    evidence: CaptureFinalizationEvidence | undefined,
+  ): CaptureIntegrityReceipt {
+    const transport = this.options.source.kind;
+    const recorderOnly = evidence == null;
+    const observedUnits = recorderOnly ? null : evidence.observedUnits ?? null;
+    const observedBytes = recorderOnly ? null : evidence.observedBytes ?? null;
+    const transportReportedUnits = recorderOnly ? null : evidence.transportReportedUnits ?? null;
+    const transportReportedBytes = recorderOnly ? null : evidence.transportReportedBytes ?? null;
+    const bridgeUnitsObserved = transportReportedUnits !== null;
+    const bridgeBytesObserved = transportReportedBytes !== null;
+    if (transport === "udp" && bridgeUnitsObserved !== bridgeBytesObserved) {
+      throw new CaptureRecorderError("UDP finalization evidence must provide both bridge counters or neither.");
+    }
+    if (!recorderOnly && (observedUnits === null || observedBytes === null)) {
+      throw new CaptureRecorderError("Adapter finalization evidence must include observed input units and bytes.");
+    }
+    if (transport === "serial" && (transportReportedUnits !== null || transportReportedBytes !== null)) {
+      throw new CaptureRecorderError("Web Serial finalization evidence cannot claim transport-reported counters.");
+    }
+
+    const assessmentBasis: CaptureIntegrityReceipt["assessmentBasis"] = recorderOnly
+      ? "recorder-only"
+      : transport === "udp"
+        ? bridgeUnitsObserved ? "udp-bridge-reconciled" : "udp-browser-observed"
+        : "web-serial-observed";
+    const stopDisposition = recorderOnly || (assessmentBasis === "udp-browser-observed" && evidence?.stopDisposition === "confirmed")
+      ? "unconfirmed"
+      : evidence?.stopDisposition ?? "unconfirmed";
+    const requestedStopOffsetUs = evidence?.stopOffsetUs === undefined
+      ? (stopDisposition === "not-observed" ? null : durationUs)
+      : evidence.stopOffsetUs;
+    if (
+      requestedStopOffsetUs !== null
+      && (!Number.isSafeInteger(requestedStopOffsetUs) || requestedStopOffsetUs < 0 || requestedStopOffsetUs > durationUs)
+    ) {
+      throw new CaptureRecorderError("Capture integrity stopOffsetUs must be a safe offset within the finalized duration.");
+    }
+
+    if (recorderOnly) this.eventLogComplete = false;
+    if (stopDisposition === "unconfirmed" && !this.capturedTransportEvents.some((event) => event.type === "shutdown-unconfirmed")) {
+      this.appendTerminalTransportEvent({
+        type: "shutdown-unconfirmed",
+        transport,
+        scope: { kind: "session" },
+        severity: "critical",
+        code: evidence?.shutdown?.code ?? (recorderOnly ? "recorder-finalization-unassessed" : "transport-stop-unconfirmed"),
+        message: (evidence?.shutdown?.message ?? (recorderOnly
+          ? "The recorder was finalized without adapter stop evidence; capture integrity cannot be verified."
+          : "The transport did not confirm a clean stop.")).slice(0, 1_000),
+      });
+    }
+
+    const udpCountersObserved = transport === "udp"
+      && observedUnits !== null
+      && observedBytes !== null
+      && transportReportedUnits !== null
+      && transportReportedBytes !== null;
+    const udpCountersReconciled = transport !== "udp" || (udpCountersObserved
+      && observedUnits === transportReportedUnits
+      && observedBytes === transportReportedBytes
+      && this.recordCount === observedUnits
+      && this.capturedByteCount === observedBytes
+    );
+    const udpCountersMismatch = transport === "udp" && udpCountersObserved && !udpCountersReconciled;
+    if (
+      udpCountersMismatch
+      && !this.capturedTransportEvents.some((event) => event.type === "udp-counter-mismatch")
+    ) {
+      this.appendTerminalTransportEvent({
+        type: "udp-counter-mismatch",
+        transport: "udp",
+        scope: { kind: "session" },
+        severity: "critical",
+        message: "UDP bridge, browser, and recorder counters did not reconcile at stop.",
+        bridgeDatagrams: transportReportedUnits,
+        bridgeBytes: transportReportedBytes,
+        browserDatagrams: observedUnits,
+        browserBytes: observedBytes,
+        retainedRecords: this.recordCount,
+        retainedBytes: this.capturedByteCount,
+      });
+    }
+
+    const serialCountersObserved = transport === "serial"
+      && observedUnits !== null
+      && observedBytes !== null
+      && transportReportedUnits === null
+      && transportReportedBytes === null;
+    const serialCountersReconciled = transport !== "serial" || (serialCountersObserved && this.capturedByteCount === observedBytes);
+    const serialCountersMismatch = transport === "serial" && serialCountersObserved && !serialCountersReconciled;
+    if (
+      serialCountersMismatch
+      && !this.capturedTransportEvents.some((event) => event.type === "serial-counter-mismatch")
+    ) {
+      this.appendTerminalTransportEvent({
+        type: "serial-counter-mismatch",
+        transport: "serial",
+        scope: { kind: "session" },
+        severity: "critical",
+        message: "Web Serial observed-byte and recorder retained-byte counters did not reconcile at stop.",
+        observedReads: observedUnits,
+        observedBytes,
+        retainedRecords: this.recordCount,
+        retainedBytes: this.capturedByteCount,
+      });
+    }
+
+    const eventLogComplete = this.eventLogComplete && evidence?.eventLogComplete === true;
+    const issueValues = new Set<CaptureIntegrityIssueCode>(evidence?.issueCodes ?? []);
+    for (const event of this.capturedTransportEvents) issueValues.add(event.type);
+    if (!eventLogComplete) issueValues.add("event-log-incomplete");
+    if (udpCountersMismatch) issueValues.add("udp-counter-mismatch");
+    if (serialCountersMismatch) issueValues.add("serial-counter-mismatch");
+    if (stopDisposition === "unconfirmed") issueValues.add("shutdown-unconfirmed");
+    const issueCodes = orderedIssueCodes(issueValues);
+    const verified = !recorderOnly
+      && stopDisposition === "confirmed"
+      && eventLogComplete
+      && (transport === "udp" ? assessmentBasis === "udp-bridge-reconciled" && udpCountersReconciled : serialCountersReconciled)
+      && issueCodes.length === 0;
+
+    return {
+      schemaVersion: 1,
+      status: verified ? "verified" : "incomplete",
+      assessmentBasis,
+      stopDisposition,
+      stopOffsetUs: requestedStopOffsetUs,
+      eventLogComplete,
+      input: {
+        unit: transport === "udp" ? "datagram" : "serial-read",
+        observedUnits,
+        observedBytes,
+        transportReportedUnits,
+        transportReportedBytes,
+      },
+      retained: {
+        records: this.recordCount,
+        bytes: this.capturedByteCount,
+      },
+      issueCodes,
+    };
+  }
+
+  finalize(stoppedAtUs?: number, evidence?: CaptureFinalizationEvidence): SessionDocument {
     if (this.finalized) {
       throw new CaptureRecorderError("Capture has already been finalized.");
     }
@@ -317,7 +631,13 @@ export class CaptureRecorder {
       );
     }
 
-    const document = this.buildDocument(durationUs, [...this.capturedRecords]);
+    const captureIntegrity = this.buildCaptureIntegrity(durationUs, evidence);
+    const document = this.buildDocument(
+      durationUs,
+      [...this.capturedRecords],
+      [...this.capturedTransportEvents],
+      captureIntegrity,
+    );
 
     const validated = deepFreeze(validateSessionDocument(document));
     const fileBytes = sessionDocumentFileByteLength(validated);
@@ -330,10 +650,15 @@ export class CaptureRecorder {
     return validated;
   }
 
-  private buildDocument(durationUs: number, records: SourceRecord[]): SessionDocument {
+  private buildDocument(
+    durationUs: number,
+    records: SourceRecord[],
+    transportEvents: TransportEvent[],
+    captureIntegrity: CaptureIntegrityReceipt,
+  ): SessionDocumentV2 {
     return {
       format: "narrowslink/session",
-      formatVersion: 1,
+      formatVersion: 2,
       id: this.options.sessionId,
       title: this.options.title,
       startedAt: this.options.startedAt,
@@ -342,6 +667,8 @@ export class CaptureRecorder {
       source: { ...this.options.source },
       decoder: { ...(this.options.decoder ?? SUPPORTED_DECODER) },
       records,
+      transportEvents,
+      captureIntegrity,
       incidents: [{
         id: "capture-interval",
         title: "Captured interval",

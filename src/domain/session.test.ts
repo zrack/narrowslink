@@ -10,11 +10,14 @@ import {
 } from "./session";
 import {
   MAX_SESSION_DURATION_US,
+  type CaptureIntegrityReceipt,
   type DiagnosticEvent,
   type FamilyId,
   type IncidentPreset,
   type SessionDocument,
+  type SessionDocumentV2,
   type SourceRecord,
+  type TransportEvent,
 } from "./types";
 
 function payloadFor(familyId: FamilyId): Uint8Array {
@@ -74,10 +77,129 @@ function document(): SessionDocument {
   };
 }
 
+function retainedBytes(session: SessionDocument): number {
+  return session.records.reduce((total, sourceRecord) => total + sourceRecord.captureBytes, 0);
+}
+
+function verifiedUdpReceipt(session: SessionDocument): CaptureIntegrityReceipt {
+  const bytes = retainedBytes(session);
+  return {
+    schemaVersion: 1,
+    status: "verified",
+    assessmentBasis: "udp-bridge-reconciled",
+    stopDisposition: "confirmed",
+    stopOffsetUs: session.durationUs,
+    eventLogComplete: true,
+    input: {
+      unit: "datagram",
+      observedUnits: session.records.length,
+      observedBytes: bytes,
+      transportReportedUnits: session.records.length,
+      transportReportedBytes: bytes,
+    },
+    retained: { records: session.records.length, bytes },
+    issueCodes: [],
+  };
+}
+
+function v2Document(): SessionDocumentV2 {
+  const legacy = document();
+  return {
+    ...legacy,
+    formatVersion: 2,
+    transportEvents: [],
+    captureIntegrity: verifiedUdpReceipt(legacy),
+  };
+}
+
+function v2SerialDocument(): SessionDocumentV2 {
+  const replay = v2Document();
+  const bytes = retainedBytes(replay);
+  replay.source = { id: "harbor-udp", kind: "serial", label: "Serial loopback" };
+  for (const sourceRecord of replay.records) sourceRecord.transport = { kind: "serial" };
+  replay.captureIntegrity = {
+    ...replay.captureIntegrity,
+    assessmentBasis: "web-serial-observed",
+    input: {
+      unit: "serial-read",
+      observedUnits: replay.records.length,
+      observedBytes: bytes,
+      transportReportedUnits: null,
+      transportReportedBytes: null,
+    },
+  };
+  return replay;
+}
+
+function v2DocumentWithTransportEvents(): SessionDocumentV2 {
+  const replay = v2Document();
+  const bytes = retainedBytes(replay);
+  const transportEvents = [
+    {
+      id: "udp-sequence-gap-1",
+      index: 0,
+      type: "udp-event-sequence-discontinuity",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: 1_000_000 },
+      severity: "critical",
+      message: "SSE sequence 12 arrived where 11 was expected.",
+      expectedSequence: 11,
+      observedSequence: 12,
+    },
+    {
+      id: "capture-backpressure-1",
+      index: 1,
+      type: "capture-backpressure",
+      transport: "udp",
+      scope: { kind: "interval", startUs: 2_000_000, endUs: 3_000_000 },
+      severity: "critical",
+      message: "The recorder paused while its local byte budget was exhausted.",
+      component: "recorder",
+      limit: "captured-bytes",
+      limitValue: bytes,
+      observedValue: bytes + 1,
+    },
+    {
+      id: "udp-counter-mismatch-1",
+      index: 2,
+      type: "udp-counter-mismatch",
+      transport: "udp",
+      scope: { kind: "session" },
+      severity: "critical",
+      message: "The bridge reported one more datagram than the browser retained.",
+      bridgeDatagrams: replay.records.length + 1,
+      bridgeBytes: bytes + 1,
+      browserDatagrams: replay.records.length,
+      browserBytes: bytes,
+      retainedRecords: replay.records.length,
+      retainedBytes: bytes,
+    },
+  ] satisfies TransportEvent[];
+  return {
+    ...replay,
+    transportEvents,
+    captureIntegrity: {
+      ...replay.captureIntegrity,
+      status: "incomplete",
+      input: {
+        ...replay.captureIntegrity.input,
+        transportReportedUnits: replay.records.length + 1,
+        transportReportedBytes: bytes + 1,
+      },
+      issueCodes: [
+        "udp-event-sequence-discontinuity",
+        "capture-backpressure",
+        "udp-counter-mismatch",
+      ],
+    },
+  };
+}
+
 function diagnostic(id: string, startUs: number, endUs?: number): DiagnosticEvent {
   return {
     id,
     type: "recovery",
+    domain: "link",
     severity: "info",
     startUs,
     endUs,
@@ -104,6 +226,393 @@ describe("session parsing", () => {
   it("uses half-open ranges", () => {
     const rows = [{ offsetUs: 0 }, { offsetUs: 10 }, { offsetUs: 20 }, { offsetUs: 30 }] as const;
     expect(rowsInRange(rows, 10, 30)).toEqual([{ offsetUs: 10 }, { offsetUs: 20 }]);
+  });
+
+  it("normalizes strict version 1 input without rewriting or mutating its raw document", () => {
+    const legacy = document();
+    const original = structuredClone(legacy);
+
+    const parsed = parseSession(legacy);
+
+    expect(legacy).toEqual(original);
+    expect(parsed.document).not.toBe(legacy);
+    expect(parsed.document.formatVersion).toBe(1);
+    expect("transportEvents" in parsed.document).toBe(false);
+    expect(parsed.transportEvents).toEqual([]);
+    expect(parsed.captureIntegrity).toEqual({
+      schemaVersion: 1,
+      status: "unknown",
+      assessmentBasis: "legacy-v1",
+      stopDisposition: "not-observed",
+      stopOffsetUs: null,
+      eventLogComplete: false,
+      input: {
+        unit: "unknown",
+        observedUnits: null,
+        observedBytes: null,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: { records: legacy.records.length, bytes: retainedBytes(legacy) },
+      issueCodes: ["legacy-session-unassessed"],
+    });
+    expect(Object.isFrozen(parsed.document)).toBe(true);
+    expect(Object.isFrozen(parsed.document.records)).toBe(true);
+    expect(Object.isFrozen(parsed.transportEvents)).toBe(true);
+    expect(Object.isFrozen(parsed.captureIntegrity)).toBe(true);
+  });
+
+  it("maps durable version 2 transport evidence into capture-path diagnostics with exact range semantics", () => {
+    const parsed = parseSession(v2DocumentWithTransportEvents());
+    const captureDiagnostics = parsed.diagnostics.filter((event) => event.domain === "capture-path");
+
+    expect(parsed.document.formatVersion).toBe(2);
+    expect(parsed.transportEvents).toHaveLength(3);
+    expect(captureDiagnostics.map((event) => [event.id, event.startUs, event.endUs])).toEqual([
+      ["transport-udp-counter-mismatch-1", 0, parsed.document.durationUs],
+      ["transport-udp-sequence-gap-1", 1_000_000, undefined],
+      ["transport-capture-backpressure-1", 2_000_000, 3_000_000],
+    ]);
+    expect(parsed.diagnostics.filter((event) => event.type !== "capture-path-event").every(
+      (event) => event.domain === "link" || event.domain === "decoder" || event.domain === "unknown",
+    )).toBe(true);
+    expect(parsed.diagnostics.filter(
+      (event) => event.type === "crc-failure" || event.type === "partial-frame",
+    ).every((event) => event.domain === "unknown")).toBe(true);
+
+    const firstRange = projectIncident(
+      { id: "first", title: "First", startUs: 1_000_000, endUs: 2_000_000, severity: "critical" },
+      parsed.frames,
+      parsed.diagnostics,
+    );
+    expect(firstRange.diagnostics.filter((event) => event.domain === "capture-path").map((event) => event.id)).toEqual([
+      "transport-udp-counter-mismatch-1",
+      "transport-udp-sequence-gap-1",
+    ]);
+
+    const afterInterval = projectIncident(
+      { id: "after", title: "After", startUs: 3_000_000, endUs: 4_000_000, severity: "critical" },
+      parsed.frames,
+      parsed.diagnostics,
+    );
+    expect(afterInterval.diagnostics.filter((event) => event.domain === "capture-path").map((event) => event.id)).toEqual([
+      "transport-udp-counter-mismatch-1",
+    ]);
+  });
+
+  it("strictly validates versioned transport evidence and receipt reconciliation", () => {
+    const version1WithV2Fields = {
+      ...document(),
+      transportEvents: [],
+      captureIntegrity: verifiedUdpReceipt(document()),
+    };
+    expect(() => validateSessionDocument(version1WithV2Fields)).toThrow(SessionValidationError);
+
+    const missingV2Evidence = { ...v2Document() } as Partial<SessionDocumentV2>;
+    delete missingV2Evidence.captureIntegrity;
+    expect(() => validateSessionDocument(missingV2Evidence)).toThrow(SessionValidationError);
+
+    const badIndex = structuredClone(v2DocumentWithTransportEvents());
+    badIndex.transportEvents[0]!.index = 9;
+    expect(() => validateSessionDocument(badIndex)).toThrow("indices must be contiguous");
+
+    const badBoundary = structuredClone(v2DocumentWithTransportEvents());
+    const first = badBoundary.transportEvents[0];
+    if (!first || first.scope.kind !== "point") throw new Error("Expected point event");
+    first.scope.offsetUs = badBoundary.durationUs;
+    expect(() => validateSessionDocument(badBoundary)).toThrow("outside the declared session duration");
+
+    const duplicateId = structuredClone(v2DocumentWithTransportEvents());
+    duplicateId.transportEvents[1]!.id = duplicateId.transportEvents[0]!.id;
+    expect(() => validateSessionDocument(duplicateId)).toThrow("duplicate transport event IDs");
+
+    const badReceipt = structuredClone(v2Document());
+    badReceipt.captureIntegrity.retained.bytes += 1;
+    expect(() => validateSessionDocument(badReceipt)).toThrow("does not match retained session records");
+
+    const contradictoryVerified = structuredClone(v2DocumentWithTransportEvents());
+    contradictoryVerified.captureIntegrity.status = "verified";
+    expect(() => validateSessionDocument(contradictoryVerified)).toThrow("verified capture-integrity receipt");
+  });
+
+  it("requires UDP mismatch codes while allowing an exhausted event log to omit the event", () => {
+    const missingMismatchEvidence = v2Document();
+    missingMismatchEvidence.captureIntegrity.status = "incomplete";
+    missingMismatchEvidence.captureIntegrity.eventLogComplete = false;
+    missingMismatchEvidence.captureIntegrity.issueCodes = ["event-log-incomplete"];
+    missingMismatchEvidence.captureIntegrity.input.transportReportedUnits = missingMismatchEvidence.records.length + 1;
+    expect(() => validateSessionDocument(missingMismatchEvidence)).toThrow(
+      "Unreconciled UDP counters require one matching counter-mismatch issue and event",
+    );
+
+    const missingMismatchEvent = structuredClone(missingMismatchEvidence);
+    missingMismatchEvent.captureIntegrity.issueCodes.push("udp-counter-mismatch");
+    expect(validateSessionDocument(missingMismatchEvent)).toMatchObject(
+      { captureIntegrity: { eventLogComplete: false, issueCodes: ["event-log-incomplete", "udp-counter-mismatch"] } },
+    );
+
+    const falselyCompleteEventLog = structuredClone(missingMismatchEvent);
+    falselyCompleteEventLog.captureIntegrity.eventLogComplete = true;
+    falselyCompleteEventLog.captureIntegrity.issueCodes = ["udp-counter-mismatch"];
+    expect(() => validateSessionDocument(falselyCompleteEventLog)).toThrow(
+      "issue code is not represented by a transport event",
+    );
+
+    const duplicateMismatchEvent = v2DocumentWithTransportEvents();
+    duplicateMismatchEvent.captureIntegrity.eventLogComplete = false;
+    duplicateMismatchEvent.captureIntegrity.issueCodes.push("event-log-incomplete");
+    const mismatchEvent = duplicateMismatchEvent.transportEvents[2];
+    if (!mismatchEvent || mismatchEvent.type !== "udp-counter-mismatch") throw new Error("Expected UDP mismatch event");
+    duplicateMismatchEvent.transportEvents.push({
+      ...mismatchEvent,
+      id: "udp-counter-mismatch-2",
+      index: 3,
+    });
+    expect(() => validateSessionDocument(duplicateMismatchEvent)).toThrow(
+      "Unreconciled UDP counters require one matching counter-mismatch issue and event",
+    );
+
+    expect(validateSessionDocument(v2DocumentWithTransportEvents()).formatVersion).toBe(2);
+  });
+
+  it("rejects orphan, cross-transport, and legacy-only live issue codes", () => {
+    const orphanEventCode = v2Document();
+    orphanEventCode.captureIntegrity.status = "incomplete";
+    orphanEventCode.captureIntegrity.issueCodes = ["udp-bridge-error"];
+    expect(() => validateSessionDocument(orphanEventCode)).toThrow(
+      "issue code is not represented by a transport event",
+    );
+
+    const crossTransportCode = v2Document();
+    crossTransportCode.captureIntegrity.status = "incomplete";
+    crossTransportCode.captureIntegrity.eventLogComplete = false;
+    crossTransportCode.captureIntegrity.issueCodes = ["serial-disconnected", "event-log-incomplete"];
+    expect(() => validateSessionDocument(crossTransportCode)).toThrow(
+      "issue code does not apply to the declared live source",
+    );
+
+    const legacyOnlyCode = v2Document();
+    legacyOnlyCode.captureIntegrity.status = "incomplete";
+    legacyOnlyCode.captureIntegrity.eventLogComplete = false;
+    legacyOnlyCode.captureIntegrity.issueCodes = ["legacy-session-unassessed", "event-log-incomplete"];
+    expect(() => validateSessionDocument(legacyOnlyCode)).toThrow(
+      "issue code does not apply to the declared live source",
+    );
+  });
+
+  it("accepts browser-only UDP and recorder-only evidence without inventing bridge observations", () => {
+    const browserObserved = v2Document();
+    browserObserved.transportEvents = [{
+      id: "shutdown-unconfirmed-1",
+      index: 0,
+      type: "shutdown-unconfirmed",
+      transport: "udp",
+      scope: { kind: "session" },
+      severity: "critical",
+      message: "The UDP bridge did not return a terminal status.",
+      code: "bridge-unreachable",
+    }];
+    browserObserved.captureIntegrity = {
+      ...browserObserved.captureIntegrity,
+      status: "incomplete",
+      assessmentBasis: "udp-browser-observed",
+      stopDisposition: "unconfirmed",
+      input: {
+        ...browserObserved.captureIntegrity.input,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      issueCodes: ["shutdown-unconfirmed"],
+    };
+    expect(validateSessionDocument(browserObserved)).toMatchObject({
+      captureIntegrity: {
+        status: "incomplete",
+        assessmentBasis: "udp-browser-observed",
+        input: { transportReportedUnits: null, transportReportedBytes: null },
+      },
+    });
+
+    const falselyVerified = structuredClone(browserObserved);
+    falselyVerified.captureIntegrity.status = "verified";
+    expect(() => validateSessionDocument(falselyVerified)).toThrow(
+      "browser-observed UDP receipt must honestly describe unavailable terminal bridge counters",
+    );
+
+    const recorderOnly = structuredClone(browserObserved);
+    recorderOnly.captureIntegrity.assessmentBasis = "recorder-only";
+    recorderOnly.captureIntegrity.eventLogComplete = false;
+    recorderOnly.captureIntegrity.input.observedUnits = null;
+    recorderOnly.captureIntegrity.input.observedBytes = null;
+    recorderOnly.captureIntegrity.issueCodes = ["shutdown-unconfirmed", "event-log-incomplete"];
+    expect(validateSessionDocument(recorderOnly)).toMatchObject({
+      captureIntegrity: {
+        status: "incomplete",
+        assessmentBasis: "recorder-only",
+        eventLogComplete: false,
+      },
+    });
+  });
+
+  it("requires exact serial byte-mismatch evidence without equating reads to records", () => {
+    const missingMismatch = v2SerialDocument();
+    missingMismatch.captureIntegrity.status = "incomplete";
+    missingMismatch.captureIntegrity.eventLogComplete = false;
+    missingMismatch.captureIntegrity.input.observedBytes = retainedBytes(missingMismatch) + 1;
+    missingMismatch.captureIntegrity.issueCodes = ["event-log-incomplete"];
+    expect(() => validateSessionDocument(missingMismatch)).toThrow(
+      "Unreconciled serial byte counts require one matching counter-mismatch issue and event",
+    );
+
+    const exhaustedMismatchLog = structuredClone(missingMismatch);
+    exhaustedMismatchLog.captureIntegrity.issueCodes.push("serial-counter-mismatch");
+    expect(validateSessionDocument(exhaustedMismatchLog)).toMatchObject({
+      captureIntegrity: {
+        eventLogComplete: false,
+        issueCodes: ["event-log-incomplete", "serial-counter-mismatch"],
+      },
+    });
+
+    const falselyCompleteMismatchLog = structuredClone(exhaustedMismatchLog);
+    falselyCompleteMismatchLog.captureIntegrity.eventLogComplete = true;
+    falselyCompleteMismatchLog.captureIntegrity.issueCodes = ["serial-counter-mismatch"];
+    expect(() => validateSessionDocument(falselyCompleteMismatchLog)).toThrow(
+      "issue code is not represented by a transport event",
+    );
+
+    const serialMismatch = v2SerialDocument();
+    const observedBytes = retainedBytes(serialMismatch) + 1;
+    serialMismatch.transportEvents = [{
+      id: "serial-counter-mismatch-1",
+      index: 0,
+      type: "serial-counter-mismatch",
+      transport: "serial",
+      scope: { kind: "session" },
+      severity: "critical",
+      message: "One observed serial byte was not retained.",
+      observedReads: 2,
+      observedBytes,
+      retainedRecords: serialMismatch.records.length,
+      retainedBytes: retainedBytes(serialMismatch),
+    }];
+    serialMismatch.captureIntegrity = {
+      ...serialMismatch.captureIntegrity,
+      status: "incomplete",
+      input: {
+        ...serialMismatch.captureIntegrity.input,
+        observedUnits: 2,
+        observedBytes,
+      },
+      issueCodes: ["serial-counter-mismatch"],
+    };
+    expect(validateSessionDocument(serialMismatch)).toMatchObject({
+      captureIntegrity: {
+        status: "incomplete",
+        issueCodes: ["serial-counter-mismatch"],
+      },
+    });
+
+    const conflictingEvent = structuredClone(serialMismatch);
+    const event = conflictingEvent.transportEvents[0];
+    if (!event || event.type !== "serial-counter-mismatch") throw new Error("Expected serial mismatch event");
+    event.observedReads += 1;
+    expect(() => validateSessionDocument(conflictingEvent)).toThrow(
+      "serial counter-mismatch event conflicts with the capture-integrity receipt",
+    );
+  });
+
+  it("pairs a duration-capped receipt issue with a duration capture-limit event", () => {
+    const durationCapped = v2Document();
+    durationCapped.transportEvents = [{
+      id: "capture-duration-limit-1",
+      index: 0,
+      type: "capture-limit",
+      transport: "udp",
+      scope: { kind: "point", offsetUs: durationCapped.durationUs - 1 },
+      severity: "critical",
+      message: "The capture reached its configured duration limit.",
+      component: "recorder",
+      limit: "duration",
+      limitValue: durationCapped.durationUs,
+      observedValue: durationCapped.durationUs + 1,
+    }];
+    durationCapped.captureIntegrity.status = "incomplete";
+    durationCapped.captureIntegrity.issueCodes = ["capture-limit", "duration-capped"];
+    expect(validateSessionDocument(durationCapped).formatVersion).toBe(2);
+
+    const missingDerivedCode = structuredClone(durationCapped);
+    missingDerivedCode.captureIntegrity.issueCodes = ["capture-limit"];
+    expect(() => validateSessionDocument(missingDerivedCode)).toThrow(
+      "duration-capped receipt issue and capture-limit event are inconsistent",
+    );
+
+    const missingLimitEvent = v2Document();
+    missingLimitEvent.captureIntegrity.status = "incomplete";
+    missingLimitEvent.captureIntegrity.issueCodes = ["duration-capped"];
+    expect(() => validateSessionDocument(missingLimitEvent)).toThrow(
+      "duration-capped receipt issue and capture-limit event are inconsistent",
+    );
+
+    const exhaustedDurationLog = structuredClone(missingLimitEvent);
+    exhaustedDurationLog.captureIntegrity.eventLogComplete = false;
+    exhaustedDurationLog.captureIntegrity.issueCodes.push("event-log-incomplete");
+    expect(validateSessionDocument(exhaustedDurationLog)).toMatchObject({
+      captureIntegrity: {
+        eventLogComplete: false,
+        issueCodes: ["duration-capped", "event-log-incomplete"],
+      },
+    });
+
+    const duplicateDurationEvent = structuredClone(durationCapped);
+    duplicateDurationEvent.captureIntegrity.eventLogComplete = false;
+    duplicateDurationEvent.captureIntegrity.issueCodes.push("event-log-incomplete");
+    const durationEvent = duplicateDurationEvent.transportEvents[0];
+    if (!durationEvent || durationEvent.type !== "capture-limit") throw new Error("Expected duration limit event");
+    duplicateDurationEvent.transportEvents.push({
+      ...durationEvent,
+      id: "capture-duration-limit-2",
+      index: 1,
+    });
+    expect(() => validateSessionDocument(duplicateDurationEvent)).toThrow(
+      "duration-capped receipt issue and capture-limit event are inconsistent",
+    );
+  });
+
+  it("accepts an honestly unassessed version 2 file source without inventing an event log", () => {
+    const replay = v2Document();
+    replay.source = { id: "harbor-udp", kind: "file", label: "Imported telemetry file" };
+    for (const sourceRecord of replay.records) sourceRecord.transport.kind = "file";
+    replay.captureIntegrity = {
+      schemaVersion: 1,
+      status: "unknown",
+      assessmentBasis: "file-source-unassessed",
+      stopDisposition: "not-observed",
+      stopOffsetUs: null,
+      eventLogComplete: false,
+      input: {
+        unit: "unknown",
+        observedUnits: null,
+        observedBytes: null,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: { records: replay.records.length, bytes: retainedBytes(replay) },
+      issueCodes: ["file-source-unassessed"],
+    };
+
+    const parsed = parseSession(replay);
+
+    expect(parsed.captureIntegrity).toMatchObject({
+      status: "unknown",
+      assessmentBasis: "file-source-unassessed",
+      eventLogComplete: false,
+    });
+    expect(parsed.transportEvents).toEqual([]);
+
+    const pollutedFileReceipt = structuredClone(replay);
+    pollutedFileReceipt.captureIntegrity.issueCodes.push("legacy-session-unassessed");
+    expect(() => validateSessionDocument(pollutedFileReceipt)).toThrow(
+      "file-source session must declare unassessed capture integrity",
+    );
   });
 
   it("strictly validates operator-authored incident presets against the session duration", () => {
