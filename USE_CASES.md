@@ -1,0 +1,115 @@
+# NarrowsLink use-case log
+
+This is the canonical catalog of operator outcomes NarrowsLink currently supports. It is not a chronological project record: completed product changes belong in [CHANGELOG.md](CHANGELOG.md), and unsupported future outcomes belong in [ROADMAP.md](ROADMAP.md).
+
+## Status model
+
+- **Supported:** the current application provides the complete workflow and the cited implementation or automated coverage exercises its critical path.
+- **Supported with constraints:** the workflow is complete within the limits stated in the entry.
+
+Use-case IDs are permanent. Update an entry when its current workflow, support level, constraints, or evidence changes; record the notable change separately under `CHANGELOG.md` → `[Unreleased]`.
+
+## Current use cases
+
+| ID | Use case | Primary actor | Status | Primary output |
+| --- | --- | --- | --- | --- |
+| UC-001 | Record live field telemetry | Field or test operator | Supported with constraints | Version 2 `.nlsession` |
+| UC-002 | Investigate a recorded telemetry fault | Mission or reliability engineer | Supported with constraints | Exact operator-authored incident range |
+| UC-003 | Audit capture-path integrity | Capture engineer or forensic reviewer | Supported with constraints | Integrity assessment and transport evidence |
+| UC-004 | Run decoder and session regressions | Protocol or application engineer | Supported with constraints | Repeatable decoded and diagnostic results |
+| UC-005 | Hand off a verifiable incident bundle | Operator and receiving engineer | Supported with constraints | Checksummed `.nlb` archive |
+
+## UC-001 — Record live field telemetry
+
+**Actor:** Field or test operator
+
+**Outcome:** Preserve live NSL-01 traffic as an immutable local session that can immediately enter the normal replay and investigation workflow.
+
+**Workflow:**
+
+1. Select UDP bridge or Web Serial capture and configure the source.
+2. Record raw datagrams or serial frames while NarrowsLink retains byte counts, monotonic offsets, transport observations, and malformed input.
+3. Stop the source with **Stop, save & replay**.
+4. Save the downloaded version 2 `.nlsession`, continue into replay with the validated finalized session, and review its terminal integrity status.
+
+**Current constraints:** UDP requires the token-protected local bridge. Serial capture requires a browser with Web Serial support and a secure context such as `localhost` or `127.0.0.1`. The built-in decoder targets NSL-01, and captures must remain within the current serialized-file, record-count, and duration limits. The automatic handoff validates and replays the finalized in-memory document; it does not re-import the downloaded bytes as a separate file-selection step.
+
+**Implementation evidence:** [capture dialog](src/capture/CaptureDialog.tsx), [bounded recorder](src/capture/recorder.ts), [UDP client](src/capture/udp-bridge.ts), [Web Serial adapter](src/capture/web-serial.ts), and [capture-pipeline tests](src/capture/capture-pipeline.test.ts).
+
+## UC-002 — Investigate a recorded telemetry fault
+
+**Actor:** Mission or reliability engineer
+
+**Outcome:** Correlate link behavior, packet cadence, decoder state, diagnostics, markers, and decoded signals around one precisely bounded event.
+
+**Workflow:**
+
+1. Load the bundled replay or a validated local session.
+2. Seek or play the recording on the shared monotonic replay clock.
+3. Select a preset or create an operator-authored half-open range around the event.
+4. Refine the exact microsecond boundaries and inspect the projected narrative, details, statistics, diagnostics, and decoded values.
+5. Add markers and a session note without modifying the source records; they persist locally when browser storage is available.
+
+**Current constraints:** Processing occurs in browser memory. Marker, note, and authored-range persistence is best-effort; when browser local storage is unavailable or rejects a write, edits remain available only in the current page state. NarrowsLink displays one active replay and does not yet provide a saved-session library or automatic comparison between separate captures.
+
+**Implementation evidence:** [session projection](src/domain/session.ts), [replay clock](src/replay/ReplayClock.ts), [timeline helpers](src/lib/telemetry.ts), and [workspace persistence](src/storage/session-storage.ts).
+
+## UC-003 — Audit capture-path integrity
+
+**Actor:** Capture engineer or forensic reviewer
+
+**Outcome:** Determine what NarrowsLink actually observed about the collection path without misclassifying capture failures as source, link, or decoder failures.
+
+**Workflow:**
+
+1. For a version 2 session, review the workspace integrity summary and capture-path diagnostics; legacy version 1 sessions have no receipt and are normalized to an unknown assessment.
+2. Inspect the saved `.nlsession` or exported `transport/integrity-receipt.json` and `transport/events.json` when the exact evidence basis, counters, issue codes, and structured events are required.
+3. Review immutable transport evidence for UDP bridge event-stream sequence discontinuities, counter mismatches, bridge or event-stream errors, recorder limits, serial failures, disconnects, and shutdown disposition.
+4. Correlate `capture-path` diagnostics with the selected incident while keeping link, decoder, and unattributed evidence domains distinct.
+5. Reconcile retained totals with transport-reported totals when the adapter supplied them.
+
+**Current constraints:** The workspace presents a summary label and flattened diagnostic descriptions rather than a complete structured receipt-and-event inspector, so exact field-level auditing requires the saved session or exported JSON. A version 2 receipt can only attest to observations available to the local adapters; per-datagram remote endpoints, a durable bridge-side event journal, and operating-system drop counters are not yet captured.
+
+**Implementation evidence:** [integrity types](src/domain/types.ts), [capture finalization](src/capture/recorder.ts), [session validation and diagnostics](src/domain/session.ts), and [session integrity tests](src/domain/session.test.ts).
+
+## UC-004 — Run decoder and session regressions
+
+**Actor:** Protocol or application engineer
+
+**Outcome:** Exercise a stable telemetry corpus before and after a decoder or session-pipeline change and detect unintended changes in parsing, diagnostics, recovery, range semantics, or evidence generation.
+
+**Workflow:**
+
+1. Regenerate or load the deterministic Harbor relay fixture.
+2. Run the same validated records through the production decoder and session pipeline.
+3. Exercise all five built-in families plus intentional sequence gaps, CRC failures, missing sync words, truncated frames, fade behavior, and decoder recovery.
+4. Run the focused automated suite and compare the resulting domain assertions rather than decorative chart coordinates.
+
+**Current constraints:** This is a repeatable NarrowsLink development and QA workflow, not a firmware harness or built-in side-by-side comparison screen. It covers the bundled NSL-01 schema; runtime schema import and third-party decoder conformance are not implemented.
+
+**Implementation evidence:** [fixture generator](scripts/generate-demo-session.mjs), [decoder](src/domain/decoder.ts), [fixture integration tests](src/domain/fixture.integration.test.ts), [decoder tests](src/domain/decoder.test.ts), and [session tests](src/domain/session.test.ts).
+
+## UC-005 — Hand off a verifiable incident bundle
+
+**Actor:** Operator and receiving engineer
+
+**Outcome:** Package one exact incident range with enough local evidence for another engineer to inspect and verify the archive independently.
+
+**Workflow:**
+
+1. Select the operator-authored half-open incident range.
+2. Add the relevant markers and notes, choose optional artifact groups, and retain the mandatory capture-integrity evidence.
+3. Generate and download the `.nlb` ZIP archive.
+4. Verify the manifest, inclusion list, byte sizes, record counts, and SHA-256 checksums after extraction.
+
+**Current constraints:** Checksums establish internal archive integrity but do not authenticate who created the unsigned bundle or whether its originating NarrowsLink build was trustworthy. Raw telemetry, coordinates, identifiers, and notes may be sensitive and must be reviewed before sharing.
+
+**Implementation evidence:** [bundle builder](src/domain/bundle.ts), [bundle tests](src/domain/bundle.test.ts), and [session workspace persistence](src/storage/session-storage.ts).
+
+## Maintaining this log
+
+1. Assign the next `UC-###` identifier and never renumber an existing use case.
+2. Describe an operator goal and observable outcome, not a component or implementation task.
+3. Cite the current implementation and automated evidence that justify the stated support level.
+4. Keep unsupported outcomes in the roadmap or an issue until an end-to-end workflow exists.
+5. When support or constraints change, update the existing entry and add the notable change to the changelog; do not append historical notes here.

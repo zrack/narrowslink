@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to NarrowsLink are recorded here. This is the canonical project history: the README describes the product as it works now, the roadmap contains planned work, the design QA record holds the currently accepted visual evidence, and collaboration documents define current policy.
+All notable changes to NarrowsLink are recorded here. This is the canonical project history: the README describes the product as it works now, the use-case log catalogs current operator outcomes, the roadmap contains planned work, the design QA record holds the currently accepted visual evidence, and collaboration documents define current policy.
 
 NarrowsLink has not published a tagged release. Until a maintainer publishes a matching Git tag and GitHub Release, completed work remains under `[Unreleased]`; the private `package.json` version is not treated as release evidence.
 
@@ -8,6 +8,7 @@ NarrowsLink has not published a tagged release. Until a maintainer publishes a m
 
 ### Added
 
+- Canonical use-case log with stable IDs, actors, outcomes, current constraints, and implementation evidence for five supported workflows.
 - Mission-timeline-first local session review with a deterministic bundled replay, one synchronized replay clock, telemetry and decoder lanes, incident narrative, details and statistics, markers, and operator notes.
 - Validated session import and NSL-01 decoding that preserve malformed and partial frames while deriving link, inferred missing-frame, jitter, decoder, diagnostic, and decoded-signal evidence.
 - Bounded live UDP and Web Serial capture, including a token-protected local UDP bridge and stop/save/replay through the same validation and decoder pipeline used by imported sessions.

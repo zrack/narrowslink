@@ -7,13 +7,14 @@ NarrowsLink is a local-first telemetry capture, replay, incident-analysis, and e
 | Document | Owns |
 | --- | --- |
 | [README.md](README.md) | Current product orientation, setup, workflows, formats, and limitations |
+| [USE_CASES.md](USE_CASES.md) | Stable use-case IDs, current operator outcomes, support constraints, and implementation evidence |
 | [CHANGELOG.md](CHANGELOG.md) | The sole chronological record of notable completed changes and releases |
 | [ROADMAP.md](ROADMAP.md) | Planned work and exit criteria only |
 | [design-qa.md](design-qa.md) | The current accepted visual baseline and verification evidence |
 | [AGENTS.md](AGENTS.md) | Durable product direction and project constraints for coding agents |
 | [CONTRIBUTING.md](CONTRIBUTING.md) and the pull-request template | Current contributor and review policy |
 
-Update a document only when the truth it owns changes. Do not append delivered milestones, commit summaries, or release notes to the README, roadmap, design QA record, agent guidance, or collaboration files.
+Update a document only when the truth it owns changes. Do not append delivered milestones, commit summaries, or release notes to the README, use-case log, roadmap, design QA record, agent guidance, or collaboration files.
 
 ### Changelog policy
 
