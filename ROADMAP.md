@@ -7,7 +7,7 @@ NarrowsLink now has a working local capture-to-evidence foundation: validated UD
 Status: complete for the current local capture, replay, incident-review, and evidence-export application
 
 - React 19, TypeScript, and Vite application shell with repeatable development, test, typecheck, and production-build commands.
-- Versioned `narrowslink/session` v1 domain model using integer microsecond offsets from a UTC start.
+- Strict, backward-compatible `narrowslink/session` v1/v2 domain model using integer microsecond offsets from a UTC start; v1 remains immutable legacy evidence and new captures emit v2 integrity provenance.
 - Zod document validation plus cross-record checks for identifiers, source references, monotonic time, duration bounds, byte counts, and IANA time zones.
 - Deterministic 18,402-record synthetic fixture and checked-in generator.
 - Pure domain modules with focused Vitest coverage.
@@ -26,7 +26,7 @@ Status: complete for local file and bounded live capture
 - Token-protected loopback UDP bridge with unicast and IPv4/IPv6 multicast, byte-exact datagram forwarding, bounded backpressure, capture ownership, event-sequence gap detection, and final counter reconciliation.
 - Direct Web Serial capture with permission-aware start, lifecycle/error handling, bounded NSL-01 assembly, noise retention, and prompt frame-boundary recovery after corrupt headers.
 - Derived decoder recovery remains visible until at least three valid CRC frames span 40 uninterrupted seconds, preventing a single good frame from claiming relock.
-- Stop/save produces an importable version 1 `.nlsession` and immediately reopens it through the existing decoder, replay, incident, and export pipeline.
+- Stop/save produces an importable version 2 `.nlsession` with immutable transport events and a terminal integrity receipt, then immediately reopens it through the existing decoder, replay, incident, and export pipeline.
 - Recorder budgets include serialized JSON overhead so an accepted capture remains below the browser importer limit.
 
 ## Delivered decoder and diagnostics
@@ -40,6 +40,7 @@ Status: complete for NSL-01 v1
 - Missing sync words, CRC failures, truncated payloads, invalid lengths, and unknown families remain inspectable.
 - Derived one-second link, received-packet-rate, inferred missing-frame, jitter, position, thermal, power, and packet-family metrics. Missing-frame estimates reconcile available transport-drop counters with trusted decoder sequence gaps without double counting the same episode.
 - Derived degradation, inferred missing-frame (loss-burst), checksum, partial-frame, resync, lock, and recovery diagnostics.
+- Capture-path diagnostics derived from durable UDP, serial, backpressure, limit, and shutdown evidence, with link, decoder, capture-path, and unknown domains kept distinct.
 
 ## Delivered operator workspace
 
@@ -54,6 +55,7 @@ Status: complete for preset and operator-authored incident review
 - Replay-linked link quality, received packet rate, inferred missing-frame, packet-family, decoder, diagnostic, marker, and signal lanes.
 - Per-session operator markers and notes persisted in browser local storage.
 - Responsive layouts and baseline keyboard/ARIA semantics for core controls.
+- Integrity status and evidence-domain context in the source facts, timeline, narrative, and incident details without adding another workspace region.
 
 ## Delivered prototype-fidelity pass
 
@@ -74,6 +76,7 @@ Status: complete for local incident bundles
 - Configurable raw records, decoded packets, diagnostics, schema context, markers, and notes.
 - Canonical manifest with session, decoder, selection, inclusion, byte-size, media-type, record-count, and hash metadata.
 - SHA-256 checksums for the manifest and every included evidence artifact.
+- Mandatory range-filtered `transport/events.json` and whole-session `transport/integrity-receipt.json`, with the receipt repeated in the version 2 manifest and transport evidence unable to be deselected.
 - Stable archive bytes when inputs and generation time are held constant.
 
 ## Next: decoder schema extensibility
@@ -96,14 +99,27 @@ Exit criteria: a contributor can add a decoder schema and fixtures without editi
 
 Exit criteria: large sessions remain responsive, cancellable, and deterministic under documented memory and latency budgets.
 
-## Next: durable transport provenance
+## Delivered durable capture integrity
 
-- Add a versioned transport-event stream for disconnects, socket errors, operating-system drop counters, backpressure, capture cancellation, and unconfirmed shutdown.
+Status: complete for browser-observed UDP and serial capture evidence
+
+- Session v2 immutable transport events for UDP sequence discontinuities, bridge and event-stream failures, counter mismatches, recorder backpressure and limits, serial read/disconnect/tail failures, and unconfirmed shutdown.
+- Terminal integrity receipt with stop disposition, event-log completeness, input totals, transport-reported totals where available, retained totals, and stable issue codes.
+- Strict receipt/event/counter reconciliation across verified and incomplete states, including dedicated UDP and serial mismatch evidence, deep-frozen validated evidence, and honest v1 normalization to unknown without rewriting the source document.
+- Explicit `udp-browser-observed` and `recorder-only` incomplete bases prevent unavailable bridge or adapter observations from being manufactured from retained totals.
+- Capture-path diagnostics flow through replay, operator-authored half-open ranges, timeline, narrative, details, and bundle generation.
+- Bundle v2 always includes and hashes the selected transport event log and whole-session integrity receipt.
+- Automated UDP mismatch and serial disconnect round trips cover capture, serialization, reopen, operator range, investigation, export, and SHA-256 verification.
+
+## Next: full transport provenance
+
+- Add a capture-scoped bridge-side event journal so socket, multicast, backpressure, and shutdown history survives even when the browser event stream is the failed channel.
+- Add operating-system drop counters where the host platform exposes them.
 - Persist per-datagram remote UDP endpoint metadata without weakening the current immutable raw-byte model.
 - Distinguish captured payload bytes from measured or estimated link-layer wire bytes.
-- Include transport events and provenance in incident projection, bundle manifests, raw evidence, and checksums.
+- Preserve serial device identity and negotiated settings in structured session provenance.
 
-Exit criteria: a replay and its evidence bundle can explain both the retained telemetry and every known transport-level gap or shutdown anomaly without relying on transient UI state.
+Exit criteria: the browser receipt can be cross-checked against a durable bridge journal and platform counters, and each retained datagram can be attributed to its remote endpoint.
 
 ## Next: accessibility and end-to-end reliability
 

@@ -5,6 +5,7 @@ import { buildEvidenceBundle, type EvidenceBundleManifest } from "../domain/bund
 import { bytesToHex, encodeFrame, hexToBytes } from "../domain/decoder";
 import { parseSession, projectIncident, validateIncidentPreset } from "../domain/session";
 import type { SourceRecord } from "../domain/types";
+import { serialTransportFailureEvent, udpSequenceDiscontinuityEvent } from "./CaptureDialog";
 import { CaptureRecorder } from "./recorder";
 
 function heartbeatPayload(uptime: number, mode: number, revision: number): Uint8Array {
@@ -69,10 +70,25 @@ describe("live capture pipeline", () => {
       recorder.append({ offsetUs: offsetsUs[index] ?? 0, bytes, kernelDropCounter: 0 });
     }
 
-    const finalizedDocument = recorder.finalize(75_000);
+    const capturedBytes = capturedFrames.reduce((total, frame) => total + frame.byteLength, 0);
+    const finalizedDocument = recorder.finalize(75_000, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 75_000,
+      eventLogComplete: true,
+      observedUnits: capturedFrames.length,
+      observedBytes: capturedBytes,
+      transportReportedUnits: capturedFrames.length,
+      transportReportedBytes: capturedBytes,
+    });
     const roundTrippedDocument: unknown = JSON.parse(JSON.stringify(finalizedDocument));
     const session = parseSession(roundTrippedDocument);
 
+    expect(session.captureIntegrity).toMatchObject({
+      status: "verified",
+      assessmentBasis: "udp-bridge-reconciled",
+      stopDisposition: "confirmed",
+      issueCodes: [],
+    });
     expect(session.document.records).toHaveLength(capturedFrames.length);
     expect(session.frames.map((frame) => frame.status)).toEqual(["complete", "complete", "complete"]);
     expect(session.frames.map((frame) => frame.integrity.status)).toEqual(["valid", "valid", "valid"]);
@@ -173,7 +189,16 @@ describe("live capture pipeline", () => {
       recorder.append({ offsetUs: index * 25_000, bytes });
     }
 
-    const replayedSession = parseSession(JSON.parse(JSON.stringify(recorder.finalize(100_000))) as unknown);
+    const capturedBytes = capturedFrames.reduce((total, frame) => total + frame.byteLength, 0);
+    const replayedSession = parseSession(JSON.parse(JSON.stringify(recorder.finalize(100_000, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 100_000,
+      eventLogComplete: true,
+      observedUnits: capturedFrames.length,
+      observedBytes: capturedBytes,
+      transportReportedUnits: null,
+      transportReportedBytes: null,
+    }))) as unknown);
     const operatorRange = validateIncidentPreset(
       {
         id: "operator-power-transition",
@@ -190,6 +215,12 @@ describe("live capture pipeline", () => {
       replayedSession.diagnostics,
     );
 
+    expect(replayedSession.captureIntegrity).toMatchObject({
+      status: "verified",
+      assessmentBasis: "web-serial-observed",
+      stopDisposition: "confirmed",
+      issueCodes: [],
+    });
     expect(projectedIncident.stats).toMatchObject({
       receivedFrames: 2,
       expectedFrames: 2,
@@ -233,6 +264,202 @@ describe("live capture pipeline", () => {
           const [hash, path] = line.split("  ");
           return [path, hash];
         }),
+    );
+    for (const path of manifest.checksums.covers) {
+      const artifact = archive[path];
+      expect(artifact, path).toBeDefined();
+      if (artifact) expect(checksumLines.get(path)).toBe(await sha256(artifact));
+    }
+  });
+
+  it("round-trips a UDP sequence/counter failure through investigation and a verifiable operator-range bundle", async () => {
+    const first = encodeFrame({
+      familyId: 0x02,
+      sequence: 501,
+      deviceTimeMs: 0,
+      payload: heartbeatPayload(5_000, 2, 141),
+    });
+    const second = encodeFrame({
+      familyId: 0x02,
+      sequence: 503,
+      deviceTimeMs: 25,
+      payload: heartbeatPayload(5_001, 3, 141),
+    });
+    const recorder = new CaptureRecorder({
+      sessionId: "capture-udp-integrity-failure",
+      title: "UDP integrity failure",
+      startedAt: "2026-07-15T20:00:00.000Z",
+      displayTimeZone: "America/Los_Angeles",
+      source: {
+        id: "udp-loopback-failure",
+        kind: "udp",
+        label: "UDP 127.0.0.1:9104",
+        address: "127.0.0.1",
+        port: 9_104,
+      },
+    });
+    recorder.append({ offsetUs: 0, bytes: first });
+    recorder.append({ offsetUs: 25_000, bytes: second });
+    recorder.appendTransportEvent(udpSequenceDiscontinuityEvent({ offsetUs: 25_000, sequence: 2 }, 1));
+
+    const observedBytes = first.byteLength + second.byteLength;
+    const document = recorder.finalize(50_000, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 50_000,
+      eventLogComplete: true,
+      observedUnits: 2,
+      observedBytes,
+      transportReportedUnits: 3,
+      transportReportedBytes: observedBytes + first.byteLength,
+    });
+    const replayed = parseSession(JSON.parse(JSON.stringify(document)) as unknown);
+    const range = validateIncidentPreset({
+      id: "operator-udp-gap",
+      title: "Investigate UDP capture gap",
+      startUs: 25_000,
+      endUs: 50_000,
+      severity: "critical",
+    }, replayed.document.durationUs);
+    const incident = projectIncident(range, replayed.frames, replayed.diagnostics);
+
+    expect(replayed.document.formatVersion).toBe(2);
+    expect(replayed.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      stopDisposition: "confirmed",
+      issueCodes: ["udp-event-sequence-discontinuity", "udp-counter-mismatch"],
+    });
+    expect(replayed.transportEvents.map((event) => event.type)).toEqual([
+      "udp-event-sequence-discontinuity",
+      "udp-counter-mismatch",
+    ]);
+    expect(incident.diagnostics.filter((event) => event.type === "capture-path-event")).toHaveLength(2);
+    expect(incident.diagnostics.every((event) => event.domain === "capture-path" || event.domain === "unknown")).toBe(true);
+
+    const bundleBytes = await buildEvidenceBundle({
+      session: replayed,
+      range: incident,
+      generatedAt: "2026-07-15T20:01:00.000Z",
+    });
+    const archive = unzipSync(bundleBytes);
+    const exportedEvents = JSON.parse(decodeText(archive, "transport/events.json")) as {
+      events: Array<{ type: string }>;
+    };
+    const receipt = JSON.parse(decodeText(archive, "transport/integrity-receipt.json")) as {
+      status: string;
+      issueCodes: string[];
+    };
+    expect(exportedEvents.events.map((event) => event.type)).toEqual([
+      "udp-event-sequence-discontinuity",
+      "udp-counter-mismatch",
+    ]);
+    expect(receipt).toMatchObject({
+      status: "incomplete",
+      issueCodes: ["udp-event-sequence-discontinuity", "udp-counter-mismatch"],
+    });
+
+    const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
+    const checksumLines = new Map(
+      decodeText(archive, "SHA256SUMS").trim().split("\n").map((line) => {
+        const [hash, path] = line.split("  ");
+        return [path, hash];
+      }),
+    );
+    for (const path of manifest.checksums.covers) {
+      const artifact = archive[path];
+      expect(artifact, path).toBeDefined();
+      if (artifact) expect(checksumLines.get(path)).toBe(await sha256(artifact));
+    }
+  });
+
+  it("round-trips a serial disconnect through investigation and a verifiable operator-range bundle", async () => {
+    const first = encodeFrame({
+      familyId: 0x02,
+      sequence: 601,
+      deviceTimeMs: 0,
+      payload: heartbeatPayload(6_000, 2, 142),
+    });
+    const second = encodeFrame({
+      familyId: 0x02,
+      sequence: 602,
+      deviceTimeMs: 25,
+      payload: heartbeatPayload(6_001, 2, 142),
+    });
+    const recorder = new CaptureRecorder({
+      sessionId: "capture-serial-disconnect",
+      title: "Serial disconnect",
+      startedAt: "2026-07-15T21:00:00.000Z",
+      displayTimeZone: "America/Los_Angeles",
+      source: { id: "serial-disconnect", kind: "serial", label: "Serial loopback" },
+    });
+    recorder.append({ offsetUs: 0, bytes: first });
+    recorder.append({ offsetUs: 25_000, bytes: second });
+    recorder.appendTransportEvent(serialTransportFailureEvent(
+      "serial-disconnected",
+      40_000,
+      "The serial stream disconnected before the operator stopped it.",
+      "serial-stream-ended",
+    ));
+
+    const observedBytes = first.byteLength + second.byteLength;
+    const document = recorder.finalize(50_000, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 50_000,
+      eventLogComplete: true,
+      observedUnits: 2,
+      observedBytes,
+      transportReportedUnits: null,
+      transportReportedBytes: null,
+    });
+    const replayed = parseSession(JSON.parse(JSON.stringify(document)) as unknown);
+    const range = validateIncidentPreset({
+      id: "operator-serial-disconnect",
+      title: "Investigate serial disconnect",
+      startUs: 40_000,
+      endUs: 50_000,
+      severity: "critical",
+    }, replayed.document.durationUs);
+    const incident = projectIncident(range, replayed.frames, replayed.diagnostics);
+
+    expect(replayed.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      assessmentBasis: "web-serial-observed",
+      issueCodes: ["serial-disconnected"],
+    });
+    expect(incident.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "capture-path-event",
+        domain: "capture-path",
+        startUs: 40_000,
+        title: "Serial device disconnected",
+      }),
+    ]));
+
+    const bundleBytes = await buildEvidenceBundle({
+      session: replayed,
+      range: incident,
+      generatedAt: "2026-07-15T21:01:00.000Z",
+    });
+    const archive = unzipSync(bundleBytes);
+    const exportedEvents = JSON.parse(decodeText(archive, "transport/events.json")) as {
+      events: Array<{ type: string; scope: { offsetUs?: number } }>;
+    };
+    expect(exportedEvents.events).toEqual([
+      expect.objectContaining({
+        type: "serial-disconnected",
+        scope: { kind: "point", offsetUs: 40_000 },
+      }),
+    ]);
+    expect(JSON.parse(decodeText(archive, "transport/integrity-receipt.json"))).toMatchObject({
+      status: "incomplete",
+      issueCodes: ["serial-disconnected"],
+    });
+
+    const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
+    const checksumLines = new Map(
+      decodeText(archive, "SHA256SUMS").trim().split("\n").map((line) => {
+        const [hash, path] = line.split("  ");
+        return [path, hash];
+      }),
     );
     for (const path of manifest.checksums.covers) {
       const artifact = archive[path];
