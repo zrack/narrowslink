@@ -44,6 +44,8 @@ Fixture provenance or generation command (write “Not applicable” when applic
 ## Documentation and migration
 
 - [ ] User-facing behavior, schemas, workflows, or compatibility changes are documented.
+- [ ] `CHANGELOG.md` → `[Unreleased]` is updated, or the notes below explain why the changelog policy does not apply.
+- [ ] Current-state documents were updated only where their owned truth changed; completed work was not logged in the README, roadmap, design QA record, or collaboration policy.
 - [ ] No migration is needed, or migration and rollback guidance is included below.
 
 Documentation or migration notes:

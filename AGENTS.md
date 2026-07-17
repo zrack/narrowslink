@@ -28,3 +28,12 @@ Treat `docs/design/narrowslink-mission-timeline-source.png` as the source of tru
 - Evidence exports must produce a real local archive and describe exactly which artifacts they contain.
 - Every evidence bundle must include the range-filtered transport event log and the whole-session integrity receipt, even when optional artifact groups are excluded.
 - Keep the core decoder, replay, incident, and bundle logic pure and covered by automated tests.
+
+## Documentation Ownership
+
+- `CHANGELOG.md` is the sole chronological record of notable completed changes and releases. Add applicable work under `[Unreleased]`.
+- `README.md` describes the product as it works now; do not append delivery history or completed milestone notes to it.
+- `ROADMAP.md` contains planned work only. When a milestone is completed, remove it from the roadmap and record the delivered outcome in the changelog rather than relabeling it as delivered.
+- `design-qa.md` records the currently accepted visual baseline and verification evidence, not a pass-by-pass product history.
+- `CONTRIBUTING.md`, the pull-request template, and other collaboration documents define current process and policy; replace superseded guidance instead of accumulating historical notes.
+- Update each document only when the current truth it owns changes. Do not duplicate changelog entries across documentation.

@@ -1,5 +1,7 @@
 # NarrowsLink Design QA
 
+This document records the currently accepted visual baseline and its verification evidence. Historical product changes belong in [CHANGELOG.md](CHANGELOG.md), and planned visual work belongs in [ROADMAP.md](ROADMAP.md).
+
 ## Comparison target
 
 - Source visual truth: [mission-timeline source](docs/design/narrowslink-mission-timeline-source.png)
@@ -46,28 +48,6 @@ Five visible differences are intentional and accepted product/data constraints:
 - Source rail and header: widths, dividers, title/meta hierarchy, compact replay actions, source navigation, and capture entry align with the prototype while remaining truthful to the one loaded replay.
 - Capture integrity: the functional evidence confirms that an incomplete v2 receipt is visible in session context, its immutable UDP anomaly appears in the shared Diagnostics lane and Narrative as `Capture path`, and the evidence workspace keeps Capture integrity mandatory while Diagnostics remains optional.
 
-## Comparison history
-
-### Pass 0 — current product baseline
-
-- Findings: shell proportions, header metadata, source-rail density, overview anatomy, packet-family cadence, incident density, and evidence-workspace geometry visibly diverged from the source.
-
-### Pass 1 — composition and visual-system alignment
-
-- Fixes: aligned the three-column shell, warmer palette, compact command geometry, independent overview bands, shared timeline grid, family-lane anatomy, six-event narrative, and evidence-panel proportions.
-- Remaining findings: the fixture produced an overly flat received packet rate, a very short resynchronization state, and an artificial overview spike.
-
-### Pass 2 — evidence-backed replay shaping
-
-- Fixes: regenerated the deterministic fixture with varied cadence, a real fade, inferred missing-frame episodes, malformed-frame retention, and a longer decoder-resynchronization sequence; added pure-domain assertions for those properties.
-- Remaining finding: global cadence modulation still created a visually artificial overview peak.
-
-### Pass 3 — final axis and fixture alignment
-
-- Evidence: [desktop implementation](docs/design/implementation-final-production.png), [full comparison](docs/design/comparison-production-final.png), [focused comparison](docs/design/comparison-production-focused.png), and [responsive implementation](docs/design/implementation-functional-mobile.png).
-- Fixes: removed the artificial fixture spike, aligned the initial replay window and minute ticks, reserved the right scale gutter, tuned chart domains and incident extent, and corrected compact family-lane label spacing.
-- Result: no actionable P0, P1, or P2 differences remain.
-
 ## Required fidelity surfaces
 
 - Fonts and typography: bundled Inter carries interface copy and IBM Plex Mono carries times, values, and protocol metadata. Uppercase micro-labels, numeric alignment, weight, and dense line heights were checked in the focused comparison.
@@ -97,11 +77,6 @@ Five visible differences are intentional and accepted product/data constraints:
 - Checked and saved the capture-integrity replay at a `1487 × 1058` browser viewport with no document overflow; the header, required Capture integrity row, and all optional evidence controls remain visible in the accepted frame.
 - Ran `npm run check`: TypeScript validation, `141` tests across `16` files, and the production Vite build passed.
 
-## Follow-up polish
-
-- [P3] Add an automated keyboard-navigation, screen-reader, and 200% browser-zoom matrix.
-- [P3] Add real session-history entries to the left rail once the application has persisted more than one genuine source; do not backfill decorative records.
-
 ## Implementation checklist
 
 - [x] Preserve the approved mission-timeline composition and instrument-grade visual language.
@@ -112,4 +87,4 @@ Five visible differences are intentional and accepted product/data constraints:
 - [x] Verify desktop, responsive, and primary interaction states.
 - [x] Resolve every P0, P1, and P2 visual QA finding.
 
-final result: passed
+**Result: passed.**

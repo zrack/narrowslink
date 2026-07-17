@@ -6,34 +6,14 @@ NarrowsLink records live UDP or serial telemetry, turns the capture into an immu
 
 The application is local-first. UDP ingest uses a local Node.js bridge whose token-protected control plane listens only on loopback; its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, replay, annotations, and evidence generation stay on the operator's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
-## Workspace at a glance
+## Current capabilities
 
-- The source rail starts a live capture, opens a local replay, and identifies the session that is actually loaded.
-- The session overview locates the active time window inside the full recording while separating link quality, received packet rate, inferred missing frames, and markers; **New range** creates an operator-owned incident around the playhead.
-- The mission timeline correlates connection health, packet cadence, decoder state, diagnostics, operator markers, and decoded position signals on one shared clock.
-- The incident rail explains the selected half-open range with a compact narrative, exact details, statistics, and a session-wide operator note. Local ranges can be renamed, classified, set to exact microsecond boundaries, resized from either timeline, or deleted with confirmation.
-- The evidence workspace previews the selected artifact groups and their estimated size before building a checksummed local `.nlb` handoff bundle. Capture integrity is required evidence; after generation, the archive manifest records the exact files, byte sizes, record counts, hashes, and terminal receipt that were emitted.
-
-## What works today
-
-- Records unicast or multicast UDP datagrams through a local Node.js bridge with a loopback-only control API, preserving datagram boundaries, byte counts, monotonic offsets, and server-enforced capture ownership. The UDP listener binds the interface selected by the operator.
-- Records NSL-01 serial input directly through Web Serial, reassembling split frames while retaining noise, corrupt boundaries, and incomplete trailing bytes for diagnosis.
-- Stops a live source, downloads a versioned `.nlsession`, and opens that exact document through the existing validation and decoder pipeline for immediate replay.
-- Finalizes new live recordings as session format v2 with an immutable transport-event log and a reconciled capture-integrity receipt. UDP sequence discontinuities, counter mismatches, bridge and event-stream failures, recorder limits, serial read failures, disconnects, tail-recovery failures, and unconfirmed shutdowns survive save and reopen.
-- Never substitutes browser totals for unavailable UDP bridge totals. A missing terminal bridge status remains null and produces incomplete `udp-browser-observed` evidence; low-level recorder finalization without adapter evidence remains incomplete and `recorder-only`.
-- Loads the bundled demonstration session or a local NarrowsLink session file through the same validation and decoding pipeline.
-- Loads legacy v1 sessions without rewriting them and reports their capture integrity as unknown rather than manufacturing a verified receipt.
-- Rejects malformed documents, non-monotonic timestamps, duplicate record IDs, invalid time zones, inconsistent byte counts, and files over the 32 MiB browser safety limit with actionable errors.
-- Decodes the NSL-01 frame envelope, CRC-16/CCITT-FALSE integrity, and five built-in packet families: Heartbeat, Power, Attitude, Position, and Thermal.
-- Retains checksum failures, missing sync words, truncated frames, and invalid lengths as inspectable diagnostics instead of silently discarding them.
-- Requires sustained valid traffic before reporting decoder relock, keeping recovery periods visible instead of converting the first good frame into an immediate success state.
-- Uses one monotonic replay clock for play, pause, seek, rate changes, the timeline playhead, current values, diagnostics, and incident context. Times remain integer microsecond offsets from a UTC session start.
-- Projects both replay presets and operator-authored incidents into exact half-open ranges (`[startUs, endUs)`) with delivery, inferred missing-frame, signal, jitter, availability, and decode-confidence statistics. Missing-frame estimates use the stronger of available transport-drop counters and trusted decoder sequence gaps without summing the same episode twice.
-- Projects durable transport anomalies into the existing Diagnostics lane and incident narrative as `capture-path` evidence, distinct from link, decoder, and unattributed failure domains.
-- Creates a 30-second local incident around the playhead, supports exact `HH:MM:SS.ffffff` editing and timeline-handle resizing, and turns a replay preset into an editable local copy rather than mutating the source session.
-- Persists operator incident ranges, markers, and notes per session in versioned browser local storage. The original replay stays immutable.
-- Builds and downloads a real `.nlb` ZIP archive for the selected incident, with a manifest, exact inclusion list, mandatory range-filtered transport events, the whole-session integrity receipt, and a SHA-256 checksum for every evidence artifact.
-- Includes focused automated tests for validation, decoding, replay-clock behavior, range semantics, and deterministic evidence packaging.
+- Capture unicast or multicast UDP datagrams through the token-protected local bridge, or record NSL-01 serial input directly through Web Serial. Stopping a source saves a versioned `.nlsession` and reopens that exact document for replay.
+- Load the bundled demonstration or a local version 1 or 2 session through the same validation, decoding, diagnostics, incident, and export pipeline. Legacy v1 evidence remains unchanged and carries an explicit unknown capture-integrity assessment.
+- Decode the NSL-01 envelope, CRC-16/CCITT-FALSE integrity, and Heartbeat, Power, Attitude, Position, and Thermal families while retaining malformed, partial, checksum-failed, and unknown frames as inspectable diagnostics.
+- Correlate connection health, packet cadence, decoder state, diagnostics, markers, and decoded signals on one monotonic microsecond replay clock.
+- Create, rename, classify, resize, and precisely edit operator-owned half-open incident ranges; markers, ranges, and notes persist per session without mutating the source replay.
+- Export the selected range as a local `.nlb` archive with an exact manifest, mandatory transport events and capture-integrity receipt, and a SHA-256 checksum for every emitted artifact.
 
 ## Typical incident workflow
 
@@ -237,16 +217,23 @@ Serial capture, replay parsing, marker and note persistence, and evidence genera
 
 Local does not automatically mean safe to share. A replay or evidence bundle can contain raw bytes, device identifiers, coordinates, signal observations, and operator notes. Review and sanitize captures before committing them or sending them to someone else. Browser local storage is convenient workspace persistence, not an encrypted secrets store.
 
-## Current limits and next steps
+## Current limits
 
 - Live capture supports UDP and Web Serial; TCP and other transports are not implemented.
-- The serial adapter is intentionally bound to the bundled NSL-01 decoder schema. Decoder families are compiled into the application; external schema loading and protocol plug-ins are next-stage work.
+- The serial adapter is bound to the bundled NSL-01 decoder schema, and decoder families are compiled into the application; external schemas and protocol plug-ins are not supported.
 - Sessions are captured, parsed, indexed, and bundled in browser memory. The recorder enforces the same importable-file budget as the 32 MiB replay loader, plus the 100,000-record and 24-hour schema limits.
 - New live captures use version 2 durable transport events and integrity receipts; legacy version 1 replays remain supported with an explicit unknown assessment.
-- Version 2 does not yet persist each UDP sender endpoint or the bridge's internal capture ID in every source record. It preserves browser-observed bridge errors, event-stream gaps, stop-time counter reconciliation, recorder limits, serial failures, and shutdown disposition. A capture-scoped bridge-side journal and operating-system drop counters remain next-stage provenance work.
-- Automated coverage includes capture adapters, the real loopback bridge, decoder/replay behavior, and capture-to-evidence byte/hash verification. Expanded cross-browser and assistive-technology testing remains on the roadmap.
+- Version 2 does not persist each UDP sender endpoint or the bridge's internal capture ID in every source record. It does preserve browser-observed bridge errors, event-stream gaps, stop-time counter reconciliation, recorder limits, serial failures, and shutdown disposition.
+- Automated coverage includes capture adapters, the real loopback bridge, decoder/replay behavior, and capture-to-evidence byte/hash verification. Cross-browser and assistive-technology coverage is still limited.
 
-See [ROADMAP.md](ROADMAP.md) for the next milestones and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance.
+## Project documentation
+
+| Document | Purpose |
+| --- | --- |
+| [CHANGELOG.md](CHANGELOG.md) | Canonical record of notable completed changes and, once they exist, tagged releases |
+| [ROADMAP.md](ROADMAP.md) | Planned work, constraints, and exit criteria; completed work moves to the changelog |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, engineering invariants, review expectations, and changelog policy |
+| [design-qa.md](design-qa.md) | Current accepted visual baseline and verification evidence |
 
 For usage help, see [SUPPORT.md](SUPPORT.md). Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md), and review [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating in project spaces.
 

@@ -2,12 +2,13 @@
 
 ## Supported versions
 
-NarrowsLink is a pre-1.0 project under active development. Security fixes are made on the current `main` branch and included in the next release when releases are available. Older commits, forks, and superseded 0.x releases do not receive guaranteed backports.
+NarrowsLink is a pre-1.0 project under active development. No tagged release has been published. Security fixes are made on the current `main` branch; older commits and forks do not receive guaranteed backports.
 
 | Version | Supported |
 | --- | --- |
-| Current `main` and latest 0.x release | Yes |
-| Older commits and superseded 0.x releases | No |
+| Current `main` | Yes |
+| Tagged releases | None published |
+| Older commits and forks | No |
 
 ## Report a vulnerability privately
 
