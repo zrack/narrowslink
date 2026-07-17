@@ -76,12 +76,16 @@ Four visible differences are intentional and accepted product/data constraints:
 - Played and paused the replay and changed speed to `2×`; the monotonic replay state updated as expected.
 - Opened and closed the marker dialog.
 - Switched from Narrative to Details and restored Narrative.
-- Opened and cancelled the evidence-bundle confirmation without creating an unwanted download.
+- Created an operator incident with exact `HH:MM:SS.ffffff` start/end values, confirmed `[start, end)` duration copy, and verified its projected empty-diagnostic state.
+- Adjusted an authored start boundary from the overview with the keyboard; the timeline, incident rail, statistics, and bundle preview updated from the same range.
+- Reloaded the page and confirmed the authored range survived versioned per-session local persistence.
+- Renamed and extended the range in the shared editor, then exercised the guarded delete flow and kept the sample range.
+- Built and downloaded a `15.2 KB` `.nlb` for the exact authored range; the success state reported the generated filename and verifiable local evidence.
 - Opened and closed the live UDP/serial capture setup.
 - Verified the final desktop document is exactly `1487 × 1058` with no page overflow.
-- Verified the final responsive document width is exactly `390 px` with no body overflow.
+- Verified the operator range editor at `390 × 844`; exact boundary fields stack cleanly and the primary action remains visible.
 - Checked browser warnings and errors after a clean reload: none.
-- Ran `npm run check`: TypeScript validation, `92` tests across `14` files, and the production Vite build passed.
+- Ran `npm run check`: TypeScript validation, `117` tests across `16` files, and the production Vite build passed.
 
 ## Follow-up polish
 

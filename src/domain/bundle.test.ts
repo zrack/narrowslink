@@ -49,12 +49,13 @@ function frame(record: SourceRecord): DecodedFrame {
   };
 }
 
-function diagnostic(id: string, startUs: number): DiagnosticEvent {
+function diagnostic(id: string, startUs: number, endUs?: number): DiagnosticEvent {
   return {
     id,
     type: "crc-failure",
     severity: "critical",
     startUs,
+    ...(endUs == null ? {} : { endUs }),
     title: `Diagnostic ${id}`,
     description: `Description, with comma for ${id}`,
     frameIds: [],
@@ -98,6 +99,8 @@ function makeSession(): ParsedSession {
     frames,
     buckets: [],
     diagnostics: [
+      diagnostic("diag-ends-at-start", 500, 1_000),
+      diagnostic("diag-overlaps-start", 500, 1_001),
       diagnostic("diag-before", 999),
       diagnostic("diag-start", 1_000),
       diagnostic("diag-inside", 1_999),
@@ -187,7 +190,7 @@ describe("buildEvidenceBundle", () => {
     const diagnosticDocument = JSON.parse(decodeText(archive, "diagnostics/diagnostics.json")) as {
       diagnostics: DiagnosticEvent[];
     };
-    expect(diagnosticDocument.diagnostics.map((item) => item.id)).toEqual(["diag-start", "diag-inside"]);
+    expect(diagnosticDocument.diagnostics.map((item) => item.id)).toEqual(["diag-overlaps-start", "diag-start", "diag-inside"]);
 
     const markerDocument = JSON.parse(decodeText(archive, "markers/markers.json")) as { markers: Marker[] };
     expect(markerDocument.markers.map((item) => item.id)).toEqual(["marker-start", "marker-inside"]);

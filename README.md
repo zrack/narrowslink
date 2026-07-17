@@ -9,9 +9,9 @@ The application is local-first. UDP ingest uses a local Node.js bridge whose tok
 ## Workspace at a glance
 
 - The source rail starts a live capture, opens a local replay, and identifies the session that is actually loaded.
-- The session overview locates the active time window inside the full recording while separating link quality, received packet rate, inferred missing frames, and markers.
+- The session overview locates the active time window inside the full recording while separating link quality, received packet rate, inferred missing frames, and markers; **New range** creates an operator-owned incident around the playhead.
 - The mission timeline correlates connection health, packet cadence, decoder state, diagnostics, operator markers, and decoded position signals on one shared clock.
-- The incident rail explains the selected half-open range with a compact narrative, exact details, statistics, and a session-wide operator note.
+- The incident rail explains the selected half-open range with a compact narrative, exact details, statistics, and a session-wide operator note. Local ranges can be renamed, classified, set to exact microsecond boundaries, resized from either timeline, or deleted with confirmation.
 - The evidence workspace previews the selected artifact groups and their estimated size before building a checksummed local `.nlb` handoff bundle. After generation, the archive manifest records the exact files, byte sizes, record counts, and hashes that were emitted.
 
 ## What works today
@@ -25,19 +25,21 @@ The application is local-first. UDP ingest uses a local Node.js bridge whose tok
 - Retains checksum failures, missing sync words, truncated frames, and invalid lengths as inspectable diagnostics instead of silently discarding them.
 - Requires sustained valid traffic before reporting decoder relock, keeping recovery periods visible instead of converting the first good frame into an immediate success state.
 - Uses one monotonic replay clock for play, pause, seek, rate changes, the timeline playhead, current values, diagnostics, and incident context. Times remain integer microsecond offsets from a UTC session start.
-- Projects preset incidents into exact half-open ranges (`[startUs, endUs)`) with delivery, inferred missing-frame, signal, jitter, availability, and decode-confidence statistics. Missing-frame estimates use the stronger of available transport-drop counters and trusted decoder sequence gaps without summing the same episode twice.
-- Persists operator markers and notes per session in browser local storage.
+- Projects both replay presets and operator-authored incidents into exact half-open ranges (`[startUs, endUs)`) with delivery, inferred missing-frame, signal, jitter, availability, and decode-confidence statistics. Missing-frame estimates use the stronger of available transport-drop counters and trusted decoder sequence gaps without summing the same episode twice.
+- Creates a 30-second local incident around the playhead, supports exact `HH:MM:SS.ffffff` editing and timeline-handle resizing, and turns a replay preset into an editable local copy rather than mutating the source session.
+- Persists operator incident ranges, markers, and notes per session in versioned browser local storage. The original replay stays immutable.
 - Builds and downloads a real `.nlb` ZIP archive for the selected incident, with a manifest, exact inclusion list, and SHA-256 checksum for every evidence artifact.
 - Includes focused automated tests for validation, decoding, replay-clock behavior, range semantics, and deterministic evidence packaging.
 
 ## Typical incident workflow
 
 1. Load the bundled fixture or choose **Open local replay** for a `.json` or `.nlsession` file.
-2. Select an incident, then use **Play replay**, seeking, and rate controls to inspect its context on the shared timeline.
-3. Correlate the Narrative, Details, and Stats views with decoder, diagnostic, marker, packet-family, and decoded-signal lanes.
-4. Use **Add marker** and the session-wide note to preserve operator context locally.
-5. Choose the evidence groups to include and review the estimated archive size; this pre-build preview is not a byte-exact manifest.
-6. Select **Create incident bundle** to download the verifiable `.nlb` archive.
+2. Select a replay preset or choose **New range** to create a local incident around the playhead. A preset can be refined as a separate local copy.
+3. Drag the amber start/end handles for rapid adjustment, or use the incident editor to name the range and enter exact included-start and excluded-end offsets.
+4. Use **Play replay**, seeking, and rate controls to inspect the range while correlating Narrative, Details, and Stats with decoder, diagnostic, marker, packet-family, and decoded-signal lanes.
+5. Use **Add marker** and the session-wide note to preserve operator context locally.
+6. Choose the evidence groups to include and review the estimated archive size; this pre-build preview is not a byte-exact manifest.
+7. Select **Create incident bundle** to download the verifiable `.nlb` archive for that exact operator-authored range.
 
 ## Run it locally
 
@@ -197,7 +199,7 @@ Checksums establish internal integrity only. Version 1 bundles are unsigned: the
 | `src/domain/decoder.ts` | Frame envelope, CRC, built-in family decoding, and malformed-frame retention |
 | `src/domain/session.ts` | Validation, metric derivation, diagnostics, incident projection, and range helpers |
 | `src/replay/` | Pure monotonic replay clock and its React subscription hook |
-| `src/storage/session-storage.ts` | Per-session marker and note persistence in local storage |
+| `src/storage/session-storage.ts` | Versioned per-session operator-range, marker, and note persistence in local storage |
 | `src/domain/bundle.ts` | Range-filtered, checksummed `.nlb` evidence generation and browser download |
 | `src/lib/telemetry.ts` | Timeline sampling, value lookup, and source-aligned incident view ranges |
 | `src/lib/time.ts` | Time-zone-aware presentation and byte-size helpers |

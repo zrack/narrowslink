@@ -1,11 +1,14 @@
 import { decodeRecord, getNumericField, SUPPORTED_DECODER } from "./decoder";
 import {
+  incidentPresetSchema,
+  MAX_SESSION_DURATION_US,
   sessionDocumentSchema,
   type DecodedFrame,
   type DiagnosticEvent,
   type IncidentPreset,
   type IncidentProjection,
   type MetricBucket,
+  type OffsetUs,
   type ParsedSession,
   type SessionDocument,
 } from "./types";
@@ -22,6 +25,37 @@ export class SessionValidationError extends Error {
     this.name = "SessionValidationError";
     this.details = details;
   }
+}
+
+function assertIncidentWithinDuration(incident: IncidentPreset, durationUs: OffsetUs): void {
+  if (incident.endUs > durationUs) {
+    throw new SessionValidationError("An incident falls outside the declared session duration.", [
+      `${incident.id} ends at ${incident.endUs}µs; duration is ${durationUs}µs`,
+    ]);
+  }
+}
+
+export function validateIncidentPreset(input: unknown, durationUs: OffsetUs): IncidentPreset {
+  if (
+    !Number.isSafeInteger(durationUs)
+    || durationUs <= 0
+    || durationUs > MAX_SESSION_DURATION_US
+  ) {
+    throw new SessionValidationError("The incident range cannot be validated against an invalid session duration.", [
+      `Received duration ${durationUs}µs`,
+    ]);
+  }
+
+  const result = incidentPresetSchema.safeParse(input);
+  if (!result.success) {
+    throw new SessionValidationError(
+      "The incident range is invalid.",
+      result.error.issues.slice(0, 8).map((issue) => `${issue.path.join(".") || "incident"}: ${issue.message}`),
+    );
+  }
+
+  assertIncidentWithinDuration(result.data, durationUs);
+  return result.data;
 }
 
 export function validateSessionDocument(input: unknown): SessionDocument {
@@ -98,11 +132,7 @@ export function validateSessionDocument(input: unknown): SessionDocument {
       throw new SessionValidationError("The replay contains duplicate incident IDs.", [`Duplicate incident ID: ${incident.id}`]);
     }
     incidentIds.add(incident.id);
-    if (incident.endUs > document.durationUs) {
-      throw new SessionValidationError("An incident falls outside the declared session duration.", [
-        `${incident.id} ends at ${incident.endUs}µs; duration is ${document.durationUs}µs`,
-      ]);
-    }
+    assertIncidentWithinDuration(incident, document.durationUs);
   }
 
   try {
@@ -122,7 +152,7 @@ function isTrustedMetricFrame(frame: DecodedFrame): boolean {
   return frame.status === "complete" && frame.integrity.status === "valid";
 }
 
-function createMetricBuckets(document: SessionDocument, frames: DecodedFrame[]): MetricBucket[] {
+function createMetricBuckets(document: SessionDocument, frames: readonly DecodedFrame[]): MetricBucket[] {
   const bucketCount = Math.ceil(document.durationUs / SECOND_US);
   const bucketRows = Array.from({ length: bucketCount }, (_, index) => ({
     offsetUs: index * SECOND_US,
@@ -261,7 +291,7 @@ function makeDiagnostic(
   };
 }
 
-function deriveDiagnostics(frames: DecodedFrame[], buckets: MetricBucket[]): DiagnosticEvent[] {
+function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly MetricBucket[]): DiagnosticEvent[] {
   const events: DiagnosticEvent[] = [];
   let lowRssiBuckets = 0;
   let recoveryBuckets = 0;
@@ -349,7 +379,7 @@ function deriveDiagnostics(frames: DecodedFrame[], buckets: MetricBucket[]): Dia
   return events.sort((left, right) => left.startUs - right.startUs);
 }
 
-function missingFramesInRange(frames: DecodedFrame[], startUs: number, endUs: number): number {
+function missingFramesInRange(frames: readonly DecodedFrame[], startUs: number, endUs: number): number {
   const startIndex = lowerBoundByOffset(frames, startUs);
   const endIndex = lowerBoundByOffset(frames, endUs);
   const rangeFrames = frames.slice(startIndex, endIndex);
@@ -393,7 +423,7 @@ function missingFramesInRange(frames: DecodedFrame[], startUs: number, endUs: nu
   return Math.max(transportMissing, sequenceMissing);
 }
 
-function peakJitterInRange(frames: DecodedFrame[]): number | null {
+function peakJitterInRange(frames: readonly DecodedFrame[]): number | null {
   let previousTransitMs: number | null = null;
   let jitterMs = 0;
   let peak: number | null = null;
@@ -410,7 +440,7 @@ function peakJitterInRange(frames: DecodedFrame[]): number | null {
   return peak;
 }
 
-function linkAvailabilityInRange(frames: DecodedFrame[], startUs: number, endUs: number): number | null {
+function linkAvailabilityInRange(frames: readonly DecodedFrame[], startUs: number, endUs: number): number | null {
   const bucketCount = Math.ceil((endUs - startUs) / SECOND_US);
   if (bucketCount <= 0) return null;
   const samples = new Map<number, { total: number; count: number }>();
@@ -428,13 +458,19 @@ function linkAvailabilityInRange(frames: DecodedFrame[], startUs: number, endUs:
   return (healthyBuckets / bucketCount) * 100;
 }
 
-function projectIncident(
-  preset: IncidentPreset,
-  frames: DecodedFrame[],
-  diagnostics: DiagnosticEvent[],
+function diagnosticIntersectsRange(event: DiagnosticEvent, startUs: number, endUs: number): boolean {
+  return event.endUs == null
+    ? event.startUs >= startUs && event.startUs < endUs
+    : event.startUs < endUs && event.endUs > startUs;
+}
+
+export function projectIncident(
+  preset: Readonly<IncidentPreset>,
+  frames: readonly DecodedFrame[],
+  diagnostics: readonly DiagnosticEvent[],
 ): IncidentProjection {
   const incidentFrames = rowsInRange(frames, preset.startUs, preset.endUs);
-  const incidentDiagnostics = diagnostics.filter((event) => event.startUs >= preset.startUs && event.startUs < preset.endUs);
+  const incidentDiagnostics = diagnostics.filter((event) => diagnosticIntersectsRange(event, preset.startUs, preset.endUs));
   const completePackets = incidentFrames.filter((frame) => frame.status === "complete").length;
   const missingFrames = missingFramesInRange(frames, preset.startUs, preset.endUs);
   const expectedFrames = incidentFrames.length + missingFrames;
@@ -482,7 +518,7 @@ export function parseSession(input: unknown): ParsedSession {
   };
 }
 
-export function lowerBoundByOffset<T extends { offsetUs: number }>(rows: T[], offsetUs: number): number {
+export function lowerBoundByOffset<T extends { offsetUs: number }>(rows: readonly T[], offsetUs: number): number {
   let low = 0;
   let high = rows.length;
   while (low < high) {
@@ -494,6 +530,6 @@ export function lowerBoundByOffset<T extends { offsetUs: number }>(rows: T[], of
   return low;
 }
 
-export function rowsInRange<T extends { offsetUs: number }>(rows: T[], startUs: number, endUs: number): T[] {
+export function rowsInRange<T extends { offsetUs: number }>(rows: readonly T[], startUs: number, endUs: number): T[] {
   return rows.slice(lowerBoundByOffset(rows, startUs), lowerBoundByOffset(rows, endUs));
 }
