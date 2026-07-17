@@ -221,7 +221,9 @@ function framesForRange(frames: readonly DecodedFrame[], range: EvidenceRange): 
 
 function diagnosticsForRange(events: readonly DiagnosticEvent[], range: EvidenceRange): DiagnosticEvent[] {
   return events
-    .filter((event) => inHalfOpenRange(event.startUs, range))
+    .filter((event) => event.endUs == null
+      ? inHalfOpenRange(event.startUs, range)
+      : event.startUs < range.endUs && event.endUs > range.startUs)
     .sort((left, right) => left.startUs - right.startUs || compareText(left.id, right.id));
 }
 

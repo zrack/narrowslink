@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildEvidenceBundle, type EvidenceBundleManifest } from "../domain/bundle";
 import { bytesToHex, encodeFrame, hexToBytes } from "../domain/decoder";
-import { parseSession } from "../domain/session";
+import { parseSession, projectIncident, validateIncidentPreset } from "../domain/session";
 import type { SourceRecord } from "../domain/types";
 import { CaptureRecorder } from "./recorder";
 
@@ -123,6 +123,117 @@ describe("live capture pipeline", () => {
       recordCount: capturedFrames.length,
       sha256: await sha256(archive["raw/source-records.ndjson"] ?? new Uint8Array()),
     });
+    for (const path of manifest.checksums.covers) {
+      const artifact = archive[path];
+      expect(artifact, path).toBeDefined();
+      if (artifact) expect(checksumLines.get(path)).toBe(await sha256(artifact));
+    }
+  });
+
+  it("projects an operator-authored half-open range from replay and exports only its captured evidence", async () => {
+    const capturedFrames = [
+      encodeFrame({
+        familyId: 0x02,
+        sequence: 401,
+        deviceTimeMs: 0,
+        payload: heartbeatPayload(4_000, 2, 140),
+      }),
+      encodeFrame({
+        familyId: 0x02,
+        sequence: 402,
+        deviceTimeMs: 25,
+        payload: heartbeatPayload(4_001, 2, 140),
+      }),
+      encodeFrame({
+        familyId: 0x02,
+        sequence: 403,
+        deviceTimeMs: 50,
+        payload: heartbeatPayload(4_002, 3, 140),
+      }),
+      encodeFrame({
+        familyId: 0x02,
+        sequence: 404,
+        deviceTimeMs: 75,
+        payload: heartbeatPayload(4_003, 3, 140),
+      }),
+    ];
+    const recorder = new CaptureRecorder({
+      sessionId: "capture-operator-range-001",
+      title: "Operator range capture",
+      startedAt: "2026-07-15T19:00:00.000Z",
+      displayTimeZone: "America/Los_Angeles",
+      source: {
+        id: "serial-loopback",
+        kind: "serial",
+        label: "Serial loopback",
+      },
+    });
+
+    for (const [index, bytes] of capturedFrames.entries()) {
+      recorder.append({ offsetUs: index * 25_000, bytes });
+    }
+
+    const replayedSession = parseSession(JSON.parse(JSON.stringify(recorder.finalize(100_000))) as unknown);
+    const operatorRange = validateIncidentPreset(
+      {
+        id: "operator-power-transition",
+        title: "Power mode transition",
+        startUs: 25_000,
+        endUs: 75_000,
+        severity: "warning",
+      },
+      replayedSession.document.durationUs,
+    );
+    const projectedIncident = projectIncident(
+      operatorRange,
+      replayedSession.frames,
+      replayedSession.diagnostics,
+    );
+
+    expect(projectedIncident.stats).toMatchObject({
+      receivedFrames: 2,
+      expectedFrames: 2,
+      missingFrames: 0,
+      completePackets: 2,
+    });
+
+    const bundleBytes = await buildEvidenceBundle({
+      session: replayedSession,
+      range: projectedIncident,
+      generatedAt: "2026-07-15T19:01:00.000Z",
+    });
+    const archive = unzipSync(bundleBytes);
+    const exportedRecords = decodeText(archive, "raw/source-records.ndjson")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SourceRecord);
+
+    expect(exportedRecords.map((record) => record.offsetUs)).toEqual([25_000, 50_000]);
+    expect(exportedRecords.map((record) => record.dataHex)).toEqual(
+      capturedFrames.slice(1, 3).map(bytesToHex),
+    );
+    expect(exportedRecords.map((record) => record.offsetUs)).not.toContain(75_000);
+
+    const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
+    expect(manifest.selection).toEqual({
+      id: "operator-power-transition",
+      title: "Power mode transition",
+      severity: "warning",
+      startUs: 25_000,
+      endUs: 75_000,
+      rangeSemantics: "half-open [startUs, endUs)",
+    });
+    expect(manifest.artifacts.find((artifact) => artifact.path === "raw/source-records.ndjson")?.recordCount).toBe(2);
+
+    const checksumLines = new Map(
+      decodeText(archive, "SHA256SUMS")
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const [hash, path] = line.split("  ");
+          return [path, hash];
+        }),
+    );
     for (const path of manifest.checksums.covers) {
       const artifact = archive[path];
       expect(artifact, path).toBeDefined();

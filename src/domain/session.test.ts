@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { bytesToHex, encodeFrame, SUPPORTED_DECODER } from "./decoder";
-import { parseSession, rowsInRange, SessionValidationError, validateSessionDocument } from "./session";
-import { MAX_SESSION_DURATION_US, type FamilyId, type SessionDocument, type SourceRecord } from "./types";
+import {
+  parseSession,
+  projectIncident,
+  rowsInRange,
+  SessionValidationError,
+  validateIncidentPreset,
+  validateSessionDocument,
+} from "./session";
+import {
+  MAX_SESSION_DURATION_US,
+  type DiagnosticEvent,
+  type FamilyId,
+  type IncidentPreset,
+  type SessionDocument,
+  type SourceRecord,
+} from "./types";
 
 function payloadFor(familyId: FamilyId): Uint8Array {
   const sizes: Record<FamilyId, number> = { 0x02: 8, 0x17: 9, 0x19: 16, 0x31: 24, 0x44: 10 };
@@ -60,6 +74,19 @@ function document(): SessionDocument {
   };
 }
 
+function diagnostic(id: string, startUs: number, endUs?: number): DiagnosticEvent {
+  return {
+    id,
+    type: "recovery",
+    severity: "info",
+    startUs,
+    endUs,
+    title: id,
+    description: `${id} diagnostic`,
+    frameIds: [],
+  };
+}
+
 describe("session parsing", () => {
   it("validates, decodes, derives metrics, and projects incidents", () => {
     const parsed = parseSession(document());
@@ -75,8 +102,117 @@ describe("session parsing", () => {
   });
 
   it("uses half-open ranges", () => {
-    const rows = [{ offsetUs: 0 }, { offsetUs: 10 }, { offsetUs: 20 }, { offsetUs: 30 }];
+    const rows = [{ offsetUs: 0 }, { offsetUs: 10 }, { offsetUs: 20 }, { offsetUs: 30 }] as const;
     expect(rowsInRange(rows, 10, 30)).toEqual([{ offsetUs: 10 }, { offsetUs: 20 }]);
+  });
+
+  it("strictly validates operator-authored incident presets against the session duration", () => {
+    const preset = {
+      id: "operator-range",
+      title: "Operator range",
+      startUs: 1_000_000,
+      endUs: 6_000_000,
+      severity: "warning",
+    } satisfies IncidentPreset;
+
+    const validated = validateIncidentPreset(preset, 6_000_000);
+    expect(validated).toEqual(preset);
+    expect(validated).not.toBe(preset);
+
+    const invalidInputs: unknown[] = [
+      { ...preset, startUs: -1 },
+      { ...preset, startUs: 0.5 },
+      { ...preset, startUs: 2_000_000, endUs: 2_000_000 },
+      { ...preset, startUs: 3_000_000, endUs: 2_000_000 },
+      { ...preset, unexpected: true },
+    ];
+    for (const invalid of invalidInputs) {
+      expect(() => validateIncidentPreset(invalid, 6_000_000)).toThrow("incident range is invalid");
+    }
+
+    expect(() => validateIncidentPreset({ ...preset, endUs: 6_000_001 }, 6_000_000)).toThrow(
+      "outside the declared session duration",
+    );
+    expect(() => validateIncidentPreset(preset, 0)).toThrow("invalid session duration");
+  });
+
+  it("projects and resizes an authored range without mutating parsed evidence or the document", () => {
+    const parsed = parseSession(document());
+    const originalDocument = structuredClone(parsed.document);
+    const originalFrames = structuredClone(parsed.frames);
+    const originalDiagnostics = structuredClone(parsed.diagnostics);
+    const authored = Object.freeze({
+      id: "operator-range",
+      title: "Operator range",
+      startUs: 1_000_000,
+      endUs: 3_000_000,
+      severity: "warning" as const,
+    });
+    const readonlyFrames = Object.freeze(parsed.frames);
+    const readonlyDiagnostics = Object.freeze(parsed.diagnostics);
+
+    const narrow = projectIncident(authored, readonlyFrames, readonlyDiagnostics);
+    const resized = projectIncident({ ...authored, endUs: 4_000_000 }, readonlyFrames, readonlyDiagnostics);
+
+    expect(narrow).toMatchObject({
+      id: "operator-range",
+      startUs: 1_000_000,
+      endUs: 3_000_000,
+      stats: { receivedFrames: 2 },
+    });
+    expect(resized.stats.receivedFrames).toBe(3);
+    expect(narrow.stats.receivedFrames).toBe(2);
+    expect(parsed.document).toEqual(originalDocument);
+    expect(parsed.frames).toEqual(originalFrames);
+    expect(parsed.diagnostics).toEqual(originalDiagnostics);
+    expect(authored.endUs).toBe(3_000_000);
+  });
+
+  it("uses half-open overlap semantics for point and interval diagnostics", () => {
+    const parsed = parseSession(document());
+    const diagnostics = Object.freeze([
+      diagnostic("ends-at-start", 500_000, 1_000_000),
+      diagnostic("crosses-start", 500_000, 1_500_000),
+      diagnostic("point-at-start", 1_000_000),
+      diagnostic("point-inside", 2_000_000),
+      diagnostic("point-at-end", 3_000_000),
+      diagnostic("starts-at-end", 3_000_000, 4_000_000),
+    ]);
+
+    const projection = projectIncident(
+      { id: "overlap", title: "Overlap", startUs: 1_000_000, endUs: 3_000_000, severity: "info" },
+      parsed.frames,
+      diagnostics,
+    );
+
+    expect(projection.diagnostics.map((event) => event.id)).toEqual([
+      "crosses-start",
+      "point-at-start",
+      "point-inside",
+    ]);
+  });
+
+  it("returns explicit unavailable statistics for an authored range with no evidence", () => {
+    const parsed = parseSession(document());
+
+    const projection = projectIncident(
+      { id: "empty", title: "Empty range", startUs: 5_000_000, endUs: 6_000_000, severity: "info" },
+      parsed.frames,
+      parsed.diagnostics,
+    );
+
+    expect(projection.stats).toEqual({
+      receivedFrames: 0,
+      expectedFrames: 0,
+      missingFrames: 0,
+      completePackets: 0,
+      lossPct: null,
+      decodeConfidencePct: null,
+      lowestRssiDbm: null,
+      peakJitterMs: null,
+      averageThroughput: 0,
+      linkAvailabilityPct: null,
+    });
   });
 
   it("rejects non-monotonic timestamps with an actionable error", () => {
@@ -187,12 +323,18 @@ describe("session parsing", () => {
   it("attributes a sequence gap at the selected range boundary consistently", () => {
     const replay = document();
     replay.records = [record(0, 900_000, 10, 0x02), record(1, 1_100_000, 12, 0x02)];
-    replay.incidents = [{ id: "boundary-loss", title: "Boundary loss", startUs: 1_000_000, endUs: 2_000_000, severity: "warning" }];
+    replay.incidents = [];
 
     const parsed = parseSession(replay);
+    const projection = projectIncident(
+      { id: "boundary-loss", title: "Boundary loss", startUs: 1_000_000, endUs: 2_000_000, severity: "warning" },
+      parsed.frames,
+      parsed.diagnostics,
+    );
 
     expect(parsed.buckets[1]?.missing).toBe(1);
-    expect(parsed.incidents[0]?.stats.missingFrames).toBe(1);
+    expect(projection.stats.missingFrames).toBe(1);
+    expect(parsed.document.incidents).toEqual([]);
   });
 
   it("requires 40 uninterrupted seconds of valid frames before declaring decoder relock", () => {

@@ -635,12 +635,33 @@ select:focus-visible {
 .overview-title {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
   color: var(--dim);
   font-size: 8px;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
+}
+
+.overview-new-range {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.overview-new-range:hover,
+.overview-new-range:focus-visible {
+  color: var(--amber);
 }
 
 .overview-body {
@@ -742,6 +763,88 @@ select:focus-visible {
   background: rgb(242 169 0 / 7%);
   box-shadow: inset 3px 0 0 rgb(242 169 0 / 38%), inset -3px 0 0 rgb(242 169 0 / 38%);
   transition: left 180ms ease, width 180ms ease;
+}
+
+.incident-range-handles {
+  position: absolute;
+  pointer-events: none;
+}
+
+.overview-range-handles {
+  z-index: 10;
+  inset: 1px 0;
+}
+
+.timeline-range-handles {
+  z-index: 5;
+  top: 0;
+  right: var(--scale-gutter);
+  bottom: 36px;
+  left: var(--label-gutter);
+}
+
+.incident-range-handles .range-handle {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.incident-range-handles .range-handle.end {
+  z-index: 2;
+}
+
+.incident-range-handles .range-handle::-webkit-slider-runnable-track {
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.incident-range-handles .range-handle::-webkit-slider-thumb {
+  width: 24px;
+  height: 100%;
+  appearance: none;
+  border: 1px solid rgb(242 169 0 / 72%);
+  border-radius: 0;
+  background: rgb(242 169 0 / 12%);
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.incident-range-handles .range-handle::-moz-range-track {
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+.incident-range-handles .range-handle::-moz-range-thumb {
+  width: 24px;
+  height: 100%;
+  border: 1px solid rgb(242 169 0 / 72%);
+  border-radius: 0;
+  background: rgb(242 169 0 / 12%);
+  cursor: ew-resize;
+  pointer-events: auto;
+}
+
+.incident-range-handles .range-handle:focus-visible {
+  outline: 0;
+}
+
+.incident-range-handles .range-handle:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid #9ed8ec;
+  outline-offset: -2px;
+}
+
+.incident-range-handles .range-handle:focus-visible::-moz-range-thumb {
+  outline: 2px solid #9ed8ec;
+  outline-offset: -2px;
 }
 
 .overview-incident-hit {
@@ -1314,6 +1417,14 @@ select:focus-visible {
   text-transform: uppercase;
 }
 
+.incident-heading > .incident-heading-actions {
+  gap: 1px;
+}
+
+.incident-heading-actions .icon-button {
+  color: var(--muted);
+}
+
 .incident-range {
   display: grid;
   align-content: center;
@@ -1868,6 +1979,10 @@ select:focus-visible {
   box-shadow: 0 24px 70px rgb(0 0 0 / 45%);
 }
 
+.range-dialog {
+  width: min(590px, calc(100vw - 32px));
+}
+
 .dialog-close {
   position: absolute;
   top: 10px;
@@ -1992,6 +2107,94 @@ select:focus-visible {
 
 .dialog-fields label:last-child {
   grid-column: 1 / -1;
+}
+
+.range-dialog .dialog-fields > label:first-child,
+.range-boundaries {
+  grid-column: 1 / -1;
+}
+
+.range-boundaries {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.range-boundaries > label:last-child {
+  grid-column: auto;
+}
+
+.range-semantics {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: -7px 0 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: #101410;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.range-semantics strong {
+  grid-row: 1 / 3;
+  align-self: center;
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.range-semantics span {
+  color: var(--text);
+  font-size: 9px;
+}
+
+.range-semantics small {
+  color: var(--dim);
+  font-size: 8px;
+  line-height: 12px;
+}
+
+.range-delete {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  background: #121412;
+}
+
+.range-delete > p {
+  margin: 0;
+  color: #d9b5b1;
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.range-delete > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.destructive-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: #d98a82;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.destructive-link:hover,
+.destructive-link:focus-visible {
+  color: #ffd4cf;
 }
 
 .dialog-fields input,
@@ -2536,6 +2739,27 @@ select:focus-visible {
 }
 
 @media (max-width: 600px) {
+  .range-boundaries {
+    grid-template-columns: 1fr;
+  }
+
+  .range-semantics {
+    grid-template-columns: 1fr;
+  }
+
+  .range-semantics strong {
+    grid-row: auto;
+  }
+
+  .range-delete {
+    display: grid;
+  }
+
+  .range-delete > div {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
   .capture-dialog {
     padding: 20px 16px;
   }
@@ -2571,5 +2795,15 @@ select:focus-visible {
 
   .capture-discard-confirm {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (pointer: coarse) {
+  .incident-range-handles .range-handle::-webkit-slider-thumb {
+    width: 44px;
+  }
+
+  .incident-range-handles .range-handle::-moz-range-thumb {
+    width: 44px;
   }
 }

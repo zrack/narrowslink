@@ -3,6 +3,7 @@ import { z } from "zod";
 export type OffsetUs = number;
 
 export const MAX_SESSION_DURATION_US = 24 * 60 * 60 * 1_000_000;
+export const MAX_INCIDENT_TITLE_LENGTH = 240;
 
 export const familyIds = [0x02, 0x17, 0x19, 0x31, 0x44] as const;
 export type FamilyId = (typeof familyIds)[number];
@@ -46,6 +47,11 @@ export interface IncidentPreset {
   startUs: OffsetUs;
   endUs: OffsetUs;
   severity: "info" | "warning" | "critical";
+}
+
+export interface AuthoredIncidentRange extends IncidentPreset {
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SessionDocument {
@@ -224,10 +230,10 @@ const sourceRecordSchema = z.object({
   }
 });
 
-const incidentPresetSchema = z
+export const incidentPresetSchema = z
   .object({
     id: wellFormedText(z.string().min(1).max(128)),
-    title: wellFormedText(z.string().min(1).max(240)),
+    title: wellFormedText(z.string().min(1).max(MAX_INCIDENT_TITLE_LENGTH)),
     startUs: z.number().int().nonnegative().safe(),
     endUs: z.number().int().positive().safe(),
     severity: z.enum(["info", "warning", "critical"]),

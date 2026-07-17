@@ -30,6 +30,7 @@ import {
   Plus,
   RadioButton,
   SpinnerGap,
+  Trash,
   UploadSimple,
   WarningCircle,
   X,
@@ -44,11 +45,11 @@ import {
 } from "./domain/bundle";
 import { CaptureDialog } from "./capture/CaptureDialog";
 import { SUPPORTED_DECODER } from "./domain/decoder";
-import { parseSession, rowsInRange } from "./domain/session";
-import type { DiagnosticEvent, IncidentProjection, Marker, ParsedSession, SessionDocument } from "./domain/types";
+import { parseSession, projectIncident, rowsInRange, validateIncidentPreset } from "./domain/session";
+import { MAX_INCIDENT_TITLE_LENGTH, type AuthoredIncidentRange, type DiagnosticEvent, type IncidentProjection, type Marker, type ParsedSession, type SessionDocument } from "./domain/types";
 import { loadBundledSession, loadSessionFile, SessionLoadError } from "./data/load-session";
 import { downsampleBuckets, finiteOrDash, incidentViewRange, percentInRange, valueAtOffset } from "./lib/telemetry";
-import { formatBytes, formatClockOffset, formatDurationUs, formatSessionDate, timeZoneAbbreviation } from "./lib/time";
+import { formatBytes, formatClockOffset, formatDurationUs, formatOffsetUsInput, formatSessionDate, parseOffsetUsInput, timeZoneAbbreviation } from "./lib/time";
 import { useReplay } from "./replay/useReplay";
 import { loadSessionWorkspace, saveSessionWorkspace } from "./storage/session-storage";
 
@@ -252,10 +253,16 @@ function incidentClock(session: ParsedSession, incident: IncidentProjection): { 
   };
 }
 
+function formatExactSessionClock(session: ParsedSession, offsetUs: number): string {
+  const absoluteUs = Date.parse(session.document.startedAt) * 1_000 + offsetUs;
+  const subMillisecondUs = ((absoluteUs % 1_000) + 1_000) % 1_000;
+  return `${formatClockOffset(session.document.startedAt, offsetUs, session.document.displayTimeZone)}${subMillisecondUs.toString().padStart(3, "0")}`;
+}
+
 function initialBundleItems(session: ParsedSession, incident: IncidentProjection): BundleItem[] {
   const records = rowsInRange(session.document.records, incident.startUs, incident.endUs);
   const frames = rowsInRange(session.frames, incident.startUs, incident.endUs);
-  const diagnostics = session.diagnostics.filter((event) => event.startUs >= incident.startUs && event.startUs < incident.endUs);
+  const diagnostics = incident.diagnostics;
   const rawEstimate = records.reduce((sum, record) => sum + record.dataHex.length + 250, 0);
   const decodedEstimate = Math.max(1, frames.length) * 260;
   return [
@@ -400,11 +407,15 @@ function TopBar(props: TopBarProps) {
 
 interface OverviewProps {
   session: ParsedSession;
+  incidents: IncidentProjection[];
   incident: IncidentProjection | null;
+  incidentEditable: boolean;
   markers: Marker[];
   replayOffsetUs: number;
   onSeek: (offsetUs: number) => void;
   onSelectIncident: (incident: IncidentProjection) => void;
+  onCreateRange: () => void;
+  onRangeChange: (startUs: number, endUs: number) => void;
 }
 
 const OverviewSignalChart = memo(function OverviewSignalChart({ data }: { data: ReturnType<typeof downsampleBuckets> }) {
@@ -417,7 +428,55 @@ const OverviewSignalChart = memo(function OverviewSignalChart({ data }: { data: 
   );
 });
 
-function SessionOverview({ session, incident, markers, replayOffsetUs, onSeek, onSelectIncident }: OverviewProps) {
+interface IncidentRangeHandlesProps {
+  className?: string;
+  session: ParsedSession;
+  incident: IncidentProjection;
+  domainStartUs: number;
+  domainEndUs: number;
+  onChange: (startUs: number, endUs: number) => void;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
+}
+
+function IncidentRangeHandles({ className = "", session, incident, domainStartUs, domainEndUs, onChange, onInteractionStart, onInteractionEnd }: IncidentRangeHandlesProps) {
+  const safeDomainStartUs = Math.ceil(domainStartUs);
+  const safeDomainEndUs = Math.floor(domainEndUs);
+  const updateEdge = (edge: "start" | "end", value: number) => {
+    const rounded = Math.round(value);
+    if (edge === "start") {
+      onChange(Math.max(safeDomainStartUs, Math.min(rounded, incident.endUs - 1)), incident.endUs);
+    } else {
+      onChange(incident.startUs, Math.min(safeDomainEndUs, Math.max(rounded, incident.startUs + 1)));
+    }
+  };
+  const handleKeyDown = (edge: "start" | "end", event: ReactKeyboardEvent<HTMLInputElement>) => {
+    const relevant = ["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"];
+    if (!relevant.includes(event.key)) return;
+    event.preventDefault();
+    const current = edge === "start" ? incident.startUs : incident.endUs;
+    let next = current;
+    if (event.key === "Home") next = edge === "start" ? safeDomainStartUs : incident.startUs + 1;
+    else if (event.key === "End") next = edge === "start" ? incident.endUs - 1 : safeDomainEndUs;
+    else {
+      const direction = event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "PageUp" ? 1 : -1;
+      const stepUs = event.key.startsWith("Page") ? 10_000_000 : event.shiftKey ? 1_000_000 : 100_000;
+      next += direction * stepUs;
+    }
+    updateEdge(edge, next);
+  };
+  return (
+    <div className={`incident-range-handles ${className}`}>
+      {(["start", "end"] as const).map((edge) => {
+        const offsetUs = edge === "start" ? incident.startUs : incident.endUs;
+        return <input key={edge} className={`range-handle ${edge}`} type="range" min={safeDomainStartUs} max={safeDomainEndUs} step={1} value={offsetUs} aria-label={`${edge === "start" ? "Start" : "End"} boundary for ${incident.title}`} aria-valuetext={`${formatOffsetUsInput(offsetUs)} from session start, ${formatExactSessionClock(session, offsetUs)} ${timeZoneAbbreviation(session.document.startedAt, session.document.displayTimeZone, offsetUs)}; ${edge === "start" ? "included" : "excluded"}`} onChange={(event) => updateEdge(edge, Number(event.target.value))} onKeyDown={(event) => handleKeyDown(edge, event)} onPointerDown={onInteractionStart} onPointerUp={onInteractionEnd} onPointerCancel={onInteractionEnd} />;
+      })}
+      <span className="visually-hidden">Arrow keys adjust by 0.1 seconds. Hold Shift for one second, or use Page Up and Page Down for ten seconds.</span>
+    </div>
+  );
+}
+
+function SessionOverview({ session, incidents, incident, incidentEditable, markers, replayOffsetUs, onSeek, onSelectIncident, onCreateRange, onRangeChange }: OverviewProps) {
   const data = useMemo(() => downsampleBuckets(session.buckets, 0, session.document.durationUs, 420), [session]);
   const durationUs = session.document.durationUs;
   const selectionLeft = incident ? percentInRange(incident.startUs, 0, durationUs) : 0;
@@ -433,13 +492,14 @@ function SessionOverview({ session, incident, markers, replayOffsetUs, onSeek, o
   return (
     <section className="overview" aria-label="Session overview" aria-describedby="session-overview-summary">
       <p id="session-overview-summary" className="visually-hidden">{summary}</p>
-      <div className="overview-title"><span>Session overview</span></div>
+      <div className="overview-title"><span>Session overview</span><button className="overview-new-range" type="button" onClick={onCreateRange}><Plus size={11} weight="bold" /> New range</button></div>
       <div className="overview-body">
         <div className="overview-chart">
           <OverviewSignalChart data={data} />
           <div className="overview-marker-strip" aria-hidden="true">{markers.map((marker) => <span key={marker.id} style={{ left: `${percentInRange(marker.offsetUs, 0, durationUs)}%` }} />)}</div>
           {incident && <div className="overview-selection" style={{ left: `${selectionLeft}%`, width: `${selectionWidth}%` }} />}
-          {session.incidents.map((candidate) => <button key={candidate.id} className="overview-incident-hit" style={{ left: `${percentInRange(candidate.startUs, 0, durationUs)}%`, width: `${Math.max(1.2, percentInRange(candidate.endUs, 0, durationUs) - percentInRange(candidate.startUs, 0, durationUs))}%` }} onClick={() => onSelectIncident(candidate)} aria-label={`Select ${candidate.title}`} />)}
+          {incidents.map((candidate) => <button key={candidate.id} className="overview-incident-hit" style={{ left: `${percentInRange(candidate.startUs, 0, durationUs)}%`, width: `${Math.max(1.2, percentInRange(candidate.endUs, 0, durationUs) - percentInRange(candidate.startUs, 0, durationUs))}%` }} onClick={() => onSelectIncident(candidate)} aria-label={`Select ${candidate.title}`} />)}
+          {incident && incidentEditable && <IncidentRangeHandles className="overview-range-handles" session={session} incident={incident} domainStartUs={0} domainEndUs={durationUs} onChange={onRangeChange} />}
           <div className="replay-cursor" style={{ left: `${percentInRange(replayOffsetUs, 0, durationUs)}%` }} aria-hidden="true" />
           <input className="overview-scrubber" type="range" min={0} max={durationUs} step={1_000_000} value={replayOffsetUs} onChange={(event) => onSeek(Number(event.target.value))} aria-label="Replay position" aria-valuetext={`${formatClockOffset(session.document.startedAt, replayOffsetUs, session.document.displayTimeZone)} (${formatDurationUs(replayOffsetUs, true)} elapsed)`} aria-describedby="session-overview-summary" />
           <div className="overview-times">{ticks.map((offset) => <span key={offset}>{formatClockOffset(session.document.startedAt, offset, session.document.displayTimeZone, false).slice(0, 5)}</span>)}</div>
@@ -476,13 +536,18 @@ const PacketFamilyTrack = memo(function PacketFamilyTrack({ rows, startUs, endUs
 interface TimelineProps {
   session: ParsedSession;
   incident: IncidentProjection;
+  incidentEditable: boolean;
   markers: Marker[];
   replayOffsetUs: number;
   onSeek: (offsetUs: number) => void;
+  onRangeChange: (startUs: number, endUs: number) => void;
 }
 
-function MissionTimeline({ session, incident, markers, replayOffsetUs, onSeek }: TimelineProps) {
-  const view = useMemo(() => incidentViewRange(session, incident), [session, incident]);
+function MissionTimeline({ session, incident, incidentEditable, markers, replayOffsetUs, onSeek, onRangeChange }: TimelineProps) {
+  const projectedView = useMemo(() => incidentViewRange(session, incident), [session, incident]);
+  const [frozenResizeView, setFrozenResizeView] = useState<{ startUs: number; endUs: number } | null>(null);
+  useEffect(() => { setFrozenResizeView(null); }, [incident.id]);
+  const view = frozenResizeView ?? projectedView;
   const data = useMemo(() => downsampleBuckets(session.buckets, view.startUs, view.endUs, 300), [session, view.startUs, view.endUs]);
   const playheadInView = replayOffsetUs >= view.startUs && replayOffsetUs < view.endUs;
   const current = playheadInView ? valueAtOffset(session.buckets, replayOffsetUs) : null;
@@ -513,6 +578,7 @@ function MissionTimeline({ session, incident, markers, replayOffsetUs, onSeek }:
       <div className="timeline-stack">
         <div className="shared-grid" aria-hidden="true" />
         <div className="selection-band" style={{ left: `calc(var(--label-gutter) + (100% - var(--label-gutter) - var(--scale-gutter)) * ${selectionLeft / 100})`, width: `calc((100% - var(--label-gutter) - var(--scale-gutter)) * ${selectionWidth / 100})` }}><button className="selection-chip" type="button" onClick={() => onSeek(incident.startUs)}><BookmarkSimple size={12} weight="fill" /> {clock.start} <span>–</span> {clock.end} <small>({clock.duration})</small></button></div>
+        {incidentEditable && <IncidentRangeHandles className="timeline-range-handles" session={session} incident={incident} domainStartUs={view.startUs} domainEndUs={view.endUs} onChange={onRangeChange} onInteractionStart={() => setFrozenResizeView(view)} onInteractionEnd={() => setFrozenResizeView(null)} />}
         {replayOffsetUs >= view.startUs && replayOffsetUs <= view.endUs && <div className="timeline-cursor" style={{ left: `calc(var(--label-gutter) + (100% - var(--label-gutter) - var(--scale-gutter)) * ${replayLeft / 100})` }} aria-hidden="true" />}
         <PlotLane label="Connection" unit="RSSI (dBm)" value={playheadInView ? finiteOrDash(current?.rssiDbm ?? null, 0) : "Out of view"} scale={["−40", "−80", "−120"]}><SignalChart data={data} dataKey="rssi" color="#8bc879" label="Connection RSSI" /></PlotLane>
         <PlotLane label="Throughput" unit="pkt/s (1s avg)" value={playheadInView ? finiteOrDash(current?.throughput ?? null, 0) : "Out of view"} scale={[String(throughputScaleMax), String(throughputScaleMax / 2), "0"]}><SignalChart data={data} dataKey="throughput" color="#6398d6" label="Packet throughput" bar /></PlotLane>
@@ -557,13 +623,16 @@ function summarizeNarrative(events: DiagnosticEvent[]): DiagnosticEvent[] {
 
 interface IncidentPanelProps {
   session: ParsedSession;
+  incidents: IncidentProjection[];
   incident: IncidentProjection | null;
+  incidentEditable: boolean;
   activeTab: ActiveTab;
   note: string;
   workspacePersisted: boolean;
   onTabChange: (tab: ActiveTab) => void;
   onNoteChange: (note: string) => void;
   onSelectIncident: (id: string) => void;
+  onEditRange: () => void;
   onClear: () => void;
 }
 
@@ -572,7 +641,7 @@ function IncidentPanel(props: IncidentPanelProps) {
   const [narrativeLimit, setNarrativeLimit] = useState(6);
   useEffect(() => { setNarrativeLimit(6); }, [incident?.id]);
   if (!incident) {
-    const firstIncident = session.incidents[0];
+    const firstIncident = props.incidents[0];
     return <aside className="incident-panel empty-incident" aria-label="Incident details"><div className="incident-heading"><div><BookmarkSimple size={14} /><span>Incident selection</span></div></div><div className="empty-state"><ClockCounterClockwise size={24} /><h2>{firstIncident ? "No incident selected" : "No incident ranges"}</h2><p>{firstIncident ? "Choose an incident from the session overview to inspect decoded evidence and prepare a handoff bundle." : "This replay does not declare any incident presets. Playback, decoded values, markers, and the session overview remain available."}</p>{firstIncident && <button className="secondary-action" type="button" onClick={() => props.onSelectIncident(firstIncident.id)}>Select first incident</button>}</div></aside>;
   }
   const clock = incidentClock(session, incident);
@@ -597,8 +666,8 @@ function IncidentPanel(props: IncidentPanelProps) {
   };
   return (
     <aside className="incident-panel" aria-label="Incident details">
-      <div className="incident-heading"><div><BookmarkSimple size={14} weight="fill" /><span>Incident selection</span></div><button className="icon-button" type="button" aria-label="Clear incident" onClick={props.onClear}><X size={15} /></button></div>
-      <div className="incident-range"><select className="incident-switcher" value={incident.id} onChange={(event) => props.onSelectIncident(event.target.value)} aria-label="Selected incident">{session.incidents.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</select><strong>{clock.start} – {clock.end}</strong><span>{clock.duration}</span></div>
+      <div className="incident-heading"><div><BookmarkSimple size={14} weight="fill" /><span>Incident selection</span></div><div className="incident-heading-actions"><button className="icon-button" type="button" aria-label={props.incidentEditable ? "Edit operator range" : "Refine replay preset as a local range"} title={props.incidentEditable ? "Edit operator range" : "Refine as local range"} onClick={props.onEditRange}><NotePencil size={15} /></button><button className="icon-button" type="button" aria-label="Clear incident" onClick={props.onClear}><X size={15} /></button></div></div>
+      <div className="incident-range"><select className="incident-switcher" value={incident.id} onChange={(event) => props.onSelectIncident(event.target.value)} aria-label="Selected incident">{props.incidents.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</select><strong>{clock.start} – {clock.end}</strong><span>{props.incidentEditable ? "Local range" : "Replay preset"} · {clock.duration}</span></div>
       <div className="incident-tabs" role="tablist" aria-label="Incident information" onKeyDown={handleTabKeyDown}>{INCIDENT_TABS.map((tab) => <button id={`incident-tab-${tab}`} aria-controls={`incident-panel-${tab}`} aria-selected={props.activeTab === tab} role="tab" tabIndex={props.activeTab === tab ? 0 : -1} type="button" key={tab} className={props.activeTab === tab ? "active" : ""} onClick={() => props.onTabChange(tab)}>{tab}</button>)}</div>
       {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p className="visually-hidden">{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{displayedNarrative.map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong>{event.title}<span className="visually-hidden"> — {event.severity} severity</span></strong><p>{event.description}</p></div></li>)}</ol>{narrativeSummary.length < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit(showingAllNarrative ? 6 : narrative.length)}>{showingAllNarrative ? "Show six key events" : `Show all ${narrative.length} events`} <small>{displayedNarrative.length} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
       {props.activeTab === "details" && <dl className="details-view" id="incident-panel-details" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-details"><div><dt>Source</dt><dd>{formatSource(session)}</dd></div><div><dt>Decoder</dt><dd>{session.document.decoder.id} {formatDecoderRevision(session.document.decoder.revision)}</dd></div><div><dt>Frames in range</dt><dd>{stats.receivedFrames.toLocaleString()}</dd></div><div><dt>Missing</dt><dd className="danger">{stats.missingFrames}</dd></div><div><dt>Loss</dt><dd className="danger">{finiteOrDash(stats.lossPct, 2, "%")}</dd></div><div><dt>Lowest RSSI</dt><dd>{finiteOrDash(stats.lowestRssiDbm, 1, " dBm")}</dd></div><div><dt>Peak jitter</dt><dd>{finiteOrDash(stats.peakJitterMs, 1, " ms")}</dd></div><div><dt>Complete packets</dt><dd>{stats.completePackets.toLocaleString()}</dd></div></dl>}
@@ -742,6 +811,88 @@ function MarkerDialog({ session, initialOffsetUs, onClose, onCreate }: MarkerDia
   return createPortal(<div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><form ref={dialogRef} className="bundle-dialog marker-dialog" role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="marker-dialog-title" onSubmit={submit}><button className="dialog-close" type="button" aria-label="Close marker dialog" onClick={onClose}><X size={17} /></button><div className="dialog-icon"><BookmarkSimple size={24} /></div><span className="dialog-kicker">Session marker</span><h2 id="marker-dialog-title">Add an operator marker</h2><p>Anchor field context to the same microsecond replay timeline used by diagnostics and export.</p><div className="dialog-fields"><label><span>Offset from session start (seconds)</span><input ref={offsetRef} data-dialog-focus type="number" min={0} max={(session.document.durationUs - 1) / 1_000_000} step="0.001" inputMode="decimal" value={offsetSeconds} aria-invalid={error?.field === "offset"} aria-describedby={`marker-offset-help${error?.field === "offset" ? " marker-dialog-error" : ""}`} onChange={(event) => { setOffsetSeconds(event.target.value); if (error?.field === "offset") setError(null); }} /><small id="marker-offset-help" className="field-help">Session clock: <output>{displayedTimestamp}</output> {timeZoneAbbreviation(session.document.startedAt, session.document.displayTimeZone, offsetUs ?? 0)}</small></label><label><span>Title</span><input ref={titleRef} value={title} maxLength={80} aria-invalid={error?.field === "title"} aria-describedby={error?.field === "title" ? "marker-dialog-error" : undefined} onChange={(event) => { setTitle(event.target.value); if (error?.field === "title") setError(null); }} placeholder="What happened?" /></label><label><span>Category</span><select value={category} onChange={(event) => setCategory(event.target.value as Marker["category"])}><option value="observation">Observation</option><option value="field-note">Field note</option><option value="maintenance">Maintenance</option></select></label><label><span>Note</span><textarea value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} /></label></div>{error && <p id="marker-dialog-error" className="dialog-error" role="alert">{error.message}</p>}<div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Cancel</button><button className="primary-action" type="submit"><BookmarkSimple size={16} /> Add marker</button></div></form></div>, document.body);
 }
 
+interface IncidentRangeDialogProps {
+  session: ParsedSession;
+  mode: "create" | "edit";
+  range: AuthoredIncidentRange;
+  onClose: () => void;
+  onSave: (range: AuthoredIncidentRange) => void;
+  onDelete?: () => void;
+}
+
+function IncidentRangeDialog({ session, mode, range, onClose, onSave, onDelete }: IncidentRangeDialogProps) {
+  const dialogRef = useRef<HTMLFormElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const startRef = useRef<HTMLInputElement>(null);
+  const endRef = useRef<HTMLInputElement>(null);
+  const [title, setTitle] = useState(range.title);
+  const [startValue, setStartValue] = useState(() => formatOffsetUsInput(range.startUs));
+  const [endValue, setEndValue] = useState(() => formatOffsetUsInput(range.endUs));
+  const [severity, setSeverity] = useState<AuthoredIncidentRange["severity"]>(range.severity);
+  const [error, setError] = useState<{ field: "title" | "start" | "end" | "range"; message: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  useModalFocus(dialogRef, onClose);
+  const startUs = parseOffsetUsInput(startValue);
+  const endUs = parseOffsetUsInput(endValue);
+  const validDuration = startUs != null && endUs != null && endUs > startUs && endUs <= session.document.durationUs
+    ? endUs - startUs
+    : null;
+  const zone = timeZoneAbbreviation(session.document.startedAt, session.document.displayTimeZone, startUs ?? 0);
+  const clearFieldError = (field: "title" | "start" | "end") => {
+    if (error?.field === field || error?.field === "range") setError(null);
+  };
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!title.trim()) {
+      setError({ field: "title", message: "Give the incident range a short title." });
+      requestAnimationFrame(() => titleRef.current?.focus());
+      return;
+    }
+    if (startUs == null) {
+      setError({ field: "start", message: "Enter the start as HH:MM:SS.ffffff from session start." });
+      requestAnimationFrame(() => startRef.current?.focus());
+      return;
+    }
+    if (endUs == null) {
+      setError({ field: "end", message: "Enter the end as HH:MM:SS.ffffff from session start." });
+      requestAnimationFrame(() => endRef.current?.focus());
+      return;
+    }
+    try {
+      const validated = validateIncidentPreset({ id: range.id, title: title.trim(), startUs, endUs, severity }, session.document.durationUs);
+      const updatedAt = new Date(Math.max(Date.now(), Date.parse(range.createdAt))).toISOString();
+      onSave({ ...validated, createdAt: range.createdAt, updatedAt });
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "The range is invalid.";
+      setError({ field: "range", message: `${detail} Keep 0 ≤ start < end ≤ ${formatOffsetUsInput(session.document.durationUs)}.` });
+    }
+  };
+  return createPortal(
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <form ref={dialogRef} className="bundle-dialog range-dialog" role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="range-dialog-title" onSubmit={submit}>
+        <button className="dialog-close" type="button" aria-label="Close incident range dialog" onClick={onClose}><X size={17} /></button>
+        <div className="dialog-icon"><BookmarkSimple size={24} /></div>
+        <span className="dialog-kicker">{mode === "create" ? "New local incident" : "Operator-authored incident"}</span>
+        <h2 id="range-dialog-title">{mode === "create" ? "Define an incident range" : "Edit incident range"}</h2>
+        <p>{mode === "create" ? "Create a local overlay on the immutable replay, then investigate and export only that evidence." : "Rename the incident or set its exact half-open boundaries without changing the captured session."}</p>
+        <div className="dialog-fields">
+          <label><span>Title</span><input ref={titleRef} data-dialog-focus value={title} maxLength={MAX_INCIDENT_TITLE_LENGTH} aria-invalid={error?.field === "title"} aria-describedby={error?.field === "title" ? "range-dialog-error" : undefined} onChange={(event) => { setTitle(event.target.value); clearFieldError("title"); }} placeholder="What happened?" /></label>
+          <div className="range-boundaries">
+            <label><span>Start · included</span><input ref={startRef} value={startValue} inputMode="text" spellCheck={false} aria-invalid={error?.field === "start" || error?.field === "range"} aria-describedby={`range-start-help${error?.field === "start" || error?.field === "range" ? " range-dialog-error" : ""}`} onChange={(event) => { setStartValue(event.target.value); clearFieldError("start"); }} /><small id="range-start-help" className="field-help">{startUs == null ? "HH:MM:SS.ffffff" : <><output>{formatExactSessionClock(session, startUs)}</output> {timeZoneAbbreviation(session.document.startedAt, session.document.displayTimeZone, startUs)}</>}</small></label>
+            <label><span>End · excluded</span><input ref={endRef} value={endValue} inputMode="text" spellCheck={false} aria-invalid={error?.field === "end" || error?.field === "range"} aria-describedby={`range-end-help${error?.field === "end" || error?.field === "range" ? " range-dialog-error" : ""}`} onChange={(event) => { setEndValue(event.target.value); clearFieldError("end"); }} /><small id="range-end-help" className="field-help">{endUs == null ? "HH:MM:SS.ffffff" : <><output>{formatExactSessionClock(session, endUs)}</output> {timeZoneAbbreviation(session.document.startedAt, session.document.displayTimeZone, endUs)}</>}</small></label>
+          </div>
+          <label><span>Severity</span><select value={severity} onChange={(event) => setSeverity(event.target.value as AuthoredIncidentRange["severity"])}><option value="info">Info</option><option value="warning">Warning</option><option value="critical">Critical</option></select></label>
+        </div>
+        <div className="range-semantics"><strong>{validDuration == null ? "Invalid range" : formatDurationUs(validDuration, true)}</strong><span>[start, end) · the end instant is excluded</span><small>Session clock uses {session.document.displayTimeZone} ({zone}). Offsets are stored as integer microseconds.</small></div>
+        {error && <p id="range-dialog-error" className="dialog-error" role="alert">{error.message}</p>}
+        {mode === "edit" && onDelete && <div className="range-delete">{confirmDelete ? <><p>Delete this local range? The replay and exported archives are not changed.</p><div><button className="secondary-action" type="button" onClick={() => setConfirmDelete(false)}>Keep range</button><button className="destructive-action" type="button" onClick={onDelete}><Trash size={15} /> Delete range</button></div></> : <button className="destructive-link" type="button" onClick={() => setConfirmDelete(true)}><Trash size={14} /> Delete local range</button>}</div>}
+        <div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Cancel</button><button className="primary-action" type="submit"><Check size={16} weight="bold" /> {mode === "create" ? "Create range" : "Save range"}</button></div>
+      </form>
+    </div>,
+    document.body,
+  );
+}
+
 interface BundleDialogProps {
   session: ParsedSession;
   incident: IncidentProjection;
@@ -797,31 +948,120 @@ function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSe
     const identity = sessionWorkspaceIdentity(session);
     return isBundledDemo ? `${identity}:${BUNDLED_DEMO_WORKSPACE_REVISION}` : identity;
   }, [isBundledDemo, session]);
-  const stored = useMemo(() => loadSessionWorkspace(workspaceIdentity), [workspaceIdentity]);
+  const workspaceContext = useMemo(() => ({
+    durationUs: session.document.durationUs,
+    reservedIncidentIds: session.incidents.map((incident) => incident.id),
+  }), [session.document.durationUs, session.incidents]);
+  const stored = useMemo(() => loadSessionWorkspace(workspaceIdentity, workspaceContext), [workspaceContext, workspaceIdentity]);
   const [markers, setMarkers] = useState<Marker[]>(() => stored.updatedAt == null && isBundledDemo ? createSeedMarkers(session) : stored.markers);
   const [note, setNote] = useState(() => stored.updatedAt == null && isBundledDemo ? DEFAULT_NOTE : stored.notes);
+  const [authoredIncidentRanges, setAuthoredIncidentRanges] = useState<AuthoredIncidentRange[]>(() => stored.authoredIncidentRanges);
   const [markerDialogOpen, setMarkerDialogOpen] = useState(false);
+  const [rangeDialog, setRangeDialog] = useState<{ mode: "create" | "edit"; range: AuthoredIncidentRange } | null>(null);
   const [bundleDialogOpen, setBundleDialogOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [workspacePersisted, setWorkspacePersisted] = useState(true);
-  const selectedIncident = session.incidents.find((candidate) => candidate.id === selectedIncidentId) ?? null;
+  const authoredIncidents = useMemo(() => authoredIncidentRanges.map((range) => projectIncident({ id: range.id, title: range.title, startUs: range.startUs, endUs: range.endUs, severity: range.severity }, session.frames, session.diagnostics)), [authoredIncidentRanges, session.diagnostics, session.frames]);
+  const incidents = useMemo(() => [...session.incidents, ...authoredIncidents], [authoredIncidents, session.incidents]);
+  const selectedIncident = incidents.find((candidate) => candidate.id === selectedIncidentId) ?? null;
+  const selectedAuthoredRange = authoredIncidentRanges.find((candidate) => candidate.id === selectedIncidentId) ?? null;
   const [bundleItems, setBundleItems] = useState<BundleItem[]>(() => firstIncident ? initialBundleItems(session, firstIncident) : []);
+  const bundleIncidentIdRef = useRef<string | null>(firstIncident?.id ?? null);
 
-  useEffect(() => { setWorkspacePersisted(saveSessionWorkspace(workspaceIdentity, { markers, notes: note })); }, [workspaceIdentity, markers, note]);
+  useEffect(() => {
+    setWorkspacePersisted(saveSessionWorkspace(workspaceIdentity, { markers, notes: note, authoredIncidentRanges }, workspaceContext));
+  }, [authoredIncidentRanges, markers, note, workspaceContext, workspaceIdentity]);
+  useEffect(() => {
+    const nextItems = selectedIncident ? initialBundleItems(session, selectedIncident) : [];
+    const preserveSelections = selectedIncident != null && bundleIncidentIdRef.current === selectedIncident.id;
+    setBundleItems((current) => {
+      if (!preserveSelections) return nextItems;
+      const selectedById = new Map(current.map((item) => [item.id, item.selected]));
+      return nextItems.map((item) => ({ ...item, selected: selectedById.get(item.id) ?? item.selected }));
+    });
+    bundleIncidentIdRef.current = selectedIncident?.id ?? null;
+  }, [selectedIncident?.endUs, selectedIncident?.id, selectedIncident?.startUs, session]);
   const notify = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2600); }, []);
   const selectIncident = (id: string) => {
-    const next = session.incidents.find((candidate) => candidate.id === id);
+    const next = incidents.find((candidate) => candidate.id === id);
     if (!next) return;
     setSelectedIncidentId(next.id);
-    setBundleItems(initialBundleItems(session, next));
     replay.pause();
     replay.seek(next.startUs);
     setActiveTab("narrative");
   };
   const togglePlayback = () => replay.snapshot.status === "playing" ? replay.pause() : replay.play();
   const addMarker = (marker: Marker) => { setMarkers((current) => [...current, marker].sort((left, right) => left.offsetUs - right.offsetUs)); setMarkerDialogOpen(false); replay.seek(marker.offsetUs); notify(`Marker added at ${formatClockOffset(session.document.startedAt, marker.offsetUs, session.document.displayTimeZone)}`); };
+  const createRangeDraft = (source?: IncidentProjection): AuthoredIncidentRange => {
+    const now = new Date().toISOString();
+    if (source) {
+      const localSuffix = " · local";
+      const title = source.title.length + localSuffix.length <= MAX_INCIDENT_TITLE_LENGTH ? `${source.title}${localSuffix}` : source.title;
+      return { id: `operator-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`, title, startUs: source.startUs, endUs: source.endUs, severity: source.severity, createdAt: now, updatedAt: now };
+    }
+    const rangeDurationUs = Math.min(30_000_000, session.document.durationUs);
+    const startUs = Math.max(0, Math.min(Math.round(replay.snapshot.offsetUs - rangeDurationUs / 2), session.document.durationUs - rangeDurationUs));
+    return { id: `operator-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`, title: `Incident ${authoredIncidentRanges.length + 1}`, startUs, endUs: startUs + rangeDurationUs, severity: "warning", createdAt: now, updatedAt: now };
+  };
+  const openNewRange = () => {
+    if (authoredIncidentRanges.length >= 100) {
+      notify("This session already has the maximum of 100 local incident ranges");
+      return;
+    }
+    setRangeDialog({ mode: "create", range: createRangeDraft() });
+  };
+  const openRangeEditor = () => {
+    if (!selectedIncident) {
+      openNewRange();
+    } else if (selectedAuthoredRange) {
+      setRangeDialog({ mode: "edit", range: selectedAuthoredRange });
+    } else {
+      if (authoredIncidentRanges.length >= 100) {
+        notify("This session already has the maximum of 100 local incident ranges");
+        return;
+      }
+      setRangeDialog({ mode: "create", range: createRangeDraft(selectedIncident) });
+    }
+  };
+  const saveRange = (range: AuthoredIncidentRange) => {
+    const isExisting = authoredIncidentRanges.some((candidate) => candidate.id === range.id);
+    setAuthoredIncidentRanges((current) => isExisting ? current.map((candidate) => candidate.id === range.id ? range : candidate) : [...current, range]);
+    setSelectedIncidentId(range.id);
+    setRangeDialog(null);
+    replay.pause();
+    replay.seek(range.startUs);
+    setActiveTab("narrative");
+    notify(isExisting ? "Incident range updated" : "Incident range created locally");
+  };
+  const deleteRange = () => {
+    if (!rangeDialog) return;
+    const replacement = session.incidents[0] ?? null;
+    setAuthoredIncidentRanges((current) => current.filter((candidate) => candidate.id !== rangeDialog.range.id));
+    setSelectedIncidentId(replacement?.id ?? null);
+    setRangeDialog(null);
+    if (replacement) replay.seek(replacement.startUs);
+    notify("Local incident range deleted");
+  };
+  const resizeSelectedRange = (startUs: number, endUs: number) => {
+    if (!selectedAuthoredRange) return;
+    const updatedAt = new Date(Math.max(Date.now(), Date.parse(selectedAuthoredRange.createdAt))).toISOString();
+    setAuthoredIncidentRanges((current) => current.map((range) => range.id === selectedAuthoredRange.id ? { ...range, startUs, endUs, updatedAt } : range));
+  };
 
-  return <main className="app-shell" aria-label="Telemetry review workspace"><LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} onResetReplay={replay.reset} /><TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} /><SessionOverview session={session} incident={selectedIncident} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onSelectIncident={(incident) => selectIncident(incident.id)} />{selectedIncident ? <MissionTimeline session={session} incident={selectedIncident} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} /> : <section className="timeline-panel"><div className="empty-state"><BookmarkSimple size={24} /><h2>Select an incident</h2><p>The full replay remains available in the session overview.</p></div></section>}<IncidentPanel session={session} incident={selectedIncident} activeTab={activeTab} note={note} workspacePersisted={workspacePersisted} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onClear={() => setSelectedIncidentId(null)} /><BundlePanel session={session} incident={selectedIncident} items={bundleItems} note={note} workspacePersisted={workspacePersisted} onItemsChange={setBundleItems} onNoteChange={setNote} onCreateBundle={() => setBundleDialogOpen(true)} />{markerDialogOpen && <MarkerDialog session={session} initialOffsetUs={replay.snapshot.offsetUs} onClose={() => setMarkerDialogOpen(false)} onCreate={addMarker} />}{bundleDialogOpen && selectedIncident && <BundleDialog session={session} incident={selectedIncident} items={bundleItems} markers={markers} note={note} onClose={() => setBundleDialogOpen(false)} />}<Toast message={toast} /></main>;
+  return (
+    <main className="app-shell" aria-label="Telemetry review workspace">
+      <LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} onResetReplay={replay.reset} />
+      <TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} />
+      <SessionOverview session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onSelectIncident={(incident) => selectIncident(incident.id)} onCreateRange={openNewRange} onRangeChange={resizeSelectedRange} />
+      {selectedIncident ? <MissionTimeline session={session} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onRangeChange={resizeSelectedRange} /> : <section className="timeline-panel"><div className="empty-state"><BookmarkSimple size={24} /><h2>Select an incident</h2><p>The full replay remains available in the session overview.</p></div></section>}
+      <IncidentPanel session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} activeTab={activeTab} note={note} workspacePersisted={workspacePersisted} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onEditRange={openRangeEditor} onClear={() => setSelectedIncidentId(null)} />
+      <BundlePanel session={session} incident={selectedIncident} items={bundleItems} note={note} workspacePersisted={workspacePersisted} onItemsChange={setBundleItems} onNoteChange={setNote} onCreateBundle={() => setBundleDialogOpen(true)} />
+      {markerDialogOpen && <MarkerDialog session={session} initialOffsetUs={replay.snapshot.offsetUs} onClose={() => setMarkerDialogOpen(false)} onCreate={addMarker} />}
+      {rangeDialog && <IncidentRangeDialog session={session} mode={rangeDialog.mode} range={rangeDialog.range} onClose={() => setRangeDialog(null)} onSave={saveRange} onDelete={rangeDialog.mode === "edit" ? deleteRange : undefined} />}
+      {bundleDialogOpen && selectedIncident && <BundleDialog session={session} incident={selectedIncident} items={bundleItems} markers={markers} note={note} onClose={() => setBundleDialogOpen(false)} />}
+      <Toast message={toast} />
+    </main>
+  );
 }
 
 function LoadingScreen({ message }: { message: string }) {

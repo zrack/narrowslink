@@ -43,10 +43,13 @@ Status: complete for NSL-01 v1
 
 ## Delivered operator workspace
 
-Status: complete for incident review
+Status: complete for preset and operator-authored incident review
 
 - Mission-timeline-first desktop workspace with a whole-session overview and synchronized incident detail.
-- Selectable incident presets with narrative, detail, and statistics views.
+- Selectable replay presets and separate operator-authored incident overlays with narrative, detail, and statistics views.
+- Playhead-centered range creation, exact integer-microsecond editing, title and severity editing, timeline-handle resizing, guarded deletion, and source-preset refinement into a local copy.
+- Versioned per-session local persistence for authored ranges, including v1 marker/note workspace migration and collision-safe validation against replay preset IDs.
+- Immediate re-projection of diagnostics and statistics after a boundary change, with the selected authored range feeding replay context and evidence export through the existing pipeline.
 - Time-zone-aware presentation while preserving integer UTC-relative offsets internally.
 - Replay-linked link quality, received packet rate, inferred missing-frame, packet-family, decoder, diagnostic, marker, and signal lanes.
 - Per-session operator markers and notes persisted in browser local storage.
