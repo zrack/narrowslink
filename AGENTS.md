@@ -33,6 +33,7 @@ Treat `docs/design/narrowslink-mission-timeline-source.png` as the source of tru
 
 - `CHANGELOG.md` is the sole chronological record of notable completed changes and releases. Add applicable work under `[Unreleased]`.
 - `README.md` describes the product as it works now; do not append delivery history or completed milestone notes to it.
+- `USE_CASES.md` owns stable operator use-case IDs, current support status, constraints, and implementation evidence. Update entries in place and record their historical changes only in the changelog.
 - `ROADMAP.md` contains planned work only. When a milestone is completed, remove it from the roadmap and record the delivered outcome in the changelog rather than relabeling it as delivered.
 - `design-qa.md` records the currently accepted visual baseline and verification evidence, not a pass-by-pass product history.
 - `CONTRIBUTING.md`, the pull-request template, and other collaboration documents define current process and policy; replace superseded guidance instead of accumulating historical notes.
