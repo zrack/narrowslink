@@ -4,7 +4,7 @@ NarrowsLink records live UDP or serial telemetry, turns the capture into an immu
 
 ![NarrowsLink mission-timeline session review workspace](docs/assets/narrowslink-dashboard.png)
 
-The application is local-first. UDP ingest uses a local Node.js bridge whose token-protected control plane listens only on loopback; its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, replay, annotations, and evidence generation stay on the operator's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
+The application is local-first. UDP ingest uses a local Node.js bridge whose token-protected control plane listens only on loopback; its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, replay, annotations, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
 ## Current capabilities
 
@@ -15,6 +15,7 @@ The application is local-first. UDP ingest uses a local Node.js bridge whose tok
 - Correlate connection health, packet cadence, decoder state, diagnostics, markers, and decoded signals on one monotonic microsecond replay clock.
 - Create, rename, classify, resize, and precisely edit operator-owned half-open incident ranges; markers, ranges, and notes persist per session when browser storage is available, without mutating the source replay.
 - Export the selected range as a local `.nlb` archive with an exact manifest, mandatory transport events, provenance, bridge journal, and capture-integrity receipt, and a SHA-256 checksum for every emitted artifact.
+- Verify a received version 3 `.nlb` locally with the production receiver CLI, which rejects unsafe or inconsistent archives and reports internal integrity, capture and provenance evidence status, bundle identity, and the separate unsigned-authenticity boundary.
 
 ## Operator use cases
 
@@ -26,7 +27,7 @@ NarrowsLink currently supports five end-to-end operator outcomes:
 | UC-002 | Investigate a recorded telemetry fault | Exact operator-authored incident range |
 | UC-003 | Audit capture-path integrity | Integrity assessment and transport evidence |
 | UC-004 | Run decoder and session regressions | Repeatable decoded and diagnostic results |
-| UC-005 | Hand off a verifiable incident bundle | Checksummed `.nlb` archive |
+| UC-005 | Hand off a verifiable incident bundle | `.nlb` archive and local verification report |
 
 See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, current constraints, and implementation evidence.
 
@@ -39,6 +40,7 @@ See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, 
 5. Use **Add marker** and the session-wide note to preserve operator context locally.
 6. Choose the evidence groups to include and review the estimated archive size; this pre-build preview is not a byte-exact manifest.
 7. Select **Create incident bundle** to download the verifiable `.nlb` archive for that exact operator-authored range.
+8. Have the receiving engineer run the local verifier and compare its bundle SHA-256 with a value exchanged through a separately trusted channel when authenticity matters.
 
 ## Run it locally
 
@@ -109,7 +111,7 @@ This matrix separates automated browser-engine evidence from hardware and assist
 | --- | --- | --- | --- | --- |
 | Replay, local import, saved-session library, timeline review, markers, notes, and `.nlb` export | Automated | Automated | Automated | Invalid-file recovery, validated import, exact-content deduplication, playback/rate controls, per-session workspace restoration, guarded removal, and storage failure states |
 | Live UDP through the local bridge | Automated | Automated | Automated | A real ephemeral loopback bridge records fixture datagrams, stops with reconciled v2 integrity, reimports the `.nlsession`, replays it, and completes the exact-range evidence workflow |
-| Independent `.nlb` verification | Automated | Automated | Automated | Browser downloads are opened independently; paths, half-open boundaries, required transport evidence, artifact bytes, record counts, manifest hashes, and `SHA256SUMS` are verified |
+| Independent `.nlb` verification | Automated | Automated | Automated | Browser downloads are passed to the production receiver verifier; bounded ZIP structure, canonical paths, half-open boundaries, required transport evidence, artifact schemas, record counts, semantic reconciliation, manifest hashes, and `SHA256SUMS` are verified |
 | Keyboard, dialogs, and responsive access | Automated | Automated | Automated | axe rules tagged WCAG A/AA, critical focus handoffs, `960`, `640`, and `390` CSS-pixel reflow, keyboard scrollers, and forced-color cues run in all three engines |
 | Live serial hardware | Browser API requires `navigator.serial` and a secure context; physical path not automated | No automated hardware path | No automated hardware path | Serial lifecycle, framing, resynchronization, failure, and receipt logic are automated below the hardware permission layer; packaged browser, device, and driver combinations remain a manual boundary |
 
@@ -193,11 +195,27 @@ schema/schema.json
 
 Every time-bearing artifact is filtered to the selected half-open range. Point transport events at `startUs` are included and events at `endUs` are excluded; overlapping intervals and session-scoped integrity events are included. `transport/integrity-receipt.json`, `transport/provenance.json`, and `transport/journal.json` always describe whole-session evidence, including explicit unavailable states for legacy or pre-provenance input. All four transport artifacts are mandatory even when every optional evidence group is excluded.
 
-`manifest.json` records the session and decoder identity, capture-integrity receipt, provenance availability and summary, exact selection, actual inclusions, media types, byte sizes, record counts, and artifact hashes. Those values describe the generated bytes, unlike the selected-group and size estimates shown before generation. `decoded/packets.csv` retains complete integrity JSON for forensic failures, and `schema/schema.json` includes the reproducible byte-level decoder definition. `SHA256SUMS` covers the manifest and each included evidence artifact.
+`manifest.json` records the session and decoder identity, declared session duration, capture-integrity receipt, provenance availability and summary, exact selection, actual inclusions, media types, byte sizes, record counts, and artifact hashes. Those values describe the generated bytes, unlike the selected-group and size estimates shown before generation. `decoded/packets.csv` retains complete integrity JSON for forensic failures, and `schema/schema.json` includes the reproducible byte-level decoder definition. `SHA256SUMS` covers the manifest and each included evidence artifact.
 
 ### Verify a bundle independently
 
-An `.nlb` can be checked without NarrowsLink because it is an ordinary ZIP archive with standard SHA-256 checksum lines. Extract into a new directory, then verify from inside that directory:
+After installing dependencies, a receiving engineer can verify a version 3 bundle locally without opening the NarrowsLink browser workspace:
+
+```bash
+npm run verify:bundle -- path/to/incident.nlb
+```
+
+The command builds and runs the production receiver CLI without network access. A passing report includes the bundle SHA-256, exact half-open selection, artifact count, internal-integrity verdict, aggregate evidence verdict, capture-integrity status, provenance status, warnings, and authenticity status. Use the stable machine-readable report for automation:
+
+```bash
+npm run verify:bundle -- path/to/incident.nlb --json
+```
+
+Exit status `0` means the version 3 archive is internally consistent with its declared contract. Exit `1` means the archive is invalid, tampered, unsafe, or unsupported; exit `2` means command usage or local file I/O failed. A consistent bundle can still report `incomplete` or `unknown` evidence when the capture receipt or provenance truthfully lacks observations. The verifier always reports authenticity as `not-established` because version 3 bundles are unsigned.
+
+The verifier treats the archive as untrusted input before decompression. It enforces bounded compressed and expanded sizes, a fixed canonical path set, supported ZIP features, strict UTF-8 and artifact schemas, exact inclusion and checksum coverage, record counts, range semantics, and agreement among the manifest, receipt, provenance, journal, optional artifacts, and embedded decoder schema.
+
+Do not open an unverified received bundle with a general-purpose ZIP extractor: extractor-specific path or link handling occurs before checksum validation. After the production verifier has passed the archive preflight, an `.nlb` remains an ordinary ZIP archive with standard SHA-256 checksum lines. For an additional checksum-only audit, extract that already-preflighted bundle into a new disposable directory and verify from inside it:
 
 ```bash
 mkdir narrowslink-bundle-check
@@ -206,7 +224,7 @@ cd narrowslink-bundle-check
 shasum -a 256 -c SHA256SUMS
 ```
 
-On systems that provide GNU Coreutils instead of `shasum`, use `sha256sum -c SHA256SUMS`. Every listed path must report `OK`; otherwise, treat the bundle as modified or incomplete. Then inspect `manifest.json` to confirm the expected session, decoder revision and schema hash, half-open selection, inclusions, file sizes, and record counts.
+On systems that provide GNU Coreutils instead of `shasum`, use `sha256sum -c SHA256SUMS`. Every listed path must report `OK`; otherwise, treat the bundle as modified or incomplete. This fallback checks listed bytes only; it does not perform the production verifier's archive-safety, schema, inclusion, range, count, or cross-artifact semantic checks. Inspect `manifest.json` to confirm the expected session, decoder revision and schema hash, half-open selection, inclusions, file sizes, and record counts.
 
 Checksums establish internal integrity only. Version 3 bundles are unsigned: they do not prove who created the archive or that the NarrowsLink build used to generate it was uncompromised. The receipt, provenance document, and journal prove which internal consistency checks NarrowsLink could perform and preserve every known anomaly; they cannot rule out failures that the local transport or host did not expose. Exchange the `.nlb` checksum or the expected manifest identity through a separately trusted channel when authenticity matters.
 
@@ -228,7 +246,10 @@ Checksums establish internal integrity only. Version 3 bundles are unsigned: the
 | `src/replay/` | Pure monotonic replay clock and its React subscription hook |
 | `src/storage/session-library.ts` | Content-addressed session-document persistence, metadata, validation, and removal in IndexedDB |
 | `src/storage/session-storage.ts` | Versioned per-session operator-range, marker, and note persistence in local storage |
+| `src/domain/evidence-contract.ts` | Strict version 3 evidence manifest, artifact, transport-document, path, media-type, and resource-limit contract |
 | `src/domain/bundle.ts` | Range-filtered, checksummed `.nlb` evidence generation and browser download |
+| `verifier/` | Bounded ZIP intake and production receiver verification of archive structure, artifact content, and cross-document semantics |
+| `scripts/narrowslink.ts` | Human-readable and JSON `narrowslink verify` command with stable exit behavior |
 | `src/lib/telemetry.ts` | Timeline sampling, value lookup, and source-aligned incident view ranges |
 | `src/lib/time.ts` | Time-zone-aware presentation and byte-size helpers |
 | `scripts/capture-bridge.mjs` | Token-protected loopback control plane, UDP socket, multicast membership, and SSE delivery |
@@ -252,6 +273,7 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 - IndexedDB or Web Crypto can be unavailable or reject a save. NarrowsLink surfaces the failure and keeps the validated replay usable in memory instead of claiming it was saved.
 - New live captures use version 2 durable transport events, explicit UDP or serial provenance, bridge journals where applicable, and integrity receipts; legacy v1 and earlier pre-provenance v2 replays remain supported with explicit unknown or unavailable assessments.
 - Version 2 does not persist each UDP sender endpoint or the bridge's internal capture ID in every source record. It does preserve browser-observed bridge errors, event-stream gaps, stop-time counter reconciliation, recorder limits, serial failures, and shutdown disposition.
+- The receiver CLI verifies version 3 `.nlb` bundles. It establishes internal consistency and reports the evidence NarrowsLink could observe; because bundles are unsigned, it does not establish author, source-channel, or originating-build authenticity.
 - Automated coverage exercises the complete UDP capture-to-evidence loop in Playwright Chromium, Firefox, and WebKit and gates axe rules tagged WCAG A/AA, critical keyboard focus, responsive reflow, failure recovery, and independent archive verification. Physical Web Serial devices and manual screen-reader/browser combinations remain outside the automated release gate.
 
 ## Project documentation

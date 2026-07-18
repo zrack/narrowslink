@@ -33,6 +33,8 @@ Treat `docs/design/narrowslink-mission-timeline-source.png` as the source of tru
 - Project transport anomalies as `capture-path` diagnostics so operators can distinguish local capture failures from link, decoder, and unattributed telemetry evidence.
 - Evidence exports must produce a real local archive and describe exactly which artifacts they contain.
 - Every evidence bundle must include the range-filtered transport event log, whole-session provenance and bridge-journal artifacts, and whole-session integrity receipt, even when optional artifact groups are excluded.
+- Treat received `.nlb` bytes as untrusted. The production receiver verifier must bound and preflight ZIP structure before decompression, accept only canonical format paths and strict artifact schemas, and reconcile checksums, inclusions, counts, ranges, receipt, provenance, journal, and decoder identity. Keep test helpers as adapters to production verification, and report internal consistency, evidence completeness, and unsigned authenticity as separate claims.
+- Bind every exported selection, event, record, decoded frame, diagnostic, annotation, receipt stop, and journal offset to the manifest's bounded whole-session duration.
 - Keep the core decoder, replay, incident, and bundle logic pure and covered by automated tests.
 - Preserve the cross-browser release gate from real loopback UDP capture through validated `.nlsession` reimport, replay, operator-authored evidence, independently verified `.nlb` archive, persistence, failure recovery, and removal. Keep physical Web Serial and manual assistive-technology claims explicitly separate from automated browser-engine evidence.
 

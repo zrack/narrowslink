@@ -456,7 +456,7 @@ const sourceRecordSignalSchema = z
   .strict()
   .optional();
 
-const sourceRecordV1Schema = z.object({
+export const sourceRecordV1Schema = z.object({
   ...sourceRecordCoreShape,
   transport: z.object({
     kind: z.enum(["udp", "serial", "file"]),
@@ -476,7 +476,7 @@ const sourceRecordV1Schema = z.object({
   }
 });
 
-const sourceRecordSchema = z.object({
+export const sourceRecordSchema = z.object({
   ...sourceRecordCoreShape,
   transport: z.object({
     kind: z.enum(["udp", "serial", "file"]),

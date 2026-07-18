@@ -1,8 +1,22 @@
 import { zipSync, type Zippable } from "fflate";
 
 import { DECODER_SCHEMA } from "./decoder";
+import {
+  EVIDENCE_ARCHIVE_LIMITS,
+  EVIDENCE_BUNDLE_MEDIA_TYPE,
+  evidenceBundleManifestSchema,
+  evidenceDiagnosticsDocumentSchema,
+  evidenceMarkersDocumentSchema,
+  evidenceNotesDocumentSchema,
+  type EvidenceArtifactPath,
+  type EvidenceBundleArtifact,
+  type EvidenceBundleInclusions,
+  type EvidenceBundleManifest,
+  type EvidenceBundleProvenanceSummary,
+  type EvidenceTransportJournalDocument,
+  type EvidenceTransportProvenanceDocument,
+} from "./evidence-contract";
 import type {
-  CaptureIntegrityReceipt,
   DecodedField,
   DecodedFrame,
   DiagnosticEvent,
@@ -11,11 +25,18 @@ import type {
   ParsedSession,
   SourceRecord,
   TransportEvent,
-  TransportProvenance,
-  UdpBridgeJournal,
 } from "./types";
 
-export const EVIDENCE_BUNDLE_MEDIA_TYPE = "application/vnd.narrowslink.evidence-bundle+zip";
+export {
+  EVIDENCE_BUNDLE_MEDIA_TYPE,
+  type EvidenceBundleArtifact,
+  type EvidenceBundleInclusions,
+  type EvidenceBundleManifest,
+  type EvidenceBundleProvenanceSummary,
+  type EvidenceTransportJournalDocument,
+  type EvidenceTransportProvenanceDocument,
+  type EvidenceTransportUnavailableReason,
+} from "./evidence-contract";
 
 export interface EvidenceRange {
   id?: string;
@@ -33,17 +54,6 @@ export interface EvidenceNote {
   createdAt?: string;
 }
 
-export interface EvidenceBundleInclusions {
-  rawRecords: boolean;
-  decodedPackets: boolean;
-  diagnostics: boolean;
-  markers: boolean;
-  notes: boolean;
-  schema: boolean;
-  /** Mandatory provenance artifacts; caller overrides cannot disable them. */
-  transportEvidence: true;
-}
-
 export interface BuildEvidenceBundleOptions {
   session: ParsedSession;
   range: EvidenceRange | IncidentProjection;
@@ -52,121 +62,6 @@ export interface BuildEvidenceBundleOptions {
   include?: Partial<EvidenceBundleInclusions>;
   /** Injectable to support reproducible builds and tests. Defaults to the current instant. */
   generatedAt?: string;
-}
-
-export interface EvidenceBundleArtifact {
-  path: string;
-  mediaType: string;
-  bytes: number;
-  sha256: string;
-  recordCount?: number;
-}
-
-export type EvidenceTransportUnavailableReason =
-  | "legacy-v1"
-  | "pre-provenance-v2"
-  | "journal-unavailable"
-  | "not-applicable";
-
-export type EvidenceTransportProvenanceDocument =
-  | {
-      format: "narrowslink/transport-provenance";
-      formatVersion: 1;
-      availability: "available";
-      sessionFormatVersion: 2;
-      sourceId: string;
-      transport: "udp" | "serial";
-      provenance: TransportProvenance;
-    }
-  | {
-      format: "narrowslink/transport-provenance";
-      formatVersion: 1;
-      availability: "unavailable";
-      reason: "legacy-v1" | "pre-provenance-v2";
-      sessionFormatVersion: 1 | 2;
-      sourceId: string;
-      transport: "udp" | "serial" | "file";
-      provenance: null;
-    };
-
-export type EvidenceTransportJournalDocument =
-  | {
-      format: "narrowslink/transport-journal";
-      formatVersion: 1;
-      availability: "available";
-      sessionFormatVersion: 2;
-      sourceId: string;
-      transport: "udp";
-      captureId: string;
-      journal: UdpBridgeJournal;
-    }
-  | {
-      format: "narrowslink/transport-journal";
-      formatVersion: 1;
-      availability: "unavailable";
-      reason: EvidenceTransportUnavailableReason;
-      sessionFormatVersion: 1 | 2;
-      sourceId: string;
-      transport: "udp" | "serial" | "file";
-      captureId: null;
-      journal: null;
-    };
-
-export interface EvidenceBundleProvenanceSummary {
-  availability: "available" | "unavailable";
-  status: "verified" | "incomplete" | "unknown";
-  sourceId: string;
-  transport: "udp" | "serial" | "file";
-  issueCodes: string[];
-  captureId: string | null;
-  endpointAttribution: {
-    totalRecords: number;
-    attributedRecords: number;
-    unattributedRecords: number;
-    distinctEndpointCount: number;
-  } | null;
-  journal: {
-    availability: "available" | "unavailable";
-    reason: EvidenceTransportUnavailableReason | null;
-    state: "active" | "clean" | "incomplete" | null;
-    entriesComplete: boolean | null;
-    entryCount: number;
-    omittedEntries: number;
-  };
-}
-
-export interface EvidenceBundleManifest {
-  format: "narrowslink/evidence-bundle";
-  formatVersion: 3;
-  generatedAt: string;
-  session: {
-    id: string;
-    title: string;
-    formatVersion: 1 | 2;
-    startedAt: string;
-    displayTimeZone: string;
-    sourceId: string;
-    decoderId: string;
-    decoderRevision: string;
-    schemaHash: string;
-    captureIntegrity: CaptureIntegrityReceipt;
-  };
-  provenance: EvidenceBundleProvenanceSummary;
-  selection: {
-    id: string | null;
-    title: string | null;
-    severity: "info" | "warning" | "critical" | null;
-    startUs: number;
-    endUs: number;
-    rangeSemantics: "half-open [startUs, endUs)";
-  };
-  inclusions: EvidenceBundleInclusions;
-  artifacts: EvidenceBundleArtifact[];
-  checksums: {
-    algorithm: "SHA-256";
-    path: "SHA256SUMS";
-    covers: string[];
-  };
 }
 
 const DEFAULT_INCLUSIONS: EvidenceBundleInclusions = {
@@ -211,7 +106,9 @@ function canonicalJson(value: unknown, pretty = false): string {
 
 function csvCell(value: unknown): string {
   const rawText = value == null ? "" : String(value);
-  const text = typeof value === "string" && /^[\t\r ]*[=+\-@]/.test(rawText) ? `'${rawText}` : rawText;
+  const text = typeof value === "string" && (rawText.startsWith("'") || /^[\t\r ]*[=+\-@]/.test(rawText))
+    ? `'${rawText}`
+    : rawText;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
@@ -367,7 +264,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 }
 
 interface PendingArtifact {
-  path: string;
+  path: EvidenceArtifactPath;
   mediaType: string;
   bytes: Uint8Array;
   recordCount?: number;
@@ -375,7 +272,7 @@ interface PendingArtifact {
 
 function addTextArtifact(
   artifacts: PendingArtifact[],
-  path: string,
+  path: EvidenceArtifactPath,
   mediaType: string,
   contents: string,
   recordCount?: number,
@@ -536,7 +433,7 @@ function schemaArtifact(session: ParsedSession): object {
     schema: {
       id: session.document.decoder.id,
       revision: session.document.decoder.revision,
-      declaredSha256: session.document.decoder.schemaHash,
+      declaredSha256: session.document.decoder.schemaHash.toLowerCase(),
       artifactIntegrity: "The evidence manifest independently hashes this exported schema artifact.",
     },
     sessionFormat: {
@@ -574,7 +471,11 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
 
   const records = recordsForRange(session.document.records, range);
   const frames = framesForRange(session.frames, range);
-  const diagnostics = diagnosticsForRange(session.diagnostics, range);
+  const selectedFrameIds = new Set(frames.map((frame) => frame.id));
+  const diagnostics = diagnosticsForRange(session.diagnostics, range).map((event) => ({
+    ...event,
+    frameIds: event.frameIds.filter((frameId) => selectedFrameIds.has(frameId)),
+  }));
   const transportEvents = transportEventsForRange(session.transportEvents, range);
   const markers = markersForRange(options.markers ?? [], range);
   const notes = notesForRange(options.notes ?? [], range);
@@ -636,11 +537,16 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     );
   }
   if (inclusions.diagnostics) {
+    const diagnosticsDocument = { range: { startUs: range.startUs, endUs: range.endUs }, diagnostics };
+    const diagnosticsValidation = evidenceDiagnosticsDocumentSchema.safeParse(diagnosticsDocument);
+    if (!diagnosticsValidation.success) {
+      throw new TypeError(`Evidence diagnostics artifact violates the version 3 receiver contract: ${diagnosticsValidation.error.issues[0]?.message ?? "invalid diagnostics"}.`);
+    }
     addTextArtifact(
       pendingArtifacts,
       "diagnostics/diagnostics.json",
       "application/json",
-      canonicalJson({ range: { startUs: range.startUs, endUs: range.endUs }, diagnostics }, true),
+      canonicalJson(diagnosticsValidation.data, true),
       diagnostics.length,
     );
     addTextArtifact(
@@ -652,20 +558,30 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     );
   }
   if (inclusions.markers) {
+    const markerDocument = { range: { startUs: range.startUs, endUs: range.endUs }, markers };
+    const markerValidation = evidenceMarkersDocumentSchema.safeParse(markerDocument);
+    if (!markerValidation.success) {
+      throw new TypeError(`Evidence markers artifact violates the version 3 receiver contract: ${markerValidation.error.issues[0]?.message ?? "invalid markers"}.`);
+    }
     addTextArtifact(
       pendingArtifacts,
       "markers/markers.json",
       "application/json",
-      canonicalJson({ range: { startUs: range.startUs, endUs: range.endUs }, markers }, true),
+      canonicalJson(markerValidation.data, true),
       markers.length,
     );
   }
   if (inclusions.notes) {
+    const noteDocument = { range: { startUs: range.startUs, endUs: range.endUs }, notes };
+    const noteValidation = evidenceNotesDocumentSchema.safeParse(noteDocument);
+    if (!noteValidation.success) {
+      throw new TypeError(`Evidence notes artifact violates the version 3 receiver contract: ${noteValidation.error.issues[0]?.message ?? "invalid notes"}.`);
+    }
     addTextArtifact(
       pendingArtifacts,
       "notes/notes.json",
       "application/json",
-      canonicalJson({ range: { startUs: range.startUs, endUs: range.endUs }, notes }, true),
+      canonicalJson(noteValidation.data, true),
       notes.length,
     );
   }
@@ -691,9 +607,10 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     });
   }
 
-  const coveredPaths = ["manifest.json", ...pendingArtifacts.map((artifact) => artifact.path)].sort((left, right) =>
-    compareText(left, right),
-  );
+  const coveredPaths = ([
+    "manifest.json",
+    ...pendingArtifacts.map((artifact) => artifact.path),
+  ] as Array<"manifest.json" | EvidenceArtifactPath>).sort((left, right) => compareText(left, right));
   const manifest: EvidenceBundleManifest = {
     format: "narrowslink/evidence-bundle",
     formatVersion: 3,
@@ -702,12 +619,13 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
       id: session.document.id,
       title: session.document.title,
       formatVersion: session.document.formatVersion,
+      durationUs: session.document.durationUs,
       startedAt: session.document.startedAt,
       displayTimeZone: session.document.displayTimeZone,
       sourceId: session.document.source.id,
       decoderId: session.document.decoder.id,
       decoderRevision: session.document.decoder.revision,
-      schemaHash: session.document.decoder.schemaHash,
+      schemaHash: session.document.decoder.schemaHash.toLowerCase(),
       captureIntegrity: session.captureIntegrity,
     },
     provenance: transportEvidence.summary,
@@ -727,8 +645,12 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
       covers: coveredPaths,
     },
   };
+  const manifestValidation = evidenceBundleManifestSchema.safeParse(manifest);
+  if (!manifestValidation.success) {
+    throw new TypeError(`Evidence manifest violates the version 3 receiver contract: ${manifestValidation.error.issues[0]?.message ?? "invalid manifest"}.`);
+  }
   const manifestBytes = textBytes(canonicalJson(manifest, true));
-  const checksumsByPath = new Map(artifacts.map((artifact) => [artifact.path, artifact.sha256]));
+  const checksumsByPath = new Map<string, string>(artifacts.map((artifact) => [artifact.path, artifact.sha256]));
   checksumsByPath.set("manifest.json", await sha256(manifestBytes));
   const checksumBytes = textBytes(
     `${coveredPaths.map((path) => `${checksumsByPath.get(path)}  ${path}`).join("\n")}\n`,
@@ -740,13 +662,31 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     ["SHA256SUMS", checksumBytes],
   ]);
   const zippable: Zippable = {};
+  let totalUncompressedBytes = 0;
   for (const path of [...entries.keys()].sort((left, right) => compareText(left, right))) {
     const bytes = entries.get(path);
-    if (bytes) zippable[path] = bytes;
+    if (!bytes) continue;
+    if (bytes.byteLength > EVIDENCE_ARCHIVE_LIMITS.entryBytes) {
+      throw new RangeError(`Evidence artifact ${path} exceeds the ${EVIDENCE_ARCHIVE_LIMITS.entryBytes}-byte limit.`);
+    }
+    totalUncompressedBytes += bytes.byteLength;
+    zippable[path] = bytes;
+  }
+  if (entries.size > EVIDENCE_ARCHIVE_LIMITS.entries) {
+    throw new RangeError(`Evidence bundle exceeds the ${EVIDENCE_ARCHIVE_LIMITS.entries}-entry limit.`);
+  }
+  if (totalUncompressedBytes > EVIDENCE_ARCHIVE_LIMITS.totalUncompressedBytes) {
+    throw new RangeError(
+      `Evidence bundle expands beyond the ${EVIDENCE_ARCHIVE_LIMITS.totalUncompressedBytes}-byte receiver limit.`,
+    );
   }
 
   // A fixed local DOS timestamp keeps byte-for-byte output stable when content is stable.
-  return zipSync(zippable, { level: 6, mtime: new Date(1980, 0, 1, 0, 0, 0) });
+  const archive = zipSync(zippable, { level: 6, mtime: new Date(1980, 0, 1, 0, 0, 0) });
+  if (archive.byteLength > EVIDENCE_ARCHIVE_LIMITS.archiveBytes) {
+    throw new RangeError(`Evidence bundle exceeds the ${EVIDENCE_ARCHIVE_LIMITS.archiveBytes}-byte archive limit.`);
+  }
+  return archive;
 }
 
 function safeFilenamePart(value: string): string {

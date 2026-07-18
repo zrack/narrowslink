@@ -17,7 +17,7 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 | UC-002 | Investigate a recorded telemetry fault | Mission or reliability engineer | Supported with constraints | Exact operator-authored incident range |
 | UC-003 | Audit capture-path integrity | Capture engineer or forensic reviewer | Supported with constraints | Integrity assessment and transport evidence |
 | UC-004 | Run decoder and session regressions | Protocol or application engineer | Supported with constraints | Repeatable decoded and diagnostic results |
-| UC-005 | Hand off a verifiable incident bundle | Operator and receiving engineer | Supported with constraints | Checksummed `.nlb` archive |
+| UC-005 | Hand off a verifiable incident bundle | Operator and receiving engineer | Supported with constraints | `.nlb` archive and local verification report |
 
 ## UC-001 — Record live field telemetry
 
@@ -93,18 +93,19 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 
 **Actor:** Operator and receiving engineer
 
-**Outcome:** Package one exact incident range with enough local evidence for another engineer to inspect and verify the archive independently.
+**Outcome:** Package one exact incident range with enough local evidence for another engineer to inspect and verify the received archive through a production, offline receiver workflow.
 
 **Workflow:**
 
 1. Select the operator-authored half-open incident range.
 2. Add the relevant markers and notes, choose optional artifact groups, and retain the mandatory transport events, provenance, bridge journal, and capture-integrity receipt.
 3. Generate and download the `.nlb` ZIP archive.
-4. Verify the manifest, inclusion list, byte sizes, record counts, and SHA-256 checksums after extraction.
+4. On the receiving machine, run `npm run verify:bundle -- incident.nlb` or add `--json` for the stable machine-readable report.
+5. Review the internal-integrity, capture-evidence, provenance-evidence, warnings, exact selection, artifact list, and whole-bundle SHA-256 results; compare the bundle identity through a separately trusted channel when authenticity matters.
 
-**Current constraints:** Checksums establish internal archive integrity but do not authenticate who created the unsigned bundle or whether its originating NarrowsLink build was trustworthy. Raw telemetry, coordinates, identifiers, and notes may be sensitive and must be reviewed before sharing.
+**Current constraints:** The receiver CLI accepts version 3 `.nlb` bundles and treats their ZIP structure and contents as bounded, untrusted input. Exit status `0` establishes internal consistency, not complete capture evidence: a valid bundle can truthfully report `incomplete` or `unknown` capture or provenance evidence. Version 3 bundles are unsigned, so the verifier reports authenticity as not established and cannot prove who created the bundle or whether its originating NarrowsLink build was trustworthy. Raw telemetry, coordinates, identifiers, and notes may be sensitive and must be reviewed before sharing.
 
-**Implementation evidence:** [bundle builder](src/domain/bundle.ts), [bundle tests](src/domain/bundle.test.ts), [session workspace persistence](src/storage/session-storage.ts), the [cross-browser capture-to-evidence gate](tests/e2e/capture-to-evidence.spec.ts), and its [independent archive verifier](tests/e2e/support/archive.ts).
+**Implementation evidence:** [shared evidence contract](src/domain/evidence-contract.ts), [bundle builder](src/domain/bundle.ts), [production receiver verifier](verifier/evidence-verifier.ts), [bounded ZIP reader](verifier/evidence-zip.ts), [receiver CLI](scripts/narrowslink.ts), [bundle tests](src/domain/bundle.test.ts), [session workspace persistence](src/storage/session-storage.ts), the [cross-browser capture-to-evidence gate](tests/e2e/capture-to-evidence.spec.ts), and its [production-verifier adapter](tests/e2e/support/archive.ts).
 
 ## Maintaining this log
 

@@ -178,6 +178,7 @@ function assertUdpJournalStructure(document: SessionDocumentV2, journal: UdpBrid
       entry.sequence <= previousSequence
       || (journal.entriesComplete && entry.sequence !== index)
       || entry.offsetUs < previousOffsetUs
+      || entry.offsetUs > document.durationUs
       || entry.datagrams < previousDatagrams
       || entry.bytes < previousBytes
       || entry.datagrams > journal.datagrams

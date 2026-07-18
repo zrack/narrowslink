@@ -4,23 +4,30 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "narrowslink": "dist-cli/narrowslink.mjs"
+  },
   "engines": {
     "node": ">=20.19"
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run build:app && npm run build:cli",
+    "build:app": "tsc -b && vite build",
+    "build:cli": "vite build --config vite.cli.config.ts",
     "preview": "vite preview",
     "capture:bridge": "node scripts/capture-bridge.mjs",
     "capture:demo": "node scripts/send-demo-udp.mjs",
     "fixture:generate": "node scripts/generate-demo-session.mjs",
+    "verify:bundle": "npm run build:cli --silent && node dist-cli/narrowslink.mjs verify",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:cli": "node scripts/cli-smoke.mjs",
     "test:e2e": "npm run build && playwright test",
     "test:e2e:run": "playwright test",
     "test:e2e:headed": "npm run build && playwright test --headed",
-    "check": "npm run typecheck && npm run test && npm run build && npm run test:e2e:run"
+    "check": "npm run typecheck && npm run test && npm run build && npm run test:cli && npm run test:e2e:run"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",

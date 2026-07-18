@@ -19,6 +19,7 @@ NarrowsLink has not published a tagged release. Until a maintainer publishes a m
 - Session format v2 transport-event logs and terminal capture-integrity receipts, capture-path diagnostics, and explicit unknown integrity for unchanged legacy v1 imports. (#18)
 - Independently auditable transport provenance for new captures, including per-datagram UDP endpoint attribution, a bounded bridge-side lifecycle journal, explicit unavailable host drop counters, serial device and negotiated-setting evidence, a structured workspace inspector, and mandatory provenance artifacts in evidence bundles.
 - Locally generated `.nlb` evidence archives with selectable artifacts, mandatory transport events, provenance, bridge journals, and integrity receipts, plus manifest metadata, record counts, byte sizes, and SHA-256 checksums.
+- Production receiver CLI for bounded, offline verification of version 3 `.nlb` bundles, with strict archive, path, artifact, session-duration, and cross-document validation; human-readable and stable JSON reports; and separate internal-integrity, evidence-completeness, and unsigned-authenticity verdicts.
 - MIT licensing.
 - GitHub collaboration infrastructure, including CI, issue forms, pull-request guidance, Dependabot, security and support policies, and a code of conduct. (#5, #14)
 

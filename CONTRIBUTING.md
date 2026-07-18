@@ -58,7 +58,9 @@ Available commands:
 | `npm run typecheck` | Validate the TypeScript project references |
 | `npm test` | Run the Vitest suite once |
 | `npm run test:watch` | Run Vitest in watch mode |
-| `npm run build` | Typecheck and create the production bundle |
+| `npm run build` | Typecheck and create the production browser application and receiver CLI |
+| `npm run build:cli` | Build the local `narrowslink verify` receiver CLI |
+| `npm run test:cli` | Smoke-test the built receiver entry directly and through a package-style symlink |
 | `npm run preview` | Serve the production bundle locally |
 | `npm run test:e2e` | Build and run the Playwright release suite in Chromium, Firefox, and WebKit |
 | `npm run test:e2e:run` | Run Playwright against an existing production build |
@@ -67,6 +69,7 @@ Available commands:
 | `npm run capture:bridge` | Start the token-protected local UDP capture bridge |
 | `npm run capture:demo` | Send checked-in fixture frames as real UDP datagrams |
 | `npm run fixture:generate` | Regenerate the deterministic bundled replay |
+| `npm run verify:bundle -- incident.nlb` | Build the receiver CLI and verify a local version 3 evidence bundle; add `--json` for machine-readable output |
 
 ## Regenerating the fixture
 
@@ -104,6 +107,9 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 - Keep decoder, replay, range, incident, and bundle behavior pure where practical and add automated tests for changes.
 - Make evidence manifests truthful: every listed file must exist, every inclusion toggle must be honored, and hashes must cover the exact emitted bytes.
 - Always emit and hash `transport/events.json`, `transport/provenance.json`, `transport/journal.json`, and `transport/integrity-receipt.json`; transport evidence is a mandatory bundle baseline, not an optional group.
+- Treat received `.nlb` bytes as untrusted. Preflight bounded ZIP structure and canonical paths before decompression, reject unsupported or ambiguous archive features, and apply strict resource limits, UTF-8 parsing, schemas, counts, ranges, and cross-artifact reconciliation.
+- Treat the version 3 manifest duration as authoritative: every selected range, timed event, raw or decoded record, diagnostic, annotation, receipt stop, and bridge-journal offset must remain within it.
+- Keep receiver verification in production code and make browser or test helpers thin adapters to it. Report internal consistency, capture and provenance evidence, and authenticity separately; do not turn an unsigned consistency pass into an authenticity claim or treat truthfully incomplete or unknown evidence as tampering.
 - Do not add a required cloud dependency for capture, replay, analysis, or export.
 
 ## Where changes belong
@@ -114,7 +120,8 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 | Frame integrity and family decoding | `src/domain/decoder.ts` |
 | Validation, metrics, diagnostics, and incidents | `src/domain/session.ts` |
 | Replay timing | `src/replay/` |
-| Evidence archive generation | `src/domain/bundle.ts` |
+| Evidence archive contract and generation | `src/domain/evidence-contract.ts`, `src/domain/bundle.ts` |
+| Evidence receiver verification and CLI | `verifier/`, `scripts/narrowslink.ts`, `vite.cli.config.ts` |
 | Session serialization and import behavior | `src/data/session-file.ts`, `src/data/load-session.ts` |
 | Capture lifecycle and session finalization | `src/capture/CaptureDialog.tsx`, `src/capture/recorder.ts` |
 | Serial capture and NSL-01 assembly | `src/capture/web-serial.ts`, `src/capture/nsl01-serial-assembler.ts` |
@@ -122,7 +129,7 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 | Durable session-document library | `src/storage/session-library.ts` |
 | Marker, note, and authored-range persistence | `src/storage/session-storage.ts` |
 | Workspace UI and interactions | `src/App.tsx`, `src/styles.css` |
-| Browser release, accessibility, and archive verification | `tests/e2e/`, `playwright.config.ts` |
+| Browser release, accessibility, and capture-to-receiver verification | `tests/e2e/`, `playwright.config.ts` |
 | Deterministic demo data | `scripts/generate-demo-session.mjs` |
 
 The approved visual source is `docs/design/narrowslink-mission-timeline-source.png`. Preserve its restrained, square-cornered, instrument-grade hierarchy unless a change intentionally establishes a new documented direction.
@@ -145,12 +152,13 @@ Screenshots are evidence, not the review itself. Keep `design-qa.md` focused on 
 - Include known-good and malformed cases when changing packet behavior.
 - Test exact boundaries at `startUs` and `endUs`; values at `endUs` must be excluded.
 - Keep clock tests deterministic by injecting the monotonic time source and frame scheduler.
-- Verify evidence changes by inspecting archive paths, manifest metadata, record counts, and SHA-256 values rather than only checking that a download occurred.
+- Verify evidence changes through the production receiver as well as direct contract assertions; inspect archive paths, manifest metadata, record counts, half-open ranges, cross-document semantics, and SHA-256 values rather than only checking that a download occurred.
+- Exercise the receiver with full and minimal bundles, legacy-v1 and pre-provenance-v2 evidence, UDP and serial provenance, disclosed incomplete or unknown evidence, and adversarial archives. Cover strict path and ZIP limits, malformed JSON/NDJSON/CSV, recomputed-checksum semantic tampering, human and JSON reports, and exit statuses `0`, `1`, and `2`.
 - For session-library changes, cover valid v1 and v2 saves, the pre-database 32 MiB limit, content identity, exact-duplicate behavior, newest-first listing, validated reopen, corruption, missing entries, replay-and-workspace removal, residual-workspace warnings, unavailable IndexedDB, quota exhaustion, and transaction failures.
 - For UI changes, exercise the bundled replay, file-import error state, saved-session save/list/reopen/remove and failure states, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
 - Keep critical dialogs and workspace states clean under axe rules tagged WCAG A/AA. Test keyboard focus when an action, dialog phase, incident selection, or responsive layout replaces the focused element; retain visible non-color state and severity cues.
 - For capture changes, exercise a real loopback UDP socket from start through stop, re-import, replay, annotation, and bundle export. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage.
-- For integrity changes, add a failure round trip through capture finalization, JSON serialization, replay parsing, operator-authored half-open range projection, bundle inspection, and independent SHA-256 verification. Cover both a UDP and serial path when the contract affects both.
+- For integrity changes, add a failure round trip through capture finalization, JSON serialization, replay parsing, operator-authored half-open range projection, bundle generation, and production receiver verification. Cover both a UDP and serial path when the contract affects both.
 
 ## Contribution workflow
 
