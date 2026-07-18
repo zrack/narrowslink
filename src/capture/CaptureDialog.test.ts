@@ -8,7 +8,9 @@ import {
   ensureDurationLimitTransportEvent,
   flushOwnedBufferedUdpDatagrams,
   monotonicCaptureDurationUs,
+  ownedUdpCaptureJournal,
   retainSerialAssemblerTail,
+  serialCaptureProvenance,
   serialTransportFailureEvent,
   stopUdpCaptureIfOwned,
   udpSequenceDiscontinuityEvent,
@@ -93,6 +95,40 @@ describe("CaptureDialog UDP ownership", () => {
 });
 
 describe("CaptureDialog UDP integrity", () => {
+  it("retains only the owned bridge journal as immutable session provenance", () => {
+    const status = bridgeStatus("owned", { datagrams: 1, bytes: 4, durationUs: 10 }, "stopped");
+    status.captureJournal = {
+      captureId: "owned",
+      startedAt: "2026-07-16T00:00:00.000Z",
+      endedAt: "2026-07-16T00:00:00.001Z",
+      state: "clean",
+      bind: {
+        requestedHost: "127.0.0.1",
+        requestedPort: 0,
+        host: "127.0.0.1",
+        port: 9_104,
+        family: "IPv4",
+      },
+      multicast: null,
+      datagrams: 1,
+      bytes: 4,
+      kernelDroppedDatagrams: null,
+      kernelDroppedDatagramsSource: "unavailable",
+      entriesComplete: true,
+      omittedEntries: 0,
+      entries: [
+        { sequence: 0, type: "capture-started", at: "2026-07-16T00:00:00.000Z", offsetUs: 0, datagrams: 0, bytes: 0 },
+        { sequence: 1, type: "capture-stopped", at: "2026-07-16T00:00:00.001Z", offsetUs: 10, datagrams: 1, bytes: 4 },
+      ],
+    };
+
+    const journal = ownedUdpCaptureJournal(status, "owned");
+    expect(journal).toEqual(status.captureJournal);
+    expect(journal).not.toBe(status.captureJournal);
+    expect(journal?.entries).not.toBe(status.captureJournal.entries);
+    expect(ownedUdpCaptureJournal(status, "foreign")).toBeNull();
+  });
+
   it("accepts exact bridge, SSE, and recorder parity including a zero-length datagram", () => {
     const recorder = new CaptureRecorder({
       sessionId: "zero-datagram-session",
@@ -172,6 +208,37 @@ describe("CaptureDialog UDP integrity", () => {
       fatal: true,
     };
     expect(() => assertUdpCaptureIntegrity(fatal, "owned", snapshot)).toThrow("fatal socket-failed");
+  });
+});
+
+describe("CaptureDialog serial provenance", () => {
+  it("preserves browser-exposed identifiers and the accepted open settings explicitly", () => {
+    expect(serialCaptureProvenance({
+      label: "Serial device",
+      info: { usbVendorId: 0x1234 },
+    }, {
+      baudRate: 115_200,
+      dataBits: 8,
+      stopBits: 1,
+      parity: "none",
+      bufferSize: 65_536,
+      flowControl: "none",
+    })).toEqual({
+      transport: "serial",
+      device: {
+        usbVendorId: 0x1234,
+        usbProductId: null,
+        bluetoothServiceClassId: null,
+      },
+      settings: {
+        baudRate: 115_200,
+        dataBits: 8,
+        stopBits: 1,
+        parity: "none",
+        bufferSize: 65_536,
+        flowControl: "none",
+      },
+    });
   });
 });
 

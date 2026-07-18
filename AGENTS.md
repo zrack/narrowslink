@@ -21,13 +21,22 @@ Treat `docs/design/narrowslink-mission-timeline-source.png` as the source of tru
 - Store times as integer microsecond offsets from a UTC session start. Display them in the session's declared IANA timezone.
 - Incident ranges are half-open: `[startUs, endUs)`.
 - Preserve malformed and partial frames as inspectable diagnostics; do not silently discard them.
+- Persist only validated canonical session documents in the local library. Use SHA-256 over canonical `.nlsession` bytes as the content identity, keep exact duplicate saves idempotent, and do not rewrite v1 imports as v2.
+- Reopen a library entry only after re-hashing its stored bytes, verifying canonical content and metadata, parsing JSON, and running the existing session validation and decoder pipeline. Treat mismatches as corruption rather than silently repairing or replacing evidence.
+- Do not claim that a session is saved until its IndexedDB transaction commits. Enforce the shared 32 MiB canonical-file limit before opening the database, and surface oversized sessions, unavailable storage, quota exhaustion, blocked opens, transaction failures, corruption, and missing entries while keeping an already validated in-memory replay usable.
+- Removing a saved replay must also attempt to clear its separately persisted marker, note, and authored-range workspace. Keep an active in-memory replay open, leave exported files untouched, and surface a persistent residual-workspace warning when the replay is removed but workspace cleanup cannot complete.
+- Populate the Sessions rail only from genuine loaded or persisted session state. Never add decorative session rows; preserve the source-aligned two-line density and provide the same real library through a labeled narrow-screen dialog.
 - New live captures must emit session format v2 with immutable transport events and a terminal capture-integrity receipt. Keep v1 imports unchanged and label their capture integrity as unknown rather than inferring a clean capture.
 - Never infer transport-reported counters from browser or recorder totals. Missing UDP terminal status remains null and yields incomplete `udp-browser-observed` evidence; recorder finalization without adapter evidence remains incomplete and `recorder-only`.
 - Reconcile receipt counters and issue codes for every v2 status. Complete event logs require exact matching events; an explicitly incomplete event log may omit an exhausted-budget event but must retain the corresponding receipt code and counters.
+- Preserve transport provenance as explicit evidence rather than inference. New UDP captures must retain each remote endpoint and the bridge's bounded capture journal; new serial captures must retain the selected device identifiers the browser exposes and the negotiated port settings. Represent unavailable host counters as null with their evidence source, never as zero.
 - Project transport anomalies as `capture-path` diagnostics so operators can distinguish local capture failures from link, decoder, and unattributed telemetry evidence.
 - Evidence exports must produce a real local archive and describe exactly which artifacts they contain.
-- Every evidence bundle must include the range-filtered transport event log and the whole-session integrity receipt, even when optional artifact groups are excluded.
+- Every evidence bundle must include the range-filtered transport event log, whole-session provenance and bridge-journal artifacts, and whole-session integrity receipt, even when optional artifact groups are excluded.
+- Treat received `.nlb` bytes as untrusted. The production receiver verifier must bound and preflight ZIP structure before decompression, accept only canonical format paths and strict artifact schemas, and reconcile checksums, inclusions, counts, ranges, receipt, provenance, journal, and decoder identity. Keep test helpers as adapters to production verification, and report internal consistency, evidence completeness, and unsigned authenticity as separate claims.
+- Bind every exported selection, event, record, decoded frame, diagnostic, annotation, receipt stop, and journal offset to the manifest's bounded whole-session duration.
 - Keep the core decoder, replay, incident, and bundle logic pure and covered by automated tests.
+- Preserve the cross-browser release gate from real loopback UDP capture through validated `.nlsession` reimport, replay, operator-authored evidence, independently verified `.nlb` archive, persistence, failure recovery, and removal. Keep physical Web Serial and manual assistive-technology claims explicitly separate from automated browser-engine evidence.
 
 ## Documentation Ownership
 

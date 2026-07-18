@@ -18,6 +18,7 @@ import {
   type SessionDocumentV2,
   type SourceRecord,
   type TransportEvent,
+  type UdpBridgeJournal,
 } from "./types";
 
 function payloadFor(familyId: FamilyId): Uint8Array {
@@ -112,6 +113,73 @@ function v2Document(): SessionDocumentV2 {
   };
 }
 
+function cleanUdpJournal(replay: SessionDocumentV2): UdpBridgeJournal {
+  const bytes = retainedBytes(replay);
+  const endedAt = "2026-07-16T04:38:18.000Z";
+  return {
+    captureId: "session-test-bridge",
+    startedAt: replay.startedAt,
+    endedAt,
+    state: "clean",
+    bind: {
+      requestedHost: "127.0.0.1",
+      requestedPort: 0,
+      host: "127.0.0.1",
+      port: 9_104,
+      family: "IPv4",
+    },
+    multicast: null,
+    datagrams: replay.records.length,
+    bytes,
+    kernelDroppedDatagrams: null,
+    kernelDroppedDatagramsSource: "unavailable",
+    entriesComplete: true,
+    omittedEntries: 0,
+    entries: [
+      {
+        sequence: 0,
+        type: "capture-started",
+        at: replay.startedAt,
+        offsetUs: 0,
+        datagrams: 0,
+        bytes: 0,
+      },
+      {
+        sequence: 1,
+        type: "capture-stopped",
+        at: endedAt,
+        offsetUs: replay.durationUs,
+        datagrams: replay.records.length,
+        bytes,
+      },
+    ],
+  };
+}
+
+function v2DocumentWithVerifiedUdpProvenance(): SessionDocumentV2 {
+  const replay = v2Document();
+  const endpoint = { address: "192.0.2.44", port: 55_555, family: "IPv4" as const };
+  for (const sourceRecord of replay.records) {
+    sourceRecord.transport.remoteEndpoint = { ...endpoint };
+    sourceRecord.transport.kernelDropCounter = null;
+  }
+  replay.transportProvenance = {
+    schemaVersion: 1,
+    transport: "udp",
+    sourceId: replay.source.id,
+    status: "verified",
+    issueCodes: ["udp-kernel-drop-counter-unavailable"],
+    journal: cleanUdpJournal(replay),
+    endpointAttribution: {
+      totalRecords: replay.records.length,
+      attributedRecords: replay.records.length,
+      unattributedRecords: 0,
+      distinctEndpoints: [endpoint],
+    },
+  };
+  return replay;
+}
+
 function v2SerialDocument(): SessionDocumentV2 {
   const replay = v2Document();
   const bytes = retainedBytes(replay);
@@ -127,6 +195,31 @@ function v2SerialDocument(): SessionDocumentV2 {
       transportReportedUnits: null,
       transportReportedBytes: null,
     },
+  };
+  return replay;
+}
+
+function v2FileDocument(): SessionDocumentV2 {
+  const replay = v2Document();
+  const bytes = retainedBytes(replay);
+  replay.source = { id: "harbor-udp", kind: "file", label: "Imported capture" };
+  for (const sourceRecord of replay.records) sourceRecord.transport = { kind: "file" };
+  replay.captureIntegrity = {
+    schemaVersion: 1,
+    status: "unknown",
+    assessmentBasis: "file-source-unassessed",
+    stopDisposition: "not-observed",
+    stopOffsetUs: null,
+    eventLogComplete: false,
+    input: {
+      unit: "unknown",
+      observedUnits: null,
+      observedBytes: null,
+      transportReportedUnits: null,
+      transportReportedBytes: null,
+    },
+    retained: { records: replay.records.length, bytes },
+    issueCodes: ["file-source-unassessed"],
   };
   return replay;
 }
@@ -260,6 +353,266 @@ describe("session parsing", () => {
     expect(Object.isFrozen(parsed.document.records)).toBe(true);
     expect(Object.isFrozen(parsed.transportEvents)).toBe(true);
     expect(Object.isFrozen(parsed.captureIntegrity)).toBe(true);
+
+    const v1WithV2Endpoint = structuredClone(legacy);
+    v1WithV2Endpoint.records[0]!.transport.remoteEndpoint = {
+      address: "192.0.2.44",
+      port: 55_555,
+      family: "IPv4",
+    };
+    expect(() => validateSessionDocument(v1WithV2Endpoint)).toThrow(SessionValidationError);
+  });
+
+  it("keeps pre-provenance version 2 documents valid and does not synthesize provenance", () => {
+    const replay = v2Document();
+    const validated = validateSessionDocument(replay);
+    const parsed = parseSession(replay);
+
+    expect(validated).toMatchObject({ formatVersion: 2 });
+    expect(Object.keys(validated)).toEqual([
+      "format",
+      "id",
+      "title",
+      "startedAt",
+      "displayTimeZone",
+      "durationUs",
+      "source",
+      "decoder",
+      "records",
+      "incidents",
+      "formatVersion",
+      "transportEvents",
+      "captureIntegrity",
+    ]);
+    expect(Object.keys(validated.records[0]!)).toEqual([
+      "id",
+      "index",
+      "sourceId",
+      "offsetUs",
+      "dataHex",
+      "captureBytes",
+      "wireBytes",
+      "transport",
+      "signal",
+    ]);
+    expect("transportProvenance" in parsed.document).toBe(false);
+    expect(parsed.transportProvenance).toBeUndefined();
+  });
+
+  it("validates and exposes frozen verified UDP provenance without downgrading unavailable kernel counters", () => {
+    const parsed = parseSession(v2DocumentWithVerifiedUdpProvenance());
+
+    expect(parsed.transportProvenance).toMatchObject({
+      transport: "udp",
+      status: "verified",
+      issueCodes: ["udp-kernel-drop-counter-unavailable"],
+      journal: {
+        state: "clean",
+        bind: { requestedPort: 0, port: 9_104 },
+        kernelDroppedDatagrams: null,
+        kernelDroppedDatagramsSource: "unavailable",
+      },
+      endpointAttribution: { attributedRecords: 5, unattributedRecords: 0 },
+    });
+    expect(parsed.captureIntegrity.status).toBe("verified");
+    expect(parsed.diagnostics.some((event) => event.id === "transport-provenance-incomplete")).toBe(false);
+    expect(Object.isFrozen(parsed.transportProvenance)).toBe(true);
+    expect(parsed.transportProvenance?.transport === "udp"
+      && Object.isFrozen(parsed.transportProvenance.journal?.entries)).toBe(true);
+  });
+
+  it("rejects inconsistent UDP provenance identity, journal ordering, counters, endpoints, and receipt status", () => {
+    const wrongSource = v2DocumentWithVerifiedUdpProvenance();
+    if (!wrongSource.transportProvenance) throw new Error("Expected provenance");
+    wrongSource.transportProvenance.sourceId = "another-source";
+    expect(() => validateSessionDocument(wrongSource)).toThrow("does not match the declared session source");
+
+    const wrongStart = v2DocumentWithVerifiedUdpProvenance();
+    if (wrongStart.transportProvenance?.transport !== "udp" || !wrongStart.transportProvenance.journal) {
+      throw new Error("Expected UDP journal");
+    }
+    wrongStart.transportProvenance.journal.startedAt = "2026-07-16T04:38:13.000Z";
+    expect(() => validateSessionDocument(wrongStart)).toThrow("journal start does not match");
+
+    const badOrder = v2DocumentWithVerifiedUdpProvenance();
+    if (badOrder.transportProvenance?.transport !== "udp" || !badOrder.transportProvenance.journal) {
+      throw new Error("Expected UDP journal");
+    }
+    badOrder.transportProvenance.journal.entries = [
+      ...badOrder.transportProvenance.journal.entries.slice(0, 1),
+      { ...badOrder.transportProvenance.journal.entries[1]!, sequence: 0 },
+    ];
+    expect(() => validateSessionDocument(badOrder)).toThrow("not monotonic");
+
+    const wallClockCorrection = v2DocumentWithVerifiedUdpProvenance();
+    if (
+      wallClockCorrection.transportProvenance?.transport !== "udp"
+      || !wallClockCorrection.transportProvenance.journal
+    ) {
+      throw new Error("Expected UDP journal");
+    }
+    wallClockCorrection.transportProvenance.journal.entries = [
+      ...wallClockCorrection.transportProvenance.journal.entries.slice(0, 1),
+      { ...wallClockCorrection.transportProvenance.journal.entries[1]!, at: "2026-07-16T04:38:11.000Z" },
+    ];
+    wallClockCorrection.transportProvenance.journal.endedAt = "2026-07-16T04:38:11.000Z";
+    expect(validateSessionDocument(wallClockCorrection)).toMatchObject({
+      transportProvenance: { status: "verified" },
+    });
+
+    const cleanJournalWithError = v2DocumentWithVerifiedUdpProvenance();
+    if (
+      cleanJournalWithError.transportProvenance?.transport !== "udp"
+      || !cleanJournalWithError.transportProvenance.journal
+    ) {
+      throw new Error("Expected UDP journal");
+    }
+    const cleanTerminal = cleanJournalWithError.transportProvenance.journal.entries.at(-1)!;
+    cleanJournalWithError.transportProvenance.journal.entries = [
+      cleanJournalWithError.transportProvenance.journal.entries[0]!,
+      {
+        sequence: 1,
+        type: "bridge-error",
+        at: "2026-07-16T04:38:15.000Z",
+        offsetUs: 3_000_000,
+        datagrams: 2,
+        bytes: cleanTerminal.bytes,
+        code: "socket-error",
+        message: "The bridge reported an error.",
+        fatal: false,
+      },
+      { ...cleanTerminal, sequence: 2 },
+    ];
+    expect(() => validateSessionDocument(cleanJournalWithError)).toThrow(
+      "error entries require incomplete journal state",
+    );
+
+    const shorterBridgeClock = v2DocumentWithVerifiedUdpProvenance();
+    if (
+      shorterBridgeClock.transportProvenance?.transport !== "udp"
+      || !shorterBridgeClock.transportProvenance.journal
+    ) {
+      throw new Error("Expected UDP journal");
+    }
+    const bridgeTerminal = shorterBridgeClock.transportProvenance.journal.entries.at(-1)!;
+    shorterBridgeClock.transportProvenance.journal.entries = [
+      ...shorterBridgeClock.transportProvenance.journal.entries.slice(0, -1),
+      { ...bridgeTerminal, offsetUs: shorterBridgeClock.durationUs - 1 },
+    ];
+    expect(validateSessionDocument(shorterBridgeClock)).toMatchObject({
+      transportProvenance: { status: "verified" },
+    });
+
+    const oversizedJournal = v2DocumentWithVerifiedUdpProvenance();
+    if (oversizedJournal.transportProvenance?.transport !== "udp" || !oversizedJournal.transportProvenance.journal) {
+      throw new Error("Expected UDP journal");
+    }
+    const firstEntry = oversizedJournal.transportProvenance.journal.entries[0]!;
+    oversizedJournal.transportProvenance.journal.entries = Array.from({ length: 129 }, (_, index) => ({
+      ...firstEntry,
+      sequence: index,
+    }));
+    expect(() => validateSessionDocument(oversizedJournal)).toThrow(SessionValidationError);
+
+    const badSummary = v2DocumentWithVerifiedUdpProvenance();
+    if (badSummary.transportProvenance?.transport !== "udp") throw new Error("Expected UDP provenance");
+    badSummary.transportProvenance.endpointAttribution.attributedRecords -= 1;
+    badSummary.transportProvenance.endpointAttribution.unattributedRecords += 1;
+    expect(() => validateSessionDocument(badSummary)).toThrow("summary does not match");
+
+    const undocumentedCounterMismatch = v2DocumentWithVerifiedUdpProvenance();
+    if (
+      undocumentedCounterMismatch.transportProvenance?.transport !== "udp"
+      || !undocumentedCounterMismatch.transportProvenance.journal
+    ) throw new Error("Expected UDP journal");
+    undocumentedCounterMismatch.transportProvenance.journal.datagrams += 1;
+    const terminal = undocumentedCounterMismatch.transportProvenance.journal.entries.at(-1)!;
+    undocumentedCounterMismatch.transportProvenance.journal.entries = [
+      ...undocumentedCounterMismatch.transportProvenance.journal.entries.slice(0, -1),
+      { ...terminal, datagrams: terminal.datagrams + 1 },
+    ];
+    expect(() => validateSessionDocument(undocumentedCounterMismatch)).toThrow("counters and issue codes");
+
+    const receiptMismatch = v2DocumentWithVerifiedUdpProvenance();
+    receiptMismatch.captureIntegrity.status = "incomplete";
+    receiptMismatch.captureIntegrity.issueCodes = ["transport-provenance-incomplete"];
+    expect(() => validateSessionDocument(receiptMismatch)).toThrow("Capture integrity and transport-provenance status");
+  });
+
+  it("accepts explicitly incomplete provenance and projects its mismatch as a capture-path diagnostic", () => {
+    const replay = v2DocumentWithVerifiedUdpProvenance();
+    if (replay.transportProvenance?.transport !== "udp" || !replay.transportProvenance.journal) {
+      throw new Error("Expected UDP journal");
+    }
+    replay.transportProvenance.status = "incomplete";
+    replay.transportProvenance.issueCodes = [
+      "udp-bridge-journal-counter-mismatch",
+      "udp-kernel-drop-counter-unavailable",
+    ];
+    replay.transportProvenance.journal.datagrams += 1;
+    replay.transportProvenance.journal.bytes += 1;
+    const terminal = replay.transportProvenance.journal.entries.at(-1)!;
+    replay.transportProvenance.journal.entries = [
+      ...replay.transportProvenance.journal.entries.slice(0, -1),
+      { ...terminal, datagrams: terminal.datagrams + 1, bytes: terminal.bytes + 1 },
+    ];
+    replay.captureIntegrity.status = "incomplete";
+    replay.captureIntegrity.issueCodes = ["transport-provenance-incomplete"];
+
+    const parsed = parseSession(replay);
+    expect(parsed.transportProvenance?.status).toBe("incomplete");
+    expect(parsed.diagnostics).toContainEqual(expect.objectContaining({
+      id: "transport-provenance-incomplete",
+      domain: "capture-path",
+      startUs: 0,
+      endUs: replay.durationUs,
+    }));
+  });
+
+  it("requires complete serial settings while accepting explicitly unavailable device identifiers", () => {
+    const replay = v2SerialDocument();
+    replay.transportProvenance = {
+      schemaVersion: 1,
+      transport: "serial",
+      sourceId: replay.source.id,
+      status: "verified",
+      issueCodes: ["serial-device-identifiers-unavailable"],
+      device: { usbVendorId: null, usbProductId: null, bluetoothServiceClassId: null },
+      settings: {
+        baudRate: 115_200,
+        dataBits: 8,
+        stopBits: 1,
+        parity: "none",
+        bufferSize: 65_536,
+        flowControl: "none",
+      },
+    };
+    expect(validateSessionDocument(replay)).toMatchObject({
+      transportProvenance: { status: "verified", issueCodes: ["serial-device-identifiers-unavailable"] },
+      captureIntegrity: { status: "verified" },
+    });
+
+    const missingSetting = structuredClone(replay) as unknown as Record<string, unknown>;
+    const provenance = missingSetting.transportProvenance as { settings: Record<string, unknown> };
+    delete provenance.settings.baudRate;
+    expect(() => validateSessionDocument(missingSetting)).toThrow(SessionValidationError);
+
+    const falselyIncomplete = structuredClone(replay);
+    if (!falselyIncomplete.transportProvenance) throw new Error("Expected serial provenance");
+    falselyIncomplete.transportProvenance.status = "incomplete";
+    falselyIncomplete.captureIntegrity.status = "incomplete";
+    falselyIncomplete.captureIntegrity.issueCodes = ["transport-provenance-incomplete"];
+    expect(() => validateSessionDocument(falselyIncomplete)).toThrow("must produce verified transport provenance");
+  });
+
+  it("rejects UDP-only kernel counters on version 2 serial and file records", () => {
+    const serial = v2SerialDocument();
+    (serial.records[0]!.transport as { kind: "serial"; kernelDropCounter?: null }).kernelDropCounter = null;
+    expect(() => validateSessionDocument(serial)).toThrow(SessionValidationError);
+
+    const file = v2FileDocument();
+    (file.records[0]!.transport as { kind: "file"; kernelDropCounter?: number }).kernelDropCounter = 0;
+    expect(() => validateSessionDocument(file)).toThrow(SessionValidationError);
   });
 
   it("maps durable version 2 transport evidence into capture-path diagnostics with exact range semantics", () => {

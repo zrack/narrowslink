@@ -11,6 +11,7 @@ import {
   parseUdpBridgeStatus,
   UdpBridgeClient,
   type UdpBridgeDatagram,
+  type UdpCaptureLifecycleJournal,
 } from "./udp-bridge";
 
 const TOKEN = "test-token-with-enough-entropy-1234";
@@ -24,6 +25,38 @@ function capturePayload(overrides: Record<string, unknown> = {}) {
     datagrams: 0,
     bytes: 0,
     durationUs: 0,
+    ...overrides,
+  };
+}
+
+function captureJournalPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    captureId: "capture-owned-by-client-a",
+    startedAt: "2026-07-16T00:00:00.000Z",
+    endedAt: null,
+    state: "active",
+    bind: {
+      requestedHost: "127.0.0.1",
+      requestedPort: 9_104,
+      host: "127.0.0.1",
+      port: 9_104,
+      family: "IPv4",
+    },
+    multicast: null,
+    datagrams: 0,
+    bytes: 0,
+    kernelDroppedDatagrams: null,
+    kernelDroppedDatagramsSource: "unavailable",
+    entriesComplete: true,
+    omittedEntries: 0,
+    entries: [{
+      sequence: 0,
+      type: "capture-started",
+      at: "2026-07-16T00:00:00.000Z",
+      offsetUs: 0,
+      datagrams: 0,
+      bytes: 0,
+    }],
     ...overrides,
   };
 }
@@ -42,6 +75,7 @@ function statusPayload(overrides: Record<string, unknown> = {}) {
     udp: null,
     multicast: null,
     capture: null,
+    captureJournal: null,
     subscribers: 1,
     lastError: null,
     ...overrides,
@@ -100,6 +134,154 @@ describe("UDP bridge browser protocol", () => {
       byteLength: 2,
       dataBase64: "AA==",
     })).toThrow("does not match");
+  });
+
+  it("validates a bounded immutable capture lifecycle journal without losing endpoint provenance", () => {
+    const endedAt = "2026-07-16T00:00:01.000Z";
+    const capture = capturePayload({ endedAt, datagrams: 1, bytes: 4, durationUs: 1_000_000 });
+    const journal = captureJournalPayload({
+      endedAt,
+      state: "clean",
+      datagrams: 1,
+      bytes: 4,
+      entries: [
+        {
+          sequence: 0,
+          type: "capture-started",
+          at: "2026-07-16T00:00:00.000Z",
+          offsetUs: 0,
+          datagrams: 0,
+          bytes: 0,
+        },
+        {
+          sequence: 1,
+          type: "capture-stopped",
+          at: endedAt,
+          offsetUs: 1_000_000,
+          datagrams: 1,
+          bytes: 4,
+        },
+      ],
+    });
+    const parsed = parseUdpBridgeStatus(statusPayload({
+      state: "stopped",
+      udp: { host: "127.0.0.1", port: 9_104, family: "IPv4" },
+      capture,
+      captureJournal: journal,
+    }));
+    const parsedJournal = parsed.captureJournal as UdpCaptureLifecycleJournal;
+    expect(parsedJournal).toMatchObject({
+      captureId: "capture-owned-by-client-a",
+      state: "clean",
+      datagrams: 1,
+      bytes: 4,
+      kernelDroppedDatagrams: null,
+      kernelDroppedDatagramsSource: "unavailable",
+      entriesComplete: true,
+      omittedEntries: 0,
+    });
+    expect(Object.isFrozen(parsedJournal)).toBe(true);
+    expect(Object.isFrozen(parsedJournal.bind)).toBe(true);
+    expect(Object.isFrozen(parsedJournal.entries)).toBe(true);
+    expect(Object.isFrozen(parsedJournal.entries[0])).toBe(true);
+
+    const datagram = parseUdpBridgeDatagram({
+      protocolVersion: 1,
+      captureId: "capture-owned-by-client-a",
+      sequence: 0,
+      offsetUs: 42,
+      receivedAt: "2026-07-16T00:00:00.000Z",
+      remoteAddress: "2001:db8::42",
+      remotePort: 55_555,
+      remoteFamily: "IPv6",
+      byteLength: 4,
+      dataBase64: "AID/pQ==",
+    });
+    expect(datagram).toMatchObject({
+      remoteAddress: "2001:db8::42",
+      remotePort: 55_555,
+      remoteFamily: "IPv6",
+    });
+  });
+
+  it("rejects unbounded or contradictory capture lifecycle journals", () => {
+    const tooManyEntries = Array.from({ length: 129 }, (_, sequence) => ({
+      sequence,
+      type: sequence === 0 ? "capture-started" : "bridge-error",
+      at: "2026-07-16T00:00:00.000Z",
+      offsetUs: sequence,
+      datagrams: 0,
+      bytes: 0,
+      ...(sequence === 0 ? {} : { code: "test-error", message: "bounded error", fatal: false }),
+    }));
+    expect(() => parseUdpBridgeStatus(statusPayload({
+      state: "capturing",
+      udp: { host: "127.0.0.1", port: 9_104, family: "IPv4" },
+      capture: capturePayload(),
+      captureJournal: captureJournalPayload({
+        state: "incomplete",
+        entriesComplete: false,
+        omittedEntries: 1,
+        entries: tooManyEntries,
+      }),
+    }))).toThrow("bounded lifecycle entry list");
+
+    expect(() => parseUdpBridgeStatus(statusPayload({
+      state: "capturing",
+      udp: { host: "127.0.0.1", port: 9_104, family: "IPv4" },
+      capture: capturePayload({ datagrams: 1, bytes: 4 }),
+      captureJournal: captureJournalPayload(),
+    }))).toThrow("terminal counters do not match");
+
+    expect(() => parseUdpBridgeStatus(statusPayload({
+      state: "capturing",
+      udp: { host: "127.0.0.1", port: 9_104, family: "IPv4" },
+      capture: capturePayload(),
+      captureJournal: captureJournalPayload({
+        kernelDroppedDatagrams: 0,
+        kernelDroppedDatagramsSource: "estimated",
+      }),
+    }))).toThrow("must remain null with an unavailable source");
+
+    const endedAt = "2026-07-16T00:00:01.000Z";
+    expect(() => parseUdpBridgeStatus(statusPayload({
+      state: "stopped",
+      udp: { host: "127.0.0.1", port: 9_104, family: "IPv4" },
+      capture: capturePayload({ endedAt, durationUs: 1_000_000 }),
+      captureJournal: captureJournalPayload({
+        endedAt,
+        state: "clean",
+        entries: [
+          {
+            sequence: 0,
+            type: "capture-started",
+            at: "2026-07-16T00:00:00.000Z",
+            offsetUs: 0,
+            datagrams: 0,
+            bytes: 0,
+          },
+          {
+            sequence: 1,
+            type: "bridge-error",
+            at: "2026-07-16T00:00:00.500Z",
+            offsetUs: 500_000,
+            datagrams: 0,
+            bytes: 0,
+            code: "udp-socket-error",
+            message: "socket failed",
+            fatal: true,
+          },
+          {
+            sequence: 2,
+            type: "capture-stopped",
+            at: endedAt,
+            offsetUs: 1_000_000,
+            datagrams: 0,
+            bytes: 0,
+          },
+        ],
+      }),
+    }))).toThrow("cannot contain capture-path error evidence");
   });
 
   it("rejects malformed capture configuration before making a request", async () => {
@@ -656,6 +838,24 @@ describe("local UDP capture bridge", () => {
     });
     const captureBeforeRecovery = parseUdpBridgeStatus(await statusAfterDiscardedResponse.json());
     expect(captureBeforeRecovery).toMatchObject({ state: "capturing", capture: { datagrams: 0, bytes: 0 } });
+    expect(captureBeforeRecovery.captureJournal).toMatchObject({
+      captureId: captureBeforeRecovery.capture?.id,
+      state: "active",
+      bind: {
+        requestedHost: "127.0.0.1",
+        requestedPort: 0,
+        host: "127.0.0.1",
+        family: "IPv4",
+      },
+      multicast: null,
+      datagrams: 0,
+      bytes: 0,
+      kernelDroppedDatagrams: null,
+      kernelDroppedDatagramsSource: "unavailable",
+      entriesComplete: true,
+      omittedEntries: 0,
+      entries: [{ type: "capture-started", sequence: 0, offsetUs: 0, datagrams: 0, bytes: 0 }],
+    });
     expect(JSON.stringify(captureBeforeRecovery)).not.toContain(startRequestNonce);
 
     const recoveredStartResponse = await fetch(`${ready.controlUrl}/v1/start`, {
@@ -725,6 +925,11 @@ describe("local UDP capture bridge", () => {
     expect(received.data).toEqual(Uint8Array.from(payload));
     expect(received.byteLength).toBe(payload.length);
     expect(received.captureId).toBe(started.capture?.id);
+    expect(received).toMatchObject({
+      remoteAddress: "127.0.0.1",
+      remotePort: expect.any(Number),
+      remoteFamily: "IPv4",
+    });
 
     const stopResponse = await fetch(`${ready.controlUrl}/v1/stop`, {
       method: "POST",
@@ -740,7 +945,22 @@ describe("local UDP capture bridge", () => {
     expect(stopped).toMatchObject({
       state: "stopped",
       capture: { id: started.capture?.id, datagrams: 1, bytes: 0 },
+      captureJournal: {
+        captureId: started.capture?.id,
+        state: "clean",
+        datagrams: 1,
+        bytes: 0,
+        kernelDroppedDatagrams: null,
+        kernelDroppedDatagramsSource: "unavailable",
+        entriesComplete: true,
+        omittedEntries: 0,
+        entries: [
+          { sequence: 0, type: "capture-started", datagrams: 0, bytes: 0 },
+          { sequence: 1, type: "capture-stopped", datagrams: 1, bytes: 0 },
+        ],
+      },
     });
+    expect(stopped.captureJournal?.endedAt).toBe(stopped.capture?.endedAt);
     expect(stopped.capture?.durationUs).toBeGreaterThan(received.offsetUs);
     abortController.abort();
   }, 30_000);
@@ -827,6 +1047,18 @@ describe("local UDP capture bridge", () => {
         state: "stopped",
         multicast: null,
         capture: { datagrams: 1, bytes: payload.length },
+        captureJournal: {
+          state: "clean",
+          multicast: {
+            group: multicastGroup,
+            interface: multicastInterface,
+            family: "IPv4",
+          },
+          datagrams: 1,
+          bytes: payload.length,
+          kernelDroppedDatagrams: null,
+          kernelDroppedDatagramsSource: "unavailable",
+        },
       });
     } finally {
       abortController.abort();

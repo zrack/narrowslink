@@ -9,6 +9,7 @@ import {
   serializeSessionDocument,
   utf8ByteLength,
 } from "../data/session-file";
+import type { UdpBridgeJournal, UdpRemoteEndpoint } from "../domain/types";
 import {
   CaptureRecorder,
   CaptureRecorderError,
@@ -32,6 +33,58 @@ function udpRecorder(limits?: ConstructorParameters<typeof CaptureRecorder>[0]["
     },
     limits,
   });
+}
+
+const UDP_CAPTURE_STARTED_AT = "2026-07-15T18:00:00.000-07:00";
+
+function remoteEndpoint(port = 55_555): UdpRemoteEndpoint {
+  return { address: "192.0.2.44", port, family: "IPv4" };
+}
+
+function cleanUdpJournal(
+  datagrams: number,
+  bytes: number,
+  durationUs: number,
+): UdpBridgeJournal {
+  const endedAt = "2026-07-15T18:00:01.000-07:00";
+  return {
+    captureId: "capture-test-bridge",
+    startedAt: UDP_CAPTURE_STARTED_AT,
+    endedAt,
+    state: "clean",
+    bind: {
+      requestedHost: "127.0.0.1",
+      requestedPort: 9_104,
+      host: "127.0.0.1",
+      port: 9_104,
+      family: "IPv4",
+    },
+    multicast: null,
+    datagrams,
+    bytes,
+    kernelDroppedDatagrams: null,
+    kernelDroppedDatagramsSource: "unavailable",
+    entriesComplete: true,
+    omittedEntries: 0,
+    entries: [
+      {
+        sequence: 0,
+        type: "capture-started",
+        at: UDP_CAPTURE_STARTED_AT,
+        offsetUs: 0,
+        datagrams: 0,
+        bytes: 0,
+      },
+      {
+        sequence: 1,
+        type: "capture-stopped",
+        at: endedAt,
+        offsetUs: durationUs,
+        datagrams,
+        bytes,
+      },
+    ],
+  };
 }
 
 describe("CaptureRecorder", () => {
@@ -86,6 +139,7 @@ describe("CaptureRecorder", () => {
       }],
     });
     expect(document.records).toHaveLength(2);
+    expect("transportProvenance" in document).toBe(false);
     expect(Object.isFrozen(document)).toBe(true);
     expect(Object.isFrozen(document.records)).toBe(true);
     expect(Object.isFrozen(document.records[0])).toBe(true);
@@ -114,6 +168,135 @@ describe("CaptureRecorder", () => {
     bytes.fill(0xff);
 
     expect(record?.dataHex).toBe("010203");
+  });
+
+  it("builds verified immutable UDP provenance while treating unavailable kernel counters as a boundary", () => {
+    const recorder = udpRecorder();
+    const endpoint = remoteEndpoint();
+    recorder.append({
+      offsetUs: 0,
+      bytes: new Uint8Array([1, 2]),
+      kernelDropCounter: null,
+      remoteEndpoint: endpoint,
+    });
+    recorder.append({ offsetUs: 10, bytes: new Uint8Array([3]), remoteEndpoint: endpoint });
+    endpoint.address = "198.51.100.8";
+
+    const document = recorder.finalize(20, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 20,
+      eventLogComplete: true,
+      observedUnits: 2,
+      observedBytes: 3,
+      transportProvenance: { transport: "udp", journal: cleanUdpJournal(2, 3, 20) },
+    });
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+
+    expect(document.captureIntegrity).toMatchObject({ status: "verified", issueCodes: [] });
+    expect(document.transportProvenance).toMatchObject({
+      transport: "udp",
+      status: "verified",
+      issueCodes: ["udp-kernel-drop-counter-unavailable"],
+      endpointAttribution: {
+        totalRecords: 2,
+        attributedRecords: 2,
+        unattributedRecords: 0,
+        distinctEndpoints: [{ address: "192.0.2.44", port: 55_555, family: "IPv4" }],
+      },
+    });
+    expect(document.records[0]?.transport).toMatchObject({
+      kernelDropCounter: null,
+      remoteEndpoint: { address: "192.0.2.44", port: 55_555, family: "IPv4" },
+    });
+    expect(Object.isFrozen(document.transportProvenance)).toBe(true);
+    expect(Object.isFrozen(document.transportProvenance?.transport === "udp"
+      ? document.transportProvenance.journal?.entries
+      : null)).toBe(true);
+  });
+
+  it("marks explicitly unavailable UDP provenance incomplete without changing legacy callers", () => {
+    const recorder = udpRecorder();
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1, 2]) });
+
+    const document = recorder.finalize(5, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 5,
+      eventLogComplete: true,
+      observedUnits: 1,
+      observedBytes: 2,
+      transportReportedUnits: 1,
+      transportReportedBytes: 2,
+      transportProvenance: { transport: "udp", journal: null },
+    });
+    if (document.formatVersion !== 2 || document.transportProvenance?.transport !== "udp") {
+      throw new Error("Expected UDP provenance");
+    }
+
+    expect(document.transportProvenance).toMatchObject({
+      status: "incomplete",
+      issueCodes: ["udp-bridge-journal-unavailable", "udp-endpoint-attribution-incomplete"],
+      endpointAttribution: { attributedRecords: 0, unattributedRecords: 1 },
+    });
+    expect(document.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      issueCodes: ["transport-provenance-incomplete"],
+    });
+    expect(parseSession(document).diagnostics).toContainEqual(expect.objectContaining({
+      id: "transport-provenance-incomplete",
+      domain: "capture-path",
+    }));
+  });
+
+  it("preserves explicit serial settings and nullable device identifiers without downgrading integrity", () => {
+    const recorder = new CaptureRecorder({
+      sessionId: "serial-provenance",
+      title: "Serial provenance",
+      startedAt: "2026-07-16T01:00:00.000Z",
+      displayTimeZone: "UTC",
+      source: { id: "serial-live", kind: "serial", label: "Serial loopback" },
+    });
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1, 2]) });
+
+    const document = recorder.finalize(5, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 5,
+      eventLogComplete: true,
+      observedUnits: 1,
+      observedBytes: 2,
+      transportReportedUnits: null,
+      transportReportedBytes: null,
+      transportProvenance: {
+        transport: "serial",
+        device: { usbVendorId: null, usbProductId: null, bluetoothServiceClassId: null },
+        settings: {
+          baudRate: 115_200,
+          dataBits: 8,
+          stopBits: 1,
+          parity: "none",
+          bufferSize: 65_536,
+          flowControl: "none",
+        },
+      },
+    });
+    if (document.formatVersion !== 2) throw new Error("Expected a version 2 capture");
+
+    expect(document.captureIntegrity).toMatchObject({ status: "verified", issueCodes: [] });
+    expect(document.transportProvenance).toEqual({
+      schemaVersion: 1,
+      transport: "serial",
+      sourceId: "serial-live",
+      status: "verified",
+      issueCodes: ["serial-device-identifiers-unavailable"],
+      device: { usbVendorId: null, usbProductId: null, bluetoothServiceClassId: null },
+      settings: {
+        baudRate: 115_200,
+        dataBits: 8,
+        stopBits: 1,
+        parity: "none",
+        bufferSize: 65_536,
+        flowControl: "none",
+      },
+    });
   });
 
   it("fails clearly instead of creating an invalid zero-record session", () => {
@@ -167,6 +350,23 @@ describe("CaptureRecorder", () => {
       offsetUs: 0,
       bytes: new Uint8Array(MAX_CAPTURE_RECORD_BYTES + 1),
     })).toThrow(`cannot exceed ${MAX_CAPTURE_RECORD_BYTES} bytes`);
+  });
+
+  it("reserves bounded provenance before accepting records and accounts distinct endpoint summaries", () => {
+    expect(() => udpRecorder({ maxSessionFileBytes: 1_000_000 })).toThrow(
+      "metadata leaves no room for records",
+    );
+
+    const recorder = udpRecorder();
+    const reservedEnvelope = recorder.projectedSessionFileBytes;
+    expect(reservedEnvelope).toBeGreaterThan(1 * 1024 * 1024);
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1]), remoteEndpoint: remoteEndpoint() });
+    const oneEndpoint = recorder.projectedSessionFileBytes;
+    recorder.append({ offsetUs: 1, bytes: new Uint8Array([2]), remoteEndpoint: remoteEndpoint() });
+    const repeatedEndpointDelta = recorder.projectedSessionFileBytes - oneEndpoint;
+    recorder.append({ offsetUs: 2, bytes: new Uint8Array([3]), remoteEndpoint: remoteEndpoint(55_556) });
+    const distinctEndpointDelta = recorder.projectedSessionFileBytes - oneEndpoint - repeatedEndpointDelta;
+    expect(distinctEndpointDelta).toBeGreaterThan(repeatedEndpointDelta);
   });
 
   it("retains zero-length UDP datagrams as diagnosable records without pausing later input", () => {
@@ -413,7 +613,7 @@ describe("CaptureRecorder", () => {
   });
 
   it("budgets serialized transport evidence and preserves it across a finalization retry", () => {
-    const recorder = udpRecorder({ maxSessionFileBytes: 16_000 });
+    const recorder = udpRecorder({ maxSessionFileBytes: 1_100_000 });
     recorder.append({ offsetUs: 10, bytes: new Uint8Array([1]) });
     const beforeEvent = recorder.projectedSessionFileBytes;
     recorder.appendTransportEvent({
@@ -443,7 +643,7 @@ describe("CaptureRecorder", () => {
       index: 0,
       code: "bridge-warning",
     })]);
-    expect(encodeSessionDocument(document).byteLength).toBeLessThanOrEqual(16_000);
+    expect(encodeSessionDocument(document).byteLength).toBeLessThanOrEqual(1_100_000);
   });
 
   it("pairs a not-observed stop disposition with a null stop offset", () => {

@@ -1,8 +1,22 @@
 import { zipSync, type Zippable } from "fflate";
 
 import { DECODER_SCHEMA } from "./decoder";
+import {
+  EVIDENCE_ARCHIVE_LIMITS,
+  EVIDENCE_BUNDLE_MEDIA_TYPE,
+  evidenceBundleManifestSchema,
+  evidenceDiagnosticsDocumentSchema,
+  evidenceMarkersDocumentSchema,
+  evidenceNotesDocumentSchema,
+  type EvidenceArtifactPath,
+  type EvidenceBundleArtifact,
+  type EvidenceBundleInclusions,
+  type EvidenceBundleManifest,
+  type EvidenceBundleProvenanceSummary,
+  type EvidenceTransportJournalDocument,
+  type EvidenceTransportProvenanceDocument,
+} from "./evidence-contract";
 import type {
-  CaptureIntegrityReceipt,
   DecodedField,
   DecodedFrame,
   DiagnosticEvent,
@@ -13,7 +27,16 @@ import type {
   TransportEvent,
 } from "./types";
 
-export const EVIDENCE_BUNDLE_MEDIA_TYPE = "application/vnd.narrowslink.evidence-bundle+zip";
+export {
+  EVIDENCE_BUNDLE_MEDIA_TYPE,
+  type EvidenceBundleArtifact,
+  type EvidenceBundleInclusions,
+  type EvidenceBundleManifest,
+  type EvidenceBundleProvenanceSummary,
+  type EvidenceTransportJournalDocument,
+  type EvidenceTransportProvenanceDocument,
+  type EvidenceTransportUnavailableReason,
+} from "./evidence-contract";
 
 export interface EvidenceRange {
   id?: string;
@@ -31,17 +54,6 @@ export interface EvidenceNote {
   createdAt?: string;
 }
 
-export interface EvidenceBundleInclusions {
-  rawRecords: boolean;
-  decodedPackets: boolean;
-  diagnostics: boolean;
-  markers: boolean;
-  notes: boolean;
-  schema: boolean;
-  /** Mandatory provenance artifacts; caller overrides cannot disable them. */
-  transportEvidence: true;
-}
-
 export interface BuildEvidenceBundleOptions {
   session: ParsedSession;
   range: EvidenceRange | IncidentProjection;
@@ -50,46 +62,6 @@ export interface BuildEvidenceBundleOptions {
   include?: Partial<EvidenceBundleInclusions>;
   /** Injectable to support reproducible builds and tests. Defaults to the current instant. */
   generatedAt?: string;
-}
-
-export interface EvidenceBundleArtifact {
-  path: string;
-  mediaType: string;
-  bytes: number;
-  sha256: string;
-  recordCount?: number;
-}
-
-export interface EvidenceBundleManifest {
-  format: "narrowslink/evidence-bundle";
-  formatVersion: 2;
-  generatedAt: string;
-  session: {
-    id: string;
-    title: string;
-    startedAt: string;
-    displayTimeZone: string;
-    sourceId: string;
-    decoderId: string;
-    decoderRevision: string;
-    schemaHash: string;
-    captureIntegrity: CaptureIntegrityReceipt;
-  };
-  selection: {
-    id: string | null;
-    title: string | null;
-    severity: "info" | "warning" | "critical" | null;
-    startUs: number;
-    endUs: number;
-    rangeSemantics: "half-open [startUs, endUs)";
-  };
-  inclusions: EvidenceBundleInclusions;
-  artifacts: EvidenceBundleArtifact[];
-  checksums: {
-    algorithm: "SHA-256";
-    path: "SHA256SUMS";
-    covers: string[];
-  };
 }
 
 const DEFAULT_INCLUSIONS: EvidenceBundleInclusions = {
@@ -134,7 +106,9 @@ function canonicalJson(value: unknown, pretty = false): string {
 
 function csvCell(value: unknown): string {
   const rawText = value == null ? "" : String(value);
-  const text = typeof value === "string" && /^[\t\r ]*[=+\-@]/.test(rawText) ? `'${rawText}` : rawText;
+  const text = typeof value === "string" && (rawText.startsWith("'") || /^[\t\r ]*[=+\-@]/.test(rawText))
+    ? `'${rawText}`
+    : rawText;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
@@ -290,7 +264,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 }
 
 interface PendingArtifact {
-  path: string;
+  path: EvidenceArtifactPath;
   mediaType: string;
   bytes: Uint8Array;
   recordCount?: number;
@@ -298,7 +272,7 @@ interface PendingArtifact {
 
 function addTextArtifact(
   artifacts: PendingArtifact[],
-  path: string,
+  path: EvidenceArtifactPath,
   mediaType: string,
   contents: string,
   recordCount?: number,
@@ -306,12 +280,160 @@ function addTextArtifact(
   artifacts.push({ path, mediaType, bytes: textBytes(contents), ...(recordCount == null ? {} : { recordCount }) });
 }
 
+function transportEvidenceDocuments(session: ParsedSession): {
+  provenanceDocument: EvidenceTransportProvenanceDocument;
+  journalDocument: EvidenceTransportJournalDocument;
+  summary: EvidenceBundleProvenanceSummary;
+} {
+  const { document } = session;
+  const provenance = document.formatVersion === 2 ? document.transportProvenance : undefined;
+  if (!provenance) {
+    const unavailableReason = document.formatVersion === 1 ? "legacy-v1" : "pre-provenance-v2";
+    const provenanceDocument: EvidenceTransportProvenanceDocument = {
+      format: "narrowslink/transport-provenance",
+      formatVersion: 1,
+      availability: "unavailable",
+      reason: unavailableReason,
+      sessionFormatVersion: document.formatVersion,
+      sourceId: document.source.id,
+      transport: document.source.kind,
+      provenance: null,
+    };
+    const journalDocument: EvidenceTransportJournalDocument = {
+      format: "narrowslink/transport-journal",
+      formatVersion: 1,
+      availability: "unavailable",
+      reason: unavailableReason,
+      sessionFormatVersion: document.formatVersion,
+      sourceId: document.source.id,
+      transport: document.source.kind,
+      captureId: null,
+      journal: null,
+    };
+    return {
+      provenanceDocument,
+      journalDocument,
+      summary: {
+        availability: "unavailable",
+        status: "unknown",
+        sourceId: document.source.id,
+        transport: document.source.kind,
+        issueCodes: [],
+        captureId: null,
+        endpointAttribution: null,
+        journal: {
+          availability: "unavailable",
+          reason: unavailableReason,
+          state: null,
+          entriesComplete: null,
+          entryCount: 0,
+          omittedEntries: 0,
+        },
+      },
+    };
+  }
+
+  const provenanceDocument: EvidenceTransportProvenanceDocument = {
+    format: "narrowslink/transport-provenance",
+    formatVersion: 1,
+    availability: "available",
+    sessionFormatVersion: 2,
+    sourceId: provenance.sourceId,
+    transport: provenance.transport,
+    provenance,
+  };
+  if (provenance.transport === "udp") {
+    const journal = provenance.journal;
+    const journalDocument: EvidenceTransportJournalDocument = journal
+      ? {
+          format: "narrowslink/transport-journal",
+          formatVersion: 1,
+          availability: "available",
+          sessionFormatVersion: 2,
+          sourceId: provenance.sourceId,
+          transport: "udp",
+          captureId: journal.captureId,
+          journal,
+        }
+      : {
+          format: "narrowslink/transport-journal",
+          formatVersion: 1,
+          availability: "unavailable",
+          reason: "journal-unavailable",
+          sessionFormatVersion: 2,
+          sourceId: provenance.sourceId,
+          transport: "udp",
+          captureId: null,
+          journal: null,
+        };
+    return {
+      provenanceDocument,
+      journalDocument,
+      summary: {
+        availability: "available",
+        status: provenance.status,
+        sourceId: provenance.sourceId,
+        transport: provenance.transport,
+        issueCodes: [...provenance.issueCodes],
+        captureId: journal?.captureId ?? null,
+        endpointAttribution: {
+          totalRecords: provenance.endpointAttribution.totalRecords,
+          attributedRecords: provenance.endpointAttribution.attributedRecords,
+          unattributedRecords: provenance.endpointAttribution.unattributedRecords,
+          distinctEndpointCount: provenance.endpointAttribution.distinctEndpoints.length,
+        },
+        journal: {
+          availability: journal ? "available" : "unavailable",
+          reason: journal ? null : "journal-unavailable",
+          state: journal?.state ?? null,
+          entriesComplete: journal?.entriesComplete ?? null,
+          entryCount: journal?.entries.length ?? 0,
+          omittedEntries: journal?.omittedEntries ?? 0,
+        },
+      },
+    };
+  }
+
+  const journalDocument: EvidenceTransportJournalDocument = {
+    format: "narrowslink/transport-journal",
+    formatVersion: 1,
+    availability: "unavailable",
+    reason: "not-applicable",
+    sessionFormatVersion: 2,
+    sourceId: provenance.sourceId,
+    transport: "serial",
+    captureId: null,
+    journal: null,
+  };
+  return {
+    provenanceDocument,
+    journalDocument,
+    summary: {
+      availability: "available",
+      status: provenance.status,
+      sourceId: provenance.sourceId,
+      transport: provenance.transport,
+      issueCodes: [...provenance.issueCodes],
+      captureId: null,
+      endpointAttribution: null,
+      journal: {
+        availability: "unavailable",
+        reason: "not-applicable",
+        state: null,
+        entriesComplete: null,
+        entryCount: 0,
+        omittedEntries: 0,
+      },
+    },
+  };
+}
+
 function schemaArtifact(session: ParsedSession): object {
   return {
     schema: {
       id: session.document.decoder.id,
       revision: session.document.decoder.revision,
-      declaredSha256: session.document.decoder.schemaHash,
+      declaredSha256: session.document.decoder.schemaHash.toLowerCase(),
       artifactIntegrity: "The evidence manifest independently hashes this exported schema artifact.",
     },
     sessionFormat: {
@@ -328,6 +450,8 @@ function schemaArtifact(session: ParsedSession): object {
       eventRangeSemantics: "point events at start are included; point events at end are excluded; interval events use half-open overlap",
       sessionScopeEvents: "included in every selected range",
       integrityReceiptScope: "whole session",
+      provenanceScope: "whole session",
+      bridgeJournalScope: "whole session when available; explicit unavailability otherwise",
     },
     decoder: DECODER_SCHEMA,
   };
@@ -347,10 +471,15 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
 
   const records = recordsForRange(session.document.records, range);
   const frames = framesForRange(session.frames, range);
-  const diagnostics = diagnosticsForRange(session.diagnostics, range);
+  const selectedFrameIds = new Set(frames.map((frame) => frame.id));
+  const diagnostics = diagnosticsForRange(session.diagnostics, range).map((event) => ({
+    ...event,
+    frameIds: event.frameIds.filter((frameId) => selectedFrameIds.has(frameId)),
+  }));
   const transportEvents = transportEventsForRange(session.transportEvents, range);
   const markers = markersForRange(options.markers ?? [], range);
   const notes = notesForRange(options.notes ?? [], range);
+  const transportEvidence = transportEvidenceDocuments(session);
   const pendingArtifacts: PendingArtifact[] = [];
 
   addTextArtifact(
@@ -374,6 +503,20 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     canonicalJson(session.captureIntegrity, true),
     1,
   );
+  addTextArtifact(
+    pendingArtifacts,
+    "transport/provenance.json",
+    "application/json",
+    canonicalJson(transportEvidence.provenanceDocument, true),
+    1,
+  );
+  addTextArtifact(
+    pendingArtifacts,
+    "transport/journal.json",
+    "application/json",
+    canonicalJson(transportEvidence.journalDocument, true),
+    transportEvidence.journalDocument.journal?.entries.length ?? 0,
+  );
 
   if (inclusions.rawRecords) {
     addTextArtifact(
@@ -394,11 +537,16 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     );
   }
   if (inclusions.diagnostics) {
+    const diagnosticsDocument = { range: { startUs: range.startUs, endUs: range.endUs }, diagnostics };
+    const diagnosticsValidation = evidenceDiagnosticsDocumentSchema.safeParse(diagnosticsDocument);
+    if (!diagnosticsValidation.success) {
+      throw new TypeError(`Evidence diagnostics artifact violates the version 3 receiver contract: ${diagnosticsValidation.error.issues[0]?.message ?? "invalid diagnostics"}.`);
+    }
     addTextArtifact(
       pendingArtifacts,
       "diagnostics/diagnostics.json",
       "application/json",
-      canonicalJson({ range: { startUs: range.startUs, endUs: range.endUs }, diagnostics }, true),
+      canonicalJson(diagnosticsValidation.data, true),
       diagnostics.length,
     );
     addTextArtifact(
@@ -410,20 +558,30 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     );
   }
   if (inclusions.markers) {
+    const markerDocument = { range: { startUs: range.startUs, endUs: range.endUs }, markers };
+    const markerValidation = evidenceMarkersDocumentSchema.safeParse(markerDocument);
+    if (!markerValidation.success) {
+      throw new TypeError(`Evidence markers artifact violates the version 3 receiver contract: ${markerValidation.error.issues[0]?.message ?? "invalid markers"}.`);
+    }
     addTextArtifact(
       pendingArtifacts,
       "markers/markers.json",
       "application/json",
-      canonicalJson({ range: { startUs: range.startUs, endUs: range.endUs }, markers }, true),
+      canonicalJson(markerValidation.data, true),
       markers.length,
     );
   }
   if (inclusions.notes) {
+    const noteDocument = { range: { startUs: range.startUs, endUs: range.endUs }, notes };
+    const noteValidation = evidenceNotesDocumentSchema.safeParse(noteDocument);
+    if (!noteValidation.success) {
+      throw new TypeError(`Evidence notes artifact violates the version 3 receiver contract: ${noteValidation.error.issues[0]?.message ?? "invalid notes"}.`);
+    }
     addTextArtifact(
       pendingArtifacts,
       "notes/notes.json",
       "application/json",
-      canonicalJson({ range: { startUs: range.startUs, endUs: range.endUs }, notes }, true),
+      canonicalJson(noteValidation.data, true),
       notes.length,
     );
   }
@@ -449,24 +607,28 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     });
   }
 
-  const coveredPaths = ["manifest.json", ...pendingArtifacts.map((artifact) => artifact.path)].sort((left, right) =>
-    compareText(left, right),
-  );
+  const coveredPaths = ([
+    "manifest.json",
+    ...pendingArtifacts.map((artifact) => artifact.path),
+  ] as Array<"manifest.json" | EvidenceArtifactPath>).sort((left, right) => compareText(left, right));
   const manifest: EvidenceBundleManifest = {
     format: "narrowslink/evidence-bundle",
-    formatVersion: 2,
+    formatVersion: 3,
     generatedAt,
     session: {
       id: session.document.id,
       title: session.document.title,
+      formatVersion: session.document.formatVersion,
+      durationUs: session.document.durationUs,
       startedAt: session.document.startedAt,
       displayTimeZone: session.document.displayTimeZone,
       sourceId: session.document.source.id,
       decoderId: session.document.decoder.id,
       decoderRevision: session.document.decoder.revision,
-      schemaHash: session.document.decoder.schemaHash,
+      schemaHash: session.document.decoder.schemaHash.toLowerCase(),
       captureIntegrity: session.captureIntegrity,
     },
+    provenance: transportEvidence.summary,
     selection: {
       id: range.id ?? null,
       title: range.title ?? null,
@@ -483,8 +645,12 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
       covers: coveredPaths,
     },
   };
+  const manifestValidation = evidenceBundleManifestSchema.safeParse(manifest);
+  if (!manifestValidation.success) {
+    throw new TypeError(`Evidence manifest violates the version 3 receiver contract: ${manifestValidation.error.issues[0]?.message ?? "invalid manifest"}.`);
+  }
   const manifestBytes = textBytes(canonicalJson(manifest, true));
-  const checksumsByPath = new Map(artifacts.map((artifact) => [artifact.path, artifact.sha256]));
+  const checksumsByPath = new Map<string, string>(artifacts.map((artifact) => [artifact.path, artifact.sha256]));
   checksumsByPath.set("manifest.json", await sha256(manifestBytes));
   const checksumBytes = textBytes(
     `${coveredPaths.map((path) => `${checksumsByPath.get(path)}  ${path}`).join("\n")}\n`,
@@ -496,13 +662,31 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     ["SHA256SUMS", checksumBytes],
   ]);
   const zippable: Zippable = {};
+  let totalUncompressedBytes = 0;
   for (const path of [...entries.keys()].sort((left, right) => compareText(left, right))) {
     const bytes = entries.get(path);
-    if (bytes) zippable[path] = bytes;
+    if (!bytes) continue;
+    if (bytes.byteLength > EVIDENCE_ARCHIVE_LIMITS.entryBytes) {
+      throw new RangeError(`Evidence artifact ${path} exceeds the ${EVIDENCE_ARCHIVE_LIMITS.entryBytes}-byte limit.`);
+    }
+    totalUncompressedBytes += bytes.byteLength;
+    zippable[path] = bytes;
+  }
+  if (entries.size > EVIDENCE_ARCHIVE_LIMITS.entries) {
+    throw new RangeError(`Evidence bundle exceeds the ${EVIDENCE_ARCHIVE_LIMITS.entries}-entry limit.`);
+  }
+  if (totalUncompressedBytes > EVIDENCE_ARCHIVE_LIMITS.totalUncompressedBytes) {
+    throw new RangeError(
+      `Evidence bundle expands beyond the ${EVIDENCE_ARCHIVE_LIMITS.totalUncompressedBytes}-byte receiver limit.`,
+    );
   }
 
   // A fixed local DOS timestamp keeps byte-for-byte output stable when content is stable.
-  return zipSync(zippable, { level: 6, mtime: new Date(1980, 0, 1, 0, 0, 0) });
+  const archive = zipSync(zippable, { level: 6, mtime: new Date(1980, 0, 1, 0, 0, 0) });
+  if (archive.byteLength > EVIDENCE_ARCHIVE_LIMITS.archiveBytes) {
+    throw new RangeError(`Evidence bundle exceeds the ${EVIDENCE_ARCHIVE_LIMITS.archiveBytes}-byte archive limit.`);
+  }
+  return archive;
 }
 
 function safeFilenamePart(value: string): string {

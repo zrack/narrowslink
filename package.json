@@ -4,20 +4,30 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "narrowslink": "dist-cli/narrowslink.mjs"
+  },
   "engines": {
     "node": ">=20.19"
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run build:app && npm run build:cli",
+    "build:app": "tsc -b && vite build",
+    "build:cli": "vite build --config vite.cli.config.ts",
     "preview": "vite preview",
     "capture:bridge": "node scripts/capture-bridge.mjs",
     "capture:demo": "node scripts/send-demo-udp.mjs",
     "fixture:generate": "node scripts/generate-demo-session.mjs",
+    "verify:bundle": "npm run build:cli --silent && node dist-cli/narrowslink.mjs verify",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run test && npm run build"
+    "test:cli": "node scripts/cli-smoke.mjs",
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:run": "playwright test",
+    "test:e2e:headed": "npm run build && playwright test --headed",
+    "check": "npm run typecheck && npm run test && npm run build && npm run test:cli && npm run test:e2e:run"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",
@@ -30,10 +40,13 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "5.2.0",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.9.3",
     "vite": "6.4.3",
     "vitest": "^4.0.18"

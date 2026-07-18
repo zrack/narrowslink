@@ -9,15 +9,23 @@ import {
   captureIntegrityIssueCodes,
   MAX_TRANSPORT_EVENTS,
   MAX_SESSION_DURATION_US,
+  transportProvenanceIssueCodes,
   transportEventSchema,
+  udpBridgeJournalSchema,
+  udpRemoteEndpointSchema,
   type CaptureIntegrityIssueCode,
   type CaptureIntegrityReceipt,
   type DecoderDescriptor,
+  type SerialTransportProvenance,
   type SessionDocument,
   type SessionDocumentV2,
   type SourceDescriptor,
   type SourceRecord,
   type TransportEvent,
+  type TransportProvenance,
+  type TransportProvenanceIssueCode,
+  type UdpBridgeJournal,
+  type UdpRemoteEndpoint,
 } from "../domain/types";
 
 export const MAX_CAPTURE_RECORDS = 100_000;
@@ -48,7 +56,8 @@ export interface CapturedBytes {
   offsetUs: number;
   bytes: Uint8Array;
   wireBytes?: number;
-  kernelDropCounter?: number;
+  kernelDropCounter?: number | null;
+  remoteEndpoint?: UdpRemoteEndpoint;
   signal?: SourceRecord["signal"];
 }
 
@@ -56,6 +65,17 @@ type WithoutEventIdentity<T> = T extends unknown ? Omit<T, "id" | "index"> : nev
 
 /** A capture event before the recorder assigns its stable identity and order. */
 export type TransportEventDraft = WithoutEventIdentity<TransportEvent>;
+
+export type CaptureTransportProvenanceEvidence =
+  | {
+      transport: "udp";
+      journal: UdpBridgeJournal | null;
+    }
+  | {
+      transport: "serial";
+      device: SerialTransportProvenance["device"];
+      settings: SerialTransportProvenance["settings"];
+    };
 
 export interface CaptureFinalizationEvidence {
   stopDisposition?: CaptureIntegrityReceipt["stopDisposition"];
@@ -65,6 +85,7 @@ export interface CaptureFinalizationEvidence {
   observedBytes?: number | null;
   transportReportedUnits?: number | null;
   transportReportedBytes?: number | null;
+  transportProvenance?: CaptureTransportProvenanceEvidence;
   issueCodes?: readonly CaptureIntegrityIssueCode[];
   shutdown?: {
     code: string;
@@ -98,6 +119,10 @@ export class CaptureRecorderError extends Error {
 // The terminal receipt is small and bounded, but reserving space up front keeps
 // a late integrity failure from being crowded out by the final raw record.
 const CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES = 4_096;
+// Covers the bounded 128-entry bridge journal at maximum schema text lengths,
+// plus the fixed UDP/serial provenance envelope. Distinct endpoint rows are
+// accounted exactly as they are first observed below.
+const TRANSPORT_PROVENANCE_RESERVE_BYTES = 1 * 1024 * 1024;
 
 const HARD_LIMITS: CaptureLimits = Object.freeze({
   maxRecords: MAX_CAPTURE_RECORDS,
@@ -154,6 +179,10 @@ function cloneSignal(signal: SourceRecord["signal"]): SourceRecord["signal"] {
   return signal == null ? undefined : { ...signal };
 }
 
+function cloneRemoteEndpoint(endpoint: UdpRemoteEndpoint): UdpRemoteEndpoint {
+  return { ...endpoint };
+}
+
 function deepFreeze<T>(value: T): T {
   if (value == null || typeof value !== "object" || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) deepFreeze(child);
@@ -190,6 +219,17 @@ function orderedIssueCodes(values: Iterable<CaptureIntegrityIssueCode>): Capture
   return captureIntegrityIssueCodes.filter((code) => present.has(code));
 }
 
+function orderedTransportProvenanceIssueCodes(
+  values: Iterable<TransportProvenanceIssueCode>,
+): TransportProvenanceIssueCode[] {
+  const present = new Set(values);
+  return transportProvenanceIssueCodes.filter((code) => present.has(code));
+}
+
+function udpEndpointKey(endpoint: UdpRemoteEndpoint): string {
+  return JSON.stringify([endpoint.family, endpoint.address, endpoint.port]);
+}
+
 /**
  * Collects already-delimited UDP datagrams or serial assembly outputs into the
  * immutable session format consumed by the replay pipeline.
@@ -203,6 +243,8 @@ export class CaptureRecorder {
   private capturedByteCount = 0;
   private serializedRecordBytes = 0;
   private serializedTransportEventBytes = 0;
+  private serializedDistinctEndpointBytes = 0;
+  private readonly distinctEndpointKeys = new Set<string>();
   private lastOffsetUs = -1;
   private finalized = false;
   private eventLogComplete = true;
@@ -269,7 +311,12 @@ export class CaptureRecorder {
         defaultCaptureIntegrity(source.kind, this.limits.maxDurationUs, 0, 0),
       ),
     );
-    if (this.sessionFileEnvelopeBytes + CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES >= this.limits.maxSessionFileBytes) {
+    if (
+      this.sessionFileEnvelopeBytes
+      + CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES
+      + TRANSPORT_PROVENANCE_RESERVE_BYTES
+      >= this.limits.maxSessionFileBytes
+    ) {
       throw new CaptureRecorderError(
         `Capture metadata leaves no room for records within the ${this.limits.maxSessionFileBytes}-byte session-file limit.`,
       );
@@ -295,7 +342,9 @@ export class CaptureRecorder {
       + Math.max(0, this.recordCount - 1)
       + this.serializedTransportEventBytes
       + Math.max(0, this.transportEventCount - 1)
-      + CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES;
+      + this.serializedDistinctEndpointBytes
+      + CAPTURE_INTEGRITY_RECEIPT_RESERVE_BYTES
+      + TRANSPORT_PROVENANCE_RESERVE_BYTES;
   }
 
   append(input: CapturedBytes): SourceRecord {
@@ -349,6 +398,22 @@ export class CaptureRecorder {
     ) {
       throw new CaptureRecorderError("Kernel drop counter must be a non-negative integer.");
     }
+    if (this.options.source.kind !== "udp" && input.kernelDropCounter !== undefined) {
+      throw new CaptureRecorderError("Only UDP capture records may carry a kernel drop counter.");
+    }
+    let remoteEndpoint: UdpRemoteEndpoint | undefined;
+    if (input.remoteEndpoint != null) {
+      if (this.options.source.kind !== "udp") {
+        throw new CaptureRecorderError("Only UDP capture records may carry a remote endpoint.");
+      }
+      const parsedEndpoint = udpRemoteEndpointSchema.safeParse(input.remoteEndpoint);
+      if (!parsedEndpoint.success) {
+        throw new CaptureRecorderError(
+          `UDP remote endpoint is invalid: ${parsedEndpoint.error.issues[0]?.message ?? "unknown validation error"}`,
+        );
+      }
+      remoteEndpoint = cloneRemoteEndpoint(parsedEndpoint.data);
+    }
     if (input.signal != null) {
       const { provenance, rssiDbm, snrDb } = input.signal;
       if (provenance !== "gateway-sidecar" && provenance !== "decoded-packet") {
@@ -373,13 +438,19 @@ export class CaptureRecorder {
       wireBytes,
       transport: Object.freeze({
         kind: this.options.source.kind,
-        ...(input.kernelDropCounter == null ? {} : { kernelDropCounter: input.kernelDropCounter }),
+        ...(input.kernelDropCounter === undefined ? {} : { kernelDropCounter: input.kernelDropCounter }),
+        ...(remoteEndpoint == null ? {} : { remoteEndpoint: Object.freeze(remoteEndpoint) }),
       }),
       ...(input.signal == null ? {} : { signal: Object.freeze(cloneSignal(input.signal)) }),
     });
     const recordFileBytes = utf8ByteLength(JSON.stringify(record));
+    const endpointKey = remoteEndpoint == null ? null : udpEndpointKey(remoteEndpoint);
+    const endpointSummaryBytes = remoteEndpoint != null && endpointKey != null && !this.distinctEndpointKeys.has(endpointKey)
+      ? utf8ByteLength(JSON.stringify(remoteEndpoint)) + 1
+      : 0;
     const projectedFileBytes = this.projectedSessionFileBytes
       + recordFileBytes
+      + endpointSummaryBytes
       + (this.recordCount > 0 ? 1 : 0);
     if (projectedFileBytes > this.limits.maxSessionFileBytes) {
       throw new CaptureRecorderError(
@@ -395,6 +466,10 @@ export class CaptureRecorder {
     this.capturedRecords.push(record);
     this.capturedByteCount += input.bytes.byteLength;
     this.serializedRecordBytes += recordFileBytes;
+    if (endpointKey != null && endpointSummaryBytes > 0) {
+      this.distinctEndpointKeys.add(endpointKey);
+      this.serializedDistinctEndpointBytes += endpointSummaryBytes;
+    }
     this.lastOffsetUs = input.offsetUs;
     return record;
   }
@@ -459,6 +534,129 @@ export class CaptureRecorder {
       throw new CaptureRecorderError("Capture has already stopped; its event-log assessment is immutable.");
     }
     this.eventLogComplete = false;
+  }
+
+  private normalizeFinalizationEvidence(
+    evidence: CaptureFinalizationEvidence | undefined,
+  ): CaptureFinalizationEvidence | undefined {
+    const provenance = evidence?.transportProvenance;
+    if (!provenance) return evidence;
+    if (provenance.transport !== this.options.source.kind) {
+      throw new CaptureRecorderError(
+        `Capture transport provenance uses ${provenance.transport}; recorder source uses ${this.options.source.kind}.`,
+      );
+    }
+    if (provenance.transport === "serial") {
+      return {
+        ...evidence,
+        transportProvenance: {
+          transport: "serial",
+          device: { ...provenance.device },
+          settings: { ...provenance.settings },
+        },
+      };
+    }
+    if (provenance.journal === null) return evidence;
+
+    const parsedJournal = udpBridgeJournalSchema.safeParse(provenance.journal);
+    if (!parsedJournal.success) {
+      throw new CaptureRecorderError(
+        `UDP bridge provenance journal is invalid: ${parsedJournal.error.issues[0]?.message ?? "unknown validation error"}`,
+      );
+    }
+    return {
+      ...evidence,
+      transportReportedUnits: evidence.transportReportedUnits ?? parsedJournal.data.datagrams,
+      transportReportedBytes: evidence.transportReportedBytes ?? parsedJournal.data.bytes,
+      transportProvenance: { transport: "udp", journal: parsedJournal.data },
+    };
+  }
+
+  private buildTransportProvenance(
+    evidence: CaptureTransportProvenanceEvidence | undefined,
+    captureIntegrity: CaptureIntegrityReceipt,
+  ): TransportProvenance | undefined {
+    if (!evidence) return undefined;
+    if (evidence.transport === "serial") {
+      const identifiersUnavailable = evidence.device.usbVendorId === null
+        && evidence.device.usbProductId === null
+        && evidence.device.bluetoothServiceClassId === null;
+      return {
+        schemaVersion: 1,
+        transport: "serial",
+        sourceId: this.options.source.id,
+        status: "verified",
+        issueCodes: identifiersUnavailable ? ["serial-device-identifiers-unavailable"] : [],
+        device: { ...evidence.device },
+        settings: { ...evidence.settings },
+      };
+    }
+
+    const distinctEndpoints = new Map<string, UdpRemoteEndpoint>();
+    let attributedRecords = 0;
+    for (const record of this.capturedRecords) {
+      const endpoint = record.transport.remoteEndpoint;
+      if (!endpoint) continue;
+      attributedRecords += 1;
+      const key = udpEndpointKey(endpoint);
+      if (!distinctEndpoints.has(key)) distinctEndpoints.set(key, cloneRemoteEndpoint(endpoint));
+    }
+    const issueValues = new Set<TransportProvenanceIssueCode>();
+    const journal = evidence.journal;
+    if (journal === null) {
+      issueValues.add("udp-bridge-journal-unavailable");
+    } else {
+      if (journal.state !== "clean" || !journal.entriesComplete || journal.omittedEntries > 0) {
+        issueValues.add("udp-bridge-journal-incomplete");
+      }
+      if (
+        journal.datagrams !== this.recordCount
+        || journal.bytes !== this.capturedByteCount
+        || journal.datagrams !== captureIntegrity.input.transportReportedUnits
+        || journal.bytes !== captureIntegrity.input.transportReportedBytes
+      ) {
+        issueValues.add("udp-bridge-journal-counter-mismatch");
+      }
+      // The current bridge states this platform boundary explicitly. It remains
+      // inspectable provenance, but does not by itself make the capture incomplete.
+      issueValues.add("udp-kernel-drop-counter-unavailable");
+    }
+    const unattributedRecords = this.recordCount - attributedRecords;
+    if (unattributedRecords > 0) issueValues.add("udp-endpoint-attribution-incomplete");
+    const issueCodes = orderedTransportProvenanceIssueCodes(issueValues);
+    const incomplete = issueValues.has("udp-bridge-journal-unavailable")
+      || issueValues.has("udp-bridge-journal-incomplete")
+      || issueValues.has("udp-bridge-journal-counter-mismatch")
+      || issueValues.has("udp-endpoint-attribution-incomplete");
+    return {
+      schemaVersion: 1,
+      transport: "udp",
+      sourceId: this.options.source.id,
+      status: incomplete ? "incomplete" : "verified",
+      issueCodes,
+      journal,
+      endpointAttribution: {
+        totalRecords: this.recordCount,
+        attributedRecords,
+        unattributedRecords,
+        distinctEndpoints: [...distinctEndpoints.values()],
+      },
+    };
+  }
+
+  private addTransportProvenanceIntegrity(
+    captureIntegrity: CaptureIntegrityReceipt,
+    provenance: TransportProvenance | undefined,
+  ): CaptureIntegrityReceipt {
+    if (provenance?.status !== "incomplete") return captureIntegrity;
+    return {
+      ...captureIntegrity,
+      status: "incomplete",
+      issueCodes: orderedIssueCodes([
+        ...captureIntegrity.issueCodes,
+        "transport-provenance-incomplete",
+      ]),
+    };
   }
 
   private buildCaptureIntegrity(
@@ -631,12 +829,19 @@ export class CaptureRecorder {
       );
     }
 
-    const captureIntegrity = this.buildCaptureIntegrity(durationUs, evidence);
+    const normalizedEvidence = this.normalizeFinalizationEvidence(evidence);
+    const initialCaptureIntegrity = this.buildCaptureIntegrity(durationUs, normalizedEvidence);
+    const transportProvenance = this.buildTransportProvenance(
+      normalizedEvidence?.transportProvenance,
+      initialCaptureIntegrity,
+    );
+    const captureIntegrity = this.addTransportProvenanceIntegrity(initialCaptureIntegrity, transportProvenance);
     const document = this.buildDocument(
       durationUs,
       [...this.capturedRecords],
       [...this.capturedTransportEvents],
       captureIntegrity,
+      transportProvenance,
     );
 
     const validated = deepFreeze(validateSessionDocument(document));
@@ -655,6 +860,7 @@ export class CaptureRecorder {
     records: SourceRecord[],
     transportEvents: TransportEvent[],
     captureIntegrity: CaptureIntegrityReceipt,
+    transportProvenance?: TransportProvenance,
   ): SessionDocumentV2 {
     return {
       format: "narrowslink/session",
@@ -669,6 +875,7 @@ export class CaptureRecorder {
       records,
       transportEvents,
       captureIntegrity,
+      ...(transportProvenance == null ? {} : { transportProvenance }),
       incidents: [{
         id: "capture-interval",
         title: "Captured interval",

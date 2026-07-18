@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
@@ -8,14 +12,18 @@ import {
   type EvidenceBundleManifest,
   type EvidenceNote,
   type EvidenceRange,
+  type EvidenceTransportJournalDocument,
+  type EvidenceTransportProvenanceDocument,
 } from "./bundle";
 import { bytesToHex, encodeFrame, SUPPORTED_DECODER } from "./decoder";
 import { parseSession } from "./session";
+import { verifyEvidenceBundle } from "../../tests/e2e/support/archive";
 import type {
   CaptureIntegrityReceipt,
   DiagnosticEvent,
   Marker,
   ParsedSession,
+  SessionDocumentV1,
   SessionDocumentV2,
   SourceRecord,
   TransportEvent,
@@ -36,7 +44,15 @@ function sourceRecord(id: string, index: number, offsetUs: number): SourceRecord
     dataHex: bytesToHex(bytes),
     captureBytes: bytes.byteLength,
     wireBytes: bytes.byteLength,
-    transport: { kind: "udp", kernelDropCounter: 0 },
+    transport: {
+      kind: "udp",
+      kernelDropCounter: null,
+      remoteEndpoint: {
+        address: index < 2 ? "192.0.2.10" : "192.0.2.11",
+        port: 9_104,
+        family: "IPv4",
+      },
+    },
     signal: { rssiDbm: -72, snrDb: 11, provenance: "gateway-sidecar" },
   };
 }
@@ -160,7 +176,12 @@ function makeSession(options: { insideOffsetUs?: number } = {}): ParsedSession {
       transportReportedBytes: bridgeBytes,
     },
     retained: { records: records.length, bytes: retainedBytes },
-    issueCodes: ["udp-event-sequence-discontinuity", "udp-bridge-error", "udp-counter-mismatch"],
+    issueCodes: [
+      "udp-event-sequence-discontinuity",
+      "udp-bridge-error",
+      "udp-counter-mismatch",
+      "transport-provenance-incomplete",
+    ],
   };
   const document: SessionDocumentV2 = {
     format: "narrowslink/session",
@@ -176,6 +197,153 @@ function makeSession(options: { insideOffsetUs?: number } = {}): ParsedSession {
     incidents: [],
     transportEvents,
     captureIntegrity,
+    transportProvenance: {
+      schemaVersion: 1,
+      sourceId: "gateway-1",
+      transport: "udp",
+      status: "incomplete",
+      issueCodes: ["udp-bridge-journal-counter-mismatch", "udp-kernel-drop-counter-unavailable"],
+      journal: {
+        captureId: "capture-harbor-relay-07",
+        startedAt: "2026-07-16T04:38:12.000Z",
+        endedAt: "2026-07-16T04:38:12.003Z",
+        state: "clean",
+        bind: {
+          requestedHost: "127.0.0.1",
+          requestedPort: 9_120,
+          host: "127.0.0.1",
+          port: 9_120,
+          family: "IPv4",
+        },
+        multicast: null,
+        datagrams: bridgeDatagrams,
+        bytes: bridgeBytes,
+        kernelDroppedDatagrams: null,
+        kernelDroppedDatagramsSource: "unavailable",
+        entriesComplete: true,
+        omittedEntries: 0,
+        entries: [
+          {
+            sequence: 0,
+            type: "capture-started",
+            at: "2026-07-16T04:38:12.000Z",
+            offsetUs: 0,
+            datagrams: 0,
+            bytes: 0,
+          },
+          {
+            sequence: 1,
+            type: "capture-stopped",
+            at: "2026-07-16T04:38:12.003Z",
+            offsetUs: 3_000,
+            datagrams: bridgeDatagrams,
+            bytes: bridgeBytes,
+          },
+        ],
+      },
+      endpointAttribution: {
+        totalRecords: records.length,
+        attributedRecords: records.length,
+        unattributedRecords: 0,
+        distinctEndpoints: [
+          { address: "192.0.2.10", port: 9_104, family: "IPv4" },
+          { address: "192.0.2.11", port: 9_104, family: "IPv4" },
+        ],
+      },
+    },
+  };
+  return parseSession(document);
+}
+
+function makeLegacySession(): ParsedSession {
+  const current = makeSession().document;
+  const document: SessionDocumentV1 = {
+    format: "narrowslink/session",
+    formatVersion: 1,
+    id: `${current.id}-legacy`,
+    title: `${current.title} legacy`,
+    startedAt: current.startedAt,
+    displayTimeZone: current.displayTimeZone,
+    durationUs: current.durationUs,
+    source: current.source,
+    decoder: current.decoder,
+    records: current.records.map((record) => ({
+      ...record,
+      transport: { kind: record.transport.kind, kernelDropCounter: 0 },
+    })),
+    incidents: current.incidents,
+  };
+  return parseSession(document);
+}
+
+function makePreProvenanceSession(): ParsedSession {
+  const current = makeSession().document;
+  if (current.formatVersion !== 2) throw new Error("Expected a version 2 fixture");
+  const document: SessionDocumentV2 = {
+    ...current,
+    captureIntegrity: {
+      ...current.captureIntegrity,
+      issueCodes: current.captureIntegrity.issueCodes.filter((code) => code !== "transport-provenance-incomplete"),
+    },
+  };
+  delete document.transportProvenance;
+  return parseSession(document);
+}
+
+function makeSerialSession(): ParsedSession {
+  const current = makeSession().document;
+  const records = current.records.map((record) => ({
+    ...record,
+    sourceId: "serial-1",
+    transport: { kind: "serial" as const },
+  }));
+  const retainedBytes = records.reduce((total, record) => total + record.captureBytes, 0);
+  const document: SessionDocumentV2 = {
+    format: "narrowslink/session",
+    formatVersion: 2,
+    id: "serial-session",
+    title: "Serial session",
+    startedAt: current.startedAt,
+    displayTimeZone: current.displayTimeZone,
+    durationUs: current.durationUs,
+    source: { id: "serial-1", kind: "serial", label: "Serial adapter" },
+    decoder: current.decoder,
+    records,
+    incidents: [],
+    transportEvents: [],
+    captureIntegrity: {
+      schemaVersion: 1,
+      status: "verified",
+      assessmentBasis: "web-serial-observed",
+      stopDisposition: "confirmed",
+      stopOffsetUs: current.durationUs,
+      eventLogComplete: true,
+      input: {
+        unit: "serial-read",
+        observedUnits: records.length,
+        observedBytes: retainedBytes,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: { records: records.length, bytes: retainedBytes },
+      issueCodes: [],
+    },
+    transportProvenance: {
+      schemaVersion: 1,
+      sourceId: "serial-1",
+      transport: "serial",
+      status: "verified",
+      issueCodes: ["serial-device-identifiers-unavailable"],
+      device: { usbVendorId: null, usbProductId: null, bluetoothServiceClassId: null },
+      settings: {
+        baudRate: 115_200,
+        dataBits: 8,
+        stopBits: 1,
+        parity: "none",
+        bufferSize: 255,
+        flowControl: "none",
+      },
+    },
   };
   return parseSession(document);
 }
@@ -237,6 +405,8 @@ describe("buildEvidenceBundle", () => {
       "schema/schema.json",
       "transport/events.json",
       "transport/integrity-receipt.json",
+      "transport/journal.json",
+      "transport/provenance.json",
     ]);
 
     const rawIds = decodeText(archive, "raw/source-records.ndjson")
@@ -262,6 +432,7 @@ describe("buildEvidenceBundle", () => {
       diagnostics: DiagnosticEvent[];
     };
     expect(diagnosticDocument.diagnostics.map((item) => item.id)).toEqual([
+      "transport-provenance-incomplete",
       "transport-transport-session",
       "transport-transport-overlaps-start",
       "transport-transport-start",
@@ -289,6 +460,35 @@ describe("buildEvidenceBundle", () => {
     expect(integrityReceipt.input.transportReportedUnits).not.toBe(integrityReceipt.input.observedUnits);
     expect(integrityReceipt.input.transportReportedBytes).not.toBe(integrityReceipt.input.observedBytes);
 
+    const provenanceDocument = JSON.parse(
+      decodeText(archive, "transport/provenance.json"),
+    ) as EvidenceTransportProvenanceDocument;
+    expect(provenanceDocument).toMatchObject({
+      availability: "available",
+      sourceId: "gateway-1",
+      transport: "udp",
+      provenance: {
+        status: "incomplete",
+        endpointAttribution: {
+          totalRecords: 4,
+          attributedRecords: 4,
+          unattributedRecords: 0,
+        },
+      },
+    });
+    const journalDocument = JSON.parse(
+      decodeText(archive, "transport/journal.json"),
+    ) as EvidenceTransportJournalDocument;
+    expect(journalDocument).toMatchObject({
+      availability: "available",
+      captureId: "capture-harbor-relay-07",
+      journal: {
+        captureId: "capture-harbor-relay-07",
+        datagrams: 5,
+        entriesComplete: true,
+      },
+    });
+
     const markerDocument = JSON.parse(decodeText(archive, "markers/markers.json")) as { markers: Marker[] };
     expect(markerDocument.markers.map((item) => item.id)).toEqual(["marker-start", "marker-inside"]);
 
@@ -297,8 +497,30 @@ describe("buildEvidenceBundle", () => {
 
     const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
     expect(manifest.format).toBe("narrowslink/evidence-bundle");
-    expect(manifest.formatVersion).toBe(2);
+    expect(manifest.formatVersion).toBe(3);
     expect(manifest.session.captureIntegrity).toEqual(session.captureIntegrity);
+    expect(manifest.provenance).toEqual({
+      availability: "available",
+      status: "incomplete",
+      sourceId: "gateway-1",
+      transport: "udp",
+      issueCodes: ["udp-bridge-journal-counter-mismatch", "udp-kernel-drop-counter-unavailable"],
+      captureId: "capture-harbor-relay-07",
+      endpointAttribution: {
+        totalRecords: 4,
+        attributedRecords: 4,
+        unattributedRecords: 0,
+        distinctEndpointCount: 2,
+      },
+      journal: {
+        availability: "available",
+        reason: null,
+        state: "clean",
+        entriesComplete: true,
+        entryCount: 2,
+        omittedEntries: 0,
+      },
+    });
     expect(manifest.inclusions.transportEvidence).toBe(true);
     expect(manifest.selection).toMatchObject({
       id: "link-fade",
@@ -310,6 +532,8 @@ describe("buildEvidenceBundle", () => {
     expect(manifest.artifacts.find((item) => item.path === "markers/markers.json")?.recordCount).toBe(2);
     expect(manifest.artifacts.find((item) => item.path === "transport/events.json")?.recordCount).toBe(4);
     expect(manifest.artifacts.find((item) => item.path === "transport/integrity-receipt.json")?.recordCount).toBe(1);
+    expect(manifest.artifacts.find((item) => item.path === "transport/provenance.json")?.recordCount).toBe(1);
+    expect(manifest.artifacts.find((item) => item.path === "transport/journal.json")?.recordCount).toBe(2);
 
     const checksumLines = new Map(
       decodeText(archive, "SHA256SUMS")
@@ -324,6 +548,28 @@ describe("buildEvidenceBundle", () => {
       const entry = archive[path];
       expect(entry, path).toBeDefined();
       if (entry) expect(checksumLines.get(path)).toBe(await sha256(entry));
+    }
+  });
+
+  it("passes independent provenance, journal, endpoint, counter, and checksum verification", async () => {
+    const bytes = await buildEvidenceBundle({
+      session: makeSession(),
+      range,
+      generatedAt: "2026-07-16T06:00:00.000Z",
+    });
+    const directory = await mkdtemp(join(tmpdir(), "narrowslink-bundle-"));
+    const bundlePath = join(directory, "evidence.nlb");
+    try {
+      await writeFile(bundlePath, bytes);
+      const verified = await verifyEvidenceBundle(bundlePath);
+      expect(verified.manifest.formatVersion).toBe(3);
+      expect(verified.transportProvenance.availability).toBe("available");
+      expect(verified.transportJournal).toMatchObject({
+        availability: "available",
+        captureId: "capture-harbor-relay-07",
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -348,18 +594,148 @@ describe("buildEvidenceBundle", () => {
       "manifest.json",
       "transport/events.json",
       "transport/integrity-receipt.json",
+      "transport/journal.json",
+      "transport/provenance.json",
     ]);
     const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
     expect(manifest.inclusions.transportEvidence).toBe(true);
     expect(manifest.artifacts.map((artifact) => artifact.path)).toEqual([
       "transport/events.json",
       "transport/integrity-receipt.json",
+      "transport/journal.json",
+      "transport/provenance.json",
     ]);
     expect(manifest.checksums.covers).toEqual([
       "manifest.json",
       "transport/events.json",
       "transport/integrity-receipt.json",
+      "transport/journal.json",
+      "transport/provenance.json",
     ]);
+  });
+
+  it("emits explicit unavailable provenance and journal artifacts for legacy sessions", async () => {
+    const bytes = await buildEvidenceBundle({
+      session: makeLegacySession(),
+      range,
+      generatedAt: "2026-07-16T06:00:00.000Z",
+    });
+    const archive = unzipSync(bytes);
+    const provenanceDocument = JSON.parse(
+      decodeText(archive, "transport/provenance.json"),
+    ) as EvidenceTransportProvenanceDocument;
+    const journalDocument = JSON.parse(
+      decodeText(archive, "transport/journal.json"),
+    ) as EvidenceTransportJournalDocument;
+    const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
+
+    expect(provenanceDocument).toEqual({
+      format: "narrowslink/transport-provenance",
+      formatVersion: 1,
+      availability: "unavailable",
+      reason: "legacy-v1",
+      sessionFormatVersion: 1,
+      sourceId: "gateway-1",
+      transport: "udp",
+      provenance: null,
+    });
+    expect(journalDocument).toEqual({
+      format: "narrowslink/transport-journal",
+      formatVersion: 1,
+      availability: "unavailable",
+      reason: "legacy-v1",
+      sessionFormatVersion: 1,
+      sourceId: "gateway-1",
+      transport: "udp",
+      captureId: null,
+      journal: null,
+    });
+    expect(manifest.provenance).toEqual({
+      availability: "unavailable",
+      status: "unknown",
+      sourceId: "gateway-1",
+      transport: "udp",
+      issueCodes: [],
+      captureId: null,
+      endpointAttribution: null,
+      journal: {
+        availability: "unavailable",
+        reason: "legacy-v1",
+        state: null,
+        entriesComplete: null,
+        entryCount: 0,
+        omittedEntries: 0,
+      },
+    });
+    expect(manifest.artifacts.find((artifact) => artifact.path === "transport/journal.json")?.recordCount).toBe(0);
+  });
+
+  it("distinguishes pre-provenance version 2 sessions from legacy version 1 evidence", async () => {
+    const bytes = await buildEvidenceBundle({
+      session: makePreProvenanceSession(),
+      range,
+      generatedAt: "2026-07-16T06:00:00.000Z",
+    });
+    const archive = unzipSync(bytes);
+    const provenanceDocument = JSON.parse(
+      decodeText(archive, "transport/provenance.json"),
+    ) as EvidenceTransportProvenanceDocument;
+    const journalDocument = JSON.parse(
+      decodeText(archive, "transport/journal.json"),
+    ) as EvidenceTransportJournalDocument;
+    const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
+
+    expect(provenanceDocument).toMatchObject({
+      availability: "unavailable",
+      reason: "pre-provenance-v2",
+      sessionFormatVersion: 2,
+    });
+    expect(journalDocument).toMatchObject({
+      availability: "unavailable",
+      reason: "pre-provenance-v2",
+      sessionFormatVersion: 2,
+    });
+    expect(manifest.provenance.journal.reason).toBe("pre-provenance-v2");
+  });
+
+  it("marks UDP bridge journals as not applicable for serial provenance", async () => {
+    const bytes = await buildEvidenceBundle({
+      session: makeSerialSession(),
+      range,
+      generatedAt: "2026-07-16T06:00:00.000Z",
+    });
+    const archive = unzipSync(bytes);
+    const provenanceDocument = JSON.parse(
+      decodeText(archive, "transport/provenance.json"),
+    ) as EvidenceTransportProvenanceDocument;
+    const journalDocument = JSON.parse(
+      decodeText(archive, "transport/journal.json"),
+    ) as EvidenceTransportJournalDocument;
+    const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
+
+    expect(provenanceDocument).toMatchObject({
+      availability: "available",
+      transport: "serial",
+      provenance: { status: "verified", transport: "serial" },
+    });
+    expect(journalDocument).toEqual({
+      format: "narrowslink/transport-journal",
+      formatVersion: 1,
+      availability: "unavailable",
+      reason: "not-applicable",
+      sessionFormatVersion: 2,
+      sourceId: "serial-1",
+      transport: "serial",
+      captureId: null,
+      journal: null,
+    });
+    expect(manifest.provenance).toMatchObject({
+      availability: "available",
+      status: "verified",
+      transport: "serial",
+      endpointAttribution: null,
+      journal: { availability: "unavailable", reason: "not-applicable" },
+    });
   });
 
   it("produces stable bytes when generatedAt and inputs are stable", async () => {

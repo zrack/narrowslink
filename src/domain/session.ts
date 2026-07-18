@@ -15,6 +15,10 @@ import {
   type SessionDocument,
   type SessionDocumentV2,
   type TransportEvent,
+  type TransportProvenance,
+  type TransportProvenanceIssueCode,
+  type UdpBridgeJournal,
+  type UdpRemoteEndpoint,
 } from "./types";
 
 const SECOND_US = 1_000_000;
@@ -45,6 +49,7 @@ const UDP_CAPTURE_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new Set(
   "shutdown-unconfirmed",
   "duration-capped",
   "event-log-incomplete",
+  "transport-provenance-incomplete",
 ]);
 
 const SERIAL_CAPTURE_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new Set([
@@ -57,6 +62,19 @@ const SERIAL_CAPTURE_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new S
   "shutdown-unconfirmed",
   "duration-capped",
   "event-log-incomplete",
+  "transport-provenance-incomplete",
+]);
+
+const UDP_PROVENANCE_ISSUE_CODES: ReadonlySet<TransportProvenanceIssueCode> = new Set([
+  "udp-bridge-journal-unavailable",
+  "udp-bridge-journal-incomplete",
+  "udp-bridge-journal-counter-mismatch",
+  "udp-endpoint-attribution-incomplete",
+  "udp-kernel-drop-counter-unavailable",
+]);
+
+const SERIAL_PROVENANCE_ISSUE_CODES: ReadonlySet<TransportProvenanceIssueCode> = new Set([
+  "serial-device-identifiers-unavailable",
 ]);
 
 export class SessionValidationError extends Error {
@@ -104,6 +122,206 @@ function transportEventStartUs(event: TransportEvent): number | null {
   if (event.scope.kind === "point") return event.scope.offsetUs;
   if (event.scope.kind === "interval") return event.scope.startUs;
   return null;
+}
+
+function udpEndpointKey(endpoint: UdpRemoteEndpoint): string {
+  return JSON.stringify([endpoint.family, endpoint.address, endpoint.port]);
+}
+
+function sameUdpEndpoint(left: UdpRemoteEndpoint, right: UdpRemoteEndpoint): boolean {
+  return left.address === right.address && left.port === right.port && left.family === right.family;
+}
+
+function assertProvenanceIssue(
+  issueCodes: ReadonlySet<TransportProvenanceIssueCode>,
+  code: TransportProvenanceIssueCode,
+  required: boolean,
+  message: string,
+): void {
+  if (issueCodes.has(code) !== required) {
+    throw new SessionValidationError(message, [`Expected ${code}: ${required ? "present" : "absent"}`]);
+  }
+}
+
+function assertUdpJournalStructure(document: SessionDocumentV2, journal: UdpBridgeJournal): void {
+  if (journal.startedAt !== document.startedAt) {
+    throw new SessionValidationError("UDP provenance journal start does not match the session start.", [
+      `${journal.startedAt} does not match ${document.startedAt}`,
+    ]);
+  }
+  const expectedSourceAddress = journal.multicast?.group ?? journal.bind.host;
+  if (document.source.address !== expectedSourceAddress || document.source.port !== journal.bind.port) {
+    throw new SessionValidationError("UDP provenance bind evidence does not match the declared session source.", [
+      `Source ${document.source.address ?? "<missing>"}:${document.source.port ?? "<missing>"}; journal ${expectedSourceAddress}:${journal.bind.port}`,
+    ]);
+  }
+  if (journal.multicast && journal.multicast.family !== journal.bind.family) {
+    throw new SessionValidationError("UDP provenance multicast and bind address families do not match.");
+  }
+  if (journal.entriesComplete !== (journal.omittedEntries === 0)) {
+    throw new SessionValidationError("UDP provenance journal completeness conflicts with its omitted-entry count.");
+  }
+  if (journal.state === "active" && journal.endedAt !== null) {
+    throw new SessionValidationError("An active UDP provenance journal cannot declare an end timestamp.");
+  }
+  if (journal.state === "clean" && (journal.endedAt === null || !journal.entriesComplete)) {
+    throw new SessionValidationError("A clean UDP provenance journal requires a complete terminal lifecycle.");
+  }
+
+  let previousSequence = -1;
+  let previousOffsetUs = -1;
+  let previousDatagrams = -1;
+  let previousBytes = -1;
+  let hasErrorEntry = false;
+  for (const [index, entry] of journal.entries.entries()) {
+    if (
+      entry.sequence <= previousSequence
+      || (journal.entriesComplete && entry.sequence !== index)
+      || entry.offsetUs < previousOffsetUs
+      || entry.offsetUs > document.durationUs
+      || entry.datagrams < previousDatagrams
+      || entry.bytes < previousBytes
+      || entry.datagrams > journal.datagrams
+      || entry.bytes > journal.bytes
+    ) {
+      throw new SessionValidationError("UDP provenance journal entries are not monotonic or conflict with terminal counters.", [
+        `Entry ${entry.sequence} at retained position ${index}`,
+      ]);
+    }
+    const errorEntry = entry.type === "bridge-error" || entry.type === "subscriber-backpressure";
+    if (errorEntry) hasErrorEntry = true;
+    if (errorEntry && (!entry.code || !entry.message || typeof entry.fatal !== "boolean")) {
+      throw new SessionValidationError("UDP provenance journal error entries require code, message, and fatal evidence.", [
+        `Entry ${entry.sequence} (${entry.type})`,
+      ]);
+    }
+    previousSequence = entry.sequence;
+    previousOffsetUs = entry.offsetUs;
+    previousDatagrams = entry.datagrams;
+    previousBytes = entry.bytes;
+  }
+  if (hasErrorEntry && journal.state !== "incomplete") {
+    throw new SessionValidationError("UDP provenance journal error entries require incomplete journal state.");
+  }
+
+  const first = journal.entries[0];
+  if (
+    first?.type !== "capture-started"
+    || first.sequence !== 0
+    || first.at !== journal.startedAt
+    || first.offsetUs !== 0
+    || first.datagrams !== 0
+    || first.bytes !== 0
+  ) {
+    throw new SessionValidationError("UDP provenance journal must begin with an exact capture-started entry.");
+  }
+  if (journal.endedAt !== null) {
+    const last = journal.entries.at(-1);
+    if (
+      last?.type !== "capture-stopped"
+      || last.at !== journal.endedAt
+      || last.datagrams !== journal.datagrams
+      || last.bytes !== journal.bytes
+      || last.offsetUs > document.durationUs
+      || (document.captureIntegrity.stopOffsetUs != null && last.offsetUs > document.captureIntegrity.stopOffsetUs)
+    ) {
+      throw new SessionValidationError("A terminal UDP provenance journal must end with final counter evidence within the session.");
+    }
+  }
+}
+
+function assertTransportProvenance(document: SessionDocumentV2): void {
+  const provenance = document.transportProvenance;
+  const receiptHasIncompleteCode = document.captureIntegrity.issueCodes.includes("transport-provenance-incomplete");
+  if (!provenance) {
+    if (receiptHasIncompleteCode) {
+      throw new SessionValidationError("Capture integrity declares incomplete transport provenance that is not present.");
+    }
+    return;
+  }
+  if (provenance.sourceId !== document.source.id || provenance.transport !== document.source.kind) {
+    throw new SessionValidationError("Transport provenance does not match the declared session source.", [
+      `Provenance ${provenance.transport}:${provenance.sourceId}; source ${document.source.kind}:${document.source.id}`,
+    ]);
+  }
+  const issueCodes = new Set(provenance.issueCodes);
+  if (issueCodes.size !== provenance.issueCodes.length) {
+    throw new SessionValidationError("Transport provenance contains duplicate issue codes.");
+  }
+
+  if (provenance.transport === "udp") {
+    const invalidIssue = provenance.issueCodes.find((code) => !UDP_PROVENANCE_ISSUE_CODES.has(code));
+    if (invalidIssue) {
+      throw new SessionValidationError("A transport-provenance issue code does not apply to UDP.", [invalidIssue]);
+    }
+    const attributedEndpoints: UdpRemoteEndpoint[] = [];
+    const distinctEndpoints = new Map<string, UdpRemoteEndpoint>();
+    for (const record of document.records) {
+      const endpoint = record.transport.remoteEndpoint;
+      if (!endpoint) continue;
+      attributedEndpoints.push(endpoint);
+      if (!distinctEndpoints.has(udpEndpointKey(endpoint))) distinctEndpoints.set(udpEndpointKey(endpoint), endpoint);
+    }
+    const expectedDistinctEndpoints = [...distinctEndpoints.values()];
+    const summary = provenance.endpointAttribution;
+    if (
+      summary.totalRecords !== document.records.length
+      || summary.attributedRecords !== attributedEndpoints.length
+      || summary.unattributedRecords !== document.records.length - attributedEndpoints.length
+      || summary.attributedRecords + summary.unattributedRecords !== summary.totalRecords
+      || summary.distinctEndpoints.length !== expectedDistinctEndpoints.length
+      || summary.distinctEndpoints.some((endpoint, index) => !sameUdpEndpoint(endpoint, expectedDistinctEndpoints[index]!))
+    ) {
+      throw new SessionValidationError("UDP endpoint-attribution summary does not match immutable session records.");
+    }
+
+    const endpointAttributionIncomplete = summary.unattributedRecords > 0;
+    const journalUnavailable = provenance.journal === null;
+    let journalIncomplete = false;
+    let journalCounterMismatch = false;
+    if (provenance.journal) {
+      assertUdpJournalStructure(document, provenance.journal);
+      journalIncomplete = provenance.journal.state !== "clean"
+        || !provenance.journal.entriesComplete
+        || provenance.journal.omittedEntries > 0;
+      journalCounterMismatch = provenance.journal.datagrams !== document.records.length
+        || provenance.journal.bytes !== document.captureIntegrity.retained.bytes
+        || provenance.journal.datagrams !== document.captureIntegrity.input.transportReportedUnits
+        || provenance.journal.bytes !== document.captureIntegrity.input.transportReportedBytes;
+    }
+    assertProvenanceIssue(issueCodes, "udp-bridge-journal-unavailable", journalUnavailable,
+      "UDP provenance journal availability and issue codes are inconsistent.");
+    assertProvenanceIssue(issueCodes, "udp-bridge-journal-incomplete", journalIncomplete,
+      "UDP provenance journal completeness and issue codes are inconsistent.");
+    assertProvenanceIssue(issueCodes, "udp-bridge-journal-counter-mismatch", journalCounterMismatch,
+      "UDP provenance journal counters and issue codes are inconsistent.");
+    assertProvenanceIssue(issueCodes, "udp-endpoint-attribution-incomplete", endpointAttributionIncomplete,
+      "UDP endpoint attribution and issue codes are inconsistent.");
+    assertProvenanceIssue(issueCodes, "udp-kernel-drop-counter-unavailable", provenance.journal !== null,
+      "UDP kernel-drop availability and provenance issue codes are inconsistent.");
+
+    const incomplete = journalUnavailable || journalIncomplete || journalCounterMismatch || endpointAttributionIncomplete;
+    if ((provenance.status === "incomplete") !== incomplete) {
+      throw new SessionValidationError("UDP transport-provenance status does not match its durable evidence.");
+    }
+  } else {
+    const invalidIssue = provenance.issueCodes.find((code) => !SERIAL_PROVENANCE_ISSUE_CODES.has(code));
+    if (invalidIssue) {
+      throw new SessionValidationError("A transport-provenance issue code does not apply to serial.", [invalidIssue]);
+    }
+    const identifiersUnavailable = provenance.device.usbVendorId === null
+      && provenance.device.usbProductId === null
+      && provenance.device.bluetoothServiceClassId === null;
+    assertProvenanceIssue(issueCodes, "serial-device-identifiers-unavailable", identifiersUnavailable,
+      "Serial device identifiers and provenance issue codes are inconsistent.");
+    if (provenance.status !== "verified") {
+      throw new SessionValidationError("Complete serial settings must produce verified transport provenance.");
+    }
+  }
+
+  if (receiptHasIncompleteCode !== (provenance.status === "incomplete")) {
+    throw new SessionValidationError("Capture integrity and transport-provenance status are inconsistent.");
+  }
 }
 
 function assertV2CaptureEvidence(document: SessionDocumentV2): void {
@@ -424,6 +642,8 @@ function assertV2CaptureEvidence(document: SessionDocumentV2): void {
   } else if (document.source.kind !== "file") {
     throw new SessionValidationError("Only an unassessed file-source session may use unknown capture integrity in version 2.");
   }
+
+  assertTransportProvenance(document);
 }
 
 export function validateSessionDocument(input: unknown): SessionDocument {
@@ -701,6 +921,24 @@ function transportEventDiagnostic(event: TransportEvent, durationUs: number): Di
   };
 }
 
+function transportProvenanceDiagnostic(
+  provenance: TransportProvenance,
+  durationUs: number,
+): DiagnosticEvent | null {
+  if (provenance.status !== "incomplete") return null;
+  return {
+    id: "transport-provenance-incomplete",
+    type: "capture-path-event",
+    domain: "capture-path",
+    severity: "warning",
+    startUs: 0,
+    endUs: durationUs,
+    title: "Transport provenance incomplete",
+    description: `Transport provenance could not be fully reconciled: ${provenance.issueCodes.join(", ")}.`,
+    frameIds: [],
+  };
+}
+
 function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly MetricBucket[]): DiagnosticEvent[] {
   const events: DiagnosticEvent[] = [];
   let lowRssiBuckets = 0;
@@ -954,11 +1192,16 @@ function normalizedCaptureEvidence(document: SessionDocument): {
 export function parseSession(input: unknown): ParsedSession {
   const document = deepFreeze(validateSessionDocument(input));
   const captureEvidence = normalizedCaptureEvidence(document);
+  const transportProvenance = document.formatVersion === 2 ? document.transportProvenance : undefined;
   const frames = document.records.map((record, ordinal) => decodeRecord(record, ordinal));
   const buckets = createMetricBuckets(document, frames);
+  const provenanceDiagnostic = transportProvenance == null
+    ? null
+    : transportProvenanceDiagnostic(transportProvenance, document.durationUs);
   const diagnostics = [
     ...deriveDiagnostics(frames, buckets),
     ...captureEvidence.transportEvents.map((event) => transportEventDiagnostic(event, document.durationUs)),
+    ...(provenanceDiagnostic == null ? [] : [provenanceDiagnostic]),
   ].sort((left, right) => left.startUs - right.startUs || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   const incidentPresets: IncidentPreset[] = document.incidents.length > 0
     ? document.incidents
@@ -968,6 +1211,7 @@ export function parseSession(input: unknown): ParsedSession {
     document,
     transportEvents: captureEvidence.transportEvents,
     captureIntegrity: captureEvidence.captureIntegrity,
+    ...(transportProvenance == null ? {} : { transportProvenance }),
     frames,
     buckets,
     diagnostics,

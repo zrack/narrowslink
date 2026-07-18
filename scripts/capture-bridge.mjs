@@ -15,6 +15,9 @@ const MAX_REQUEST_BYTES = 4_096;
 const MAX_SSE_QUEUE_EVENTS = 256;
 const MAX_SSE_QUEUE_BYTES = 2 * 1024 * 1024;
 const MAX_TOKEN_LENGTH = 256;
+export const MAX_CAPTURE_JOURNAL_ENTRIES = 128;
+
+const CAPTURE_JOURNAL_ERROR_TYPES = new Set(["bridge-error", "subscriber-backpressure"]);
 
 class BridgeRequestError extends Error {
   constructor(status, code, message) {
@@ -247,6 +250,7 @@ export function createCaptureBridge(options) {
   let udpAddress = null;
   let multicastMembership = null;
   let capture = null;
+  let captureJournal = null;
   let captureLease = null;
   let captureRequestNonce = null;
   let captureRequestKey = null;
@@ -264,6 +268,95 @@ export function createCaptureBridge(options) {
     return Number((process.hrtime.bigint() - captureStartMonotonicNs) / 1_000n);
   }
 
+  function createCaptureJournal(request, startedAt) {
+    if (!capture || !udpAddress) throw new Error("An active capture is missing its bound UDP address.");
+    const journal = {
+      captureId: capture.id,
+      startedAt,
+      endedAt: null,
+      state: "active",
+      bind: Object.freeze({
+        requestedHost: request.host,
+        requestedPort: request.port,
+        host: udpAddress.host,
+        port: udpAddress.port,
+        family: udpAddress.family,
+      }),
+      multicast: request.multicast ? Object.freeze({ ...request.multicast }) : null,
+      entriesComplete: true,
+      omittedEntries: 0,
+      entries: [],
+      nextSequence: 0,
+    };
+    captureJournal = journal;
+    appendCaptureJournalEntry("capture-started", { at: startedAt, offsetUs: 0 });
+  }
+
+  function appendCaptureJournalEntry(type, options = {}) {
+    if (!captureJournal || !capture) return;
+    const terminal = type === "capture-stopped";
+    const sequence = captureJournal.nextSequence;
+    captureJournal.nextSequence += 1;
+    if (captureJournal.endedAt !== null && !terminal) {
+      captureJournal.entriesComplete = false;
+      captureJournal.omittedEntries += 1;
+      captureJournal.state = "incomplete";
+      return;
+    }
+    const entry = Object.freeze({
+      sequence,
+      type,
+      at: options.at ?? new Date().toISOString(),
+      offsetUs: options.offsetUs ?? captureDurationUs(),
+      datagrams: capture.datagrams,
+      bytes: capture.bytes,
+      ...(options.code ? { code: options.code } : {}),
+      ...(options.message ? { message: String(options.message).slice(0, 1_000) } : {}),
+      ...(typeof options.fatal === "boolean" ? { fatal: options.fatal } : {}),
+    });
+    const retainedLimit = terminal ? MAX_CAPTURE_JOURNAL_ENTRIES : MAX_CAPTURE_JOURNAL_ENTRIES - 1;
+    if (captureJournal.entries.length >= retainedLimit) {
+      captureJournal.entriesComplete = false;
+      captureJournal.omittedEntries += 1;
+      captureJournal.state = "incomplete";
+      return;
+    }
+    if (CAPTURE_JOURNAL_ERROR_TYPES.has(type)) captureJournal.state = "incomplete";
+    captureJournal.entries.push(entry);
+  }
+
+  function finishCaptureJournal(options = {}) {
+    if (!captureJournal || !capture || captureJournal.endedAt !== null || !capture.endedAt) return;
+    captureJournal.endedAt = capture.endedAt;
+    if (options.clean === false || !captureJournal.entriesComplete) captureJournal.state = "incomplete";
+    else if (captureJournal.state === "active") captureJournal.state = "clean";
+    appendCaptureJournalEntry("capture-stopped", {
+      at: capture.endedAt,
+      offsetUs: capture.durationUs,
+      ...(options.code ? { code: options.code } : {}),
+      ...(options.message ? { message: options.message } : {}),
+    });
+  }
+
+  function captureJournalDocument() {
+    if (!captureJournal || !capture) return null;
+    return {
+      captureId: captureJournal.captureId,
+      startedAt: captureJournal.startedAt,
+      endedAt: captureJournal.endedAt,
+      state: captureJournal.state,
+      bind: { ...captureJournal.bind },
+      multicast: captureJournal.multicast ? { ...captureJournal.multicast } : null,
+      datagrams: capture.datagrams,
+      bytes: capture.bytes,
+      kernelDroppedDatagrams: null,
+      kernelDroppedDatagramsSource: "unavailable",
+      entriesComplete: captureJournal.entriesComplete,
+      omittedEntries: captureJournal.omittedEntries,
+      entries: captureJournal.entries.map((entry) => ({ ...entry })),
+    };
+  }
+
   function statusDocument() {
     return {
       protocolVersion: PROTOCOL_VERSION,
@@ -278,6 +371,7 @@ export function createCaptureBridge(options) {
       udp: udpAddress,
       multicast: multicastMembership,
       capture: capture ? { ...capture, durationUs: captureDurationUs() } : null,
+      captureJournal: captureJournalDocument(),
       subscribers: subscribers.size,
       lastError,
     };
@@ -308,6 +402,7 @@ export function createCaptureBridge(options) {
         fatal: true,
       };
       lastError = overflow;
+      appendCaptureJournalEntry("subscriber-backpressure", overflow);
       closeSubscriber(subscriber, formatSse("bridge-error", overflow));
       return;
     }
@@ -335,13 +430,15 @@ export function createCaptureBridge(options) {
   }
 
   function setError(code, message, fatal) {
+    const at = new Date().toISOString();
     lastError = {
       protocolVersion: PROTOCOL_VERSION,
       code,
-      message,
-      at: new Date().toISOString(),
+      message: String(message).slice(0, 1_000),
+      at,
       fatal,
     };
+    appendCaptureJournalEntry("bridge-error", { code, message, fatal, at });
     broadcast("bridge-error", lastError);
   }
 
@@ -387,6 +484,7 @@ export function createCaptureBridge(options) {
       }
     }
     setError("udp-socket-error", message, true);
+    finishCaptureJournal({ clean: false, code: "udp-socket-error", message });
     broadcastStatus();
   }
 
@@ -530,13 +628,15 @@ export function createCaptureBridge(options) {
         socket.on("error", markSocketFailure);
         socket.on("message", handleDatagram);
         captureStartMonotonicNs = process.hrtime.bigint();
+        const startedAt = new Date().toISOString();
         capture = {
           id: randomUUID(),
-          startedAt: new Date().toISOString(),
+          startedAt,
           datagrams: 0,
           bytes: 0,
           durationUs: 0,
         };
+        createCaptureJournal(request, startedAt);
         captureLease = randomBytes(32).toString("base64url");
         captureRequestNonce = request.nonce;
         captureRequestKey = request.key;
@@ -620,6 +720,7 @@ export function createCaptureBridge(options) {
       capture.durationUs = captureDurationUs();
       capture.endedAt = new Date().toISOString();
     }
+    finishCaptureJournal();
     captureStartMonotonicNs = null;
     state = "stopped";
     broadcastStatus();
