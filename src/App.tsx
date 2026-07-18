@@ -48,7 +48,7 @@ import {
 import { CaptureDialog } from "./capture/CaptureDialog";
 import { SUPPORTED_DECODER } from "./domain/decoder";
 import { parseSession, projectIncident, rowsInRange, validateIncidentPreset } from "./domain/session";
-import { MAX_INCIDENT_TITLE_LENGTH, type AuthoredIncidentRange, type DiagnosticEvent, type IncidentProjection, type Marker, type ParsedSession, type SessionDocument, type TransportEvent } from "./domain/types";
+import { MAX_INCIDENT_TITLE_LENGTH, type AuthoredIncidentRange, type DiagnosticEvent, type IncidentProjection, type Marker, type ParsedSession, type SessionDocument, type TransportEvent, type TransportProvenance, type UdpRemoteEndpoint } from "./domain/types";
 import { loadBundledSession, loadSessionFile, SessionLoadError } from "./data/load-session";
 import { downsampleBuckets, finiteOrDash, incidentViewRange, percentInRange, valueAtOffset } from "./lib/telemetry";
 import { formatBytes, formatClockOffset, formatDurationUs, formatOffsetUsInput, formatSessionDate, parseOffsetUsInput, timeZoneAbbreviation } from "./lib/time";
@@ -63,8 +63,8 @@ import {
 import { createOperationGate, resolveCommittedSave } from "./storage/session-library-workflow";
 import { clearSessionWorkspace, loadSessionWorkspace, saveSessionWorkspace } from "./storage/session-storage";
 
-type ActiveTab = "narrative" | "details" | "stats";
-const INCIDENT_TABS: ActiveTab[] = ["narrative", "details", "stats"];
+type ActiveTab = "narrative" | "details" | "provenance" | "stats";
+const INCIDENT_TABS: ActiveTab[] = ["narrative", "details", "provenance", "stats"];
 type LoadState =
   | { status: "loading"; message: string }
   | { status: "ready"; session: ParsedSession }
@@ -230,6 +230,22 @@ function captureIntegrityLabel(session: ParsedSession): string {
   return "Unknown";
 }
 
+function sessionTransportProvenance(session: ParsedSession): TransportProvenance | undefined {
+  return session.document.formatVersion === 2 ? session.document.transportProvenance : undefined;
+}
+
+function formatUdpAddressPort(address: string, port: number, family: UdpRemoteEndpoint["family"]): string {
+  return `${family === "IPv6" ? `[${address}]` : address}:${port}`;
+}
+
+function formatUdpEndpoint(endpoint: UdpRemoteEndpoint): string {
+  return formatUdpAddressPort(endpoint.address, endpoint.port, endpoint.family);
+}
+
+function formatUsbIdentifier(value: number | null): string {
+  return value === null ? "Unavailable" : `0x${value.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
 function savedIntegrityLabel(status: SessionLibraryEntry["captureIntegrityStatus"]): string {
   if (status === "verified") return "Verified";
   if (status === "incomplete") return "Incomplete";
@@ -268,6 +284,27 @@ function scheduleSavedSessionFocus(preferredIdentity: string | null = null): voi
       : candidates.find((candidate) => candidate.dataset.savedSessionIdentity === preferredIdentity) ?? null;
     (preferred ?? candidates[0])?.focus({ preventScroll: true });
   }));
+}
+
+function scheduleElementFocus(selector: string): void {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+  }));
+}
+
+function handleHorizontalScrollKey(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (event.target !== event.currentTarget) return;
+  const element = event.currentTarget;
+  if (element.scrollWidth <= element.clientWidth) return;
+  const step = Math.max(48, Math.round(element.clientWidth * 0.2));
+  let next: number | null = null;
+  if (event.key === "ArrowLeft") next = element.scrollLeft - step;
+  else if (event.key === "ArrowRight") next = element.scrollLeft + step;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = element.scrollWidth - element.clientWidth;
+  if (next === null) return;
+  event.preventDefault();
+  element.scrollLeft = Math.max(0, Math.min(next, element.scrollWidth - element.clientWidth));
 }
 
 function diagnosticIntersectsRange(event: DiagnosticEvent, startUs: number, endUs: number): boolean {
@@ -382,16 +419,20 @@ function initialBundleItems(session: ParsedSession, incident: IncidentProjection
   const frames = rowsInRange(session.frames, incident.startUs, incident.endUs);
   const diagnostics = incident.diagnostics;
   const transportEvents = session.transportEvents.filter((event) => transportEventIntersectsRange(event, incident.startUs, incident.endUs));
+  const provenance = sessionTransportProvenance(session);
+  const bridgeJournal = provenance?.transport === "udp" ? provenance.journal : null;
   const rawEstimate = records.reduce((sum, record) => sum + record.dataHex.length + 250, 0);
   const decodedEstimate = Math.max(1, frames.length) * 260;
   const integrityEstimate = JSON.stringify(session.captureIntegrity).length
-    + transportEvents.reduce((sum, event) => sum + JSON.stringify(event).length, 0);
+    + transportEvents.reduce((sum, event) => sum + JSON.stringify(event).length, 0)
+    + JSON.stringify(provenance ?? { status: "unavailable" }).length
+    + JSON.stringify(bridgeJournal).length;
   return [
     { id: "rawRecords", name: "Raw source records (NDJSON)", description: "Lossless captured records in the selected range", source: "Local", estimatedBytes: rawEstimate, selected: true },
     { id: "decodedPackets", name: "Decoded packets (CSV)", description: "Fields, integrity, and source provenance", source: `${session.document.decoder.id} ${formatDecoderRevision(session.document.decoder.revision)}`, estimatedBytes: decodedEstimate, selected: true },
     { id: "schema", name: "Decoder schema", description: "Envelope, families, and timing semantics", source: `${session.document.decoder.id} ${formatDecoderRevision(session.document.decoder.revision)}`, estimatedBytes: 4_600, selected: true },
     { id: "diagnostics", name: "Diagnostics", description: "Derived decoder, link, and capture-path events in the selected range", source: "Local evidence", estimatedBytes: Math.max(1, diagnostics.length) * 620, selected: true },
-    { id: "captureIntegrity", name: "Capture integrity", description: "Range transport event log and whole-session integrity receipt", source: "Required provenance", estimatedBytes: integrityEstimate, selected: true, required: true },
+    { id: "captureIntegrity", name: "Capture integrity", description: "Required events, provenance, bridge journal, and terminal receipt", source: "Required provenance", estimatedBytes: integrityEstimate, selected: true, required: true },
     { id: "notes", name: "Operator context", description: "Session-wide note plus markers inside the range", source: "Local workspace", estimatedBytes: 3_200, selected: true },
   ];
 }
@@ -630,9 +671,9 @@ interface OverviewProps {
 const OverviewSignalChart = memo(function OverviewSignalChart({ data }: { data: ReturnType<typeof downsampleBuckets> }) {
   return (
     <div className="overview-tracks" aria-hidden="true">
-      <div><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 2, right: 1, bottom: 1, left: 1 }}><Line type="linear" dataKey="rssi" stroke="#8bc879" strokeWidth={1.15} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>
-      <div><ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{ top: 1, right: 1, bottom: 0, left: 1 }}><Bar dataKey="throughput" fill="#6398d6" opacity={0.82} isAnimationActive={false} /></BarChart></ResponsiveContainer></div>
-      <div><ResponsiveContainer width="100%" height="100%"><BarChart data={data} margin={{ top: 0, right: 1, bottom: 1, left: 1 }}><Bar dataKey="loss" fill="#ea6f66" opacity={0.92} isAnimationActive={false} /></BarChart></ResponsiveContainer></div>
+      <div><ResponsiveContainer width="100%" height="100%"><LineChart accessibilityLayer={false} data={data} margin={{ top: 2, right: 1, bottom: 1, left: 1 }}><Line type="linear" dataKey="rssi" stroke="#8bc879" strokeWidth={1.15} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>
+      <div><ResponsiveContainer width="100%" height="100%"><BarChart accessibilityLayer={false} data={data} margin={{ top: 1, right: 1, bottom: 0, left: 1 }}><Bar dataKey="throughput" fill="#6398d6" opacity={0.82} isAnimationActive={false} /></BarChart></ResponsiveContainer></div>
+      <div><ResponsiveContainer width="100%" height="100%"><BarChart accessibilityLayer={false} data={data} margin={{ top: 0, right: 1, bottom: 1, left: 1 }}><Bar dataKey="loss" fill="#ea6f66" opacity={0.92} isAnimationActive={false} /></BarChart></ResponsiveContainer></div>
     </div>
   );
 });
@@ -707,7 +748,11 @@ function SessionOverview({ session, incidents, incident, incidentEditable, marke
           <OverviewSignalChart data={data} />
           <div className="overview-marker-strip" aria-hidden="true">{markers.map((marker) => <span key={marker.id} style={{ left: `${percentInRange(marker.offsetUs, 0, durationUs)}%` }} />)}</div>
           {incident && <div className="overview-selection" style={{ left: `${selectionLeft}%`, width: `${selectionWidth}%` }} />}
-          {incidents.map((candidate) => <button key={candidate.id} className="overview-incident-hit" style={{ left: `${percentInRange(candidate.startUs, 0, durationUs)}%`, width: `${Math.max(1.2, percentInRange(candidate.endUs, 0, durationUs) - percentInRange(candidate.startUs, 0, durationUs))}%` }} onClick={() => onSelectIncident(candidate)} aria-label={`Select ${candidate.title}`} />)}
+          {incidents.map((candidate) => {
+            const selected = candidate.id === incident?.id;
+            const range = incidentClock(session, candidate);
+            return <button key={candidate.id} className="overview-incident-hit" style={{ left: `${percentInRange(candidate.startUs, 0, durationUs)}%`, width: `${Math.max(1.2, percentInRange(candidate.endUs, 0, durationUs) - percentInRange(candidate.startUs, 0, durationUs))}%` }} onClick={() => onSelectIncident(candidate)} aria-pressed={selected} aria-label={`${selected ? "Selected" : "Select"} ${candidate.title}, ${candidate.severity} severity, ${range.start} to ${range.end}`} />;
+          })}
           {incident && incidentEditable && <IncidentRangeHandles className="overview-range-handles" session={session} incident={incident} domainStartUs={0} domainEndUs={durationUs} onChange={onRangeChange} />}
           <div className="replay-cursor" style={{ left: `${percentInRange(replayOffsetUs, 0, durationUs)}%` }} aria-hidden="true" />
           <input className="overview-scrubber" type="range" min={0} max={durationUs} step={1_000_000} value={replayOffsetUs} onChange={(event) => onSeek(Number(event.target.value))} aria-label="Replay position" aria-valuetext={`${formatClockOffset(session.document.startedAt, replayOffsetUs, session.document.displayTimeZone)} (${formatDurationUs(replayOffsetUs, true)} elapsed)`} aria-describedby="session-overview-summary" />
@@ -739,7 +784,7 @@ interface FamilyTrackRow {
 }
 
 const PacketFamilyTrack = memo(function PacketFamilyTrack({ rows, startUs, endUs }: { rows: FamilyTrackRow[]; startUs: number; endUs: number }) {
-  return <div className="family-list">{rows.map((family) => <div className="family-row" key={family.id}><span><i style={{ background: family.color }} />{family.label}</span><div className="family-segments" aria-label={`${family.label}: ${family.segments.length} cadence-presence interval${family.segments.length === 1 ? "" : "s"}`}>{family.segments.map((segment) => <b key={`${segment.startUs}-${segment.endUs}`} style={{ background: family.color, left: `${percentInRange(segment.startUs, startUs, endUs)}%`, width: `${percentInRange(segment.endUs, startUs, endUs) - percentInRange(segment.startUs, startUs, endUs)}%` }} />)}</div></div>)}</div>;
+  return <div className="family-list">{rows.map((family) => <div className="family-row" key={family.id}><span><i style={{ background: family.color }} />{family.label}</span><div className="family-segments" role="img" aria-label={`${family.label}: ${family.segments.length} cadence-presence interval${family.segments.length === 1 ? "" : "s"}`}>{family.segments.map((segment) => <b key={`${segment.startUs}-${segment.endUs}`} style={{ background: family.color, left: `${percentInRange(segment.startUs, startUs, endUs)}%`, width: `${percentInRange(segment.endUs, startUs, endUs) - percentInRange(segment.startUs, startUs, endUs)}%` }} />)}</div></div>)}</div>;
 });
 
 interface TimelineProps {
@@ -782,7 +827,8 @@ function MissionTimeline({ session, incident, incidentEditable, markers, replayO
   const viewZoneLabel = viewZoneStart === viewZoneEnd ? viewZoneStart : session.document.displayTimeZone;
 
   return (
-    <section className="timeline-panel" aria-label="Mission telemetry timeline">
+    <section className="timeline-panel keyboard-scroll-region" tabIndex={0} aria-label="Mission telemetry timeline" aria-describedby="timeline-keyboard-scroll-instructions" onKeyDown={handleHorizontalScrollKey}>
+      <p id="timeline-keyboard-scroll-instructions" className="visually-hidden">This timeline scrolls horizontally in narrow layouts. When this region is focused, use the Left and Right Arrow keys to pan or Home and End to move to either edge.</p>
       <div className="time-ruler"><span className="time-zone" aria-label={`Time zone ${session.document.displayTimeZone}`}><small>Time ({viewZoneLabel})</small><strong>{formatClockOffset(session.document.startedAt, replayOffsetUs, session.document.displayTimeZone, false).slice(0, 5)}</strong></span><div className="time-buttons">{ticks.map((offset) => { const active = replayOffsetUs >= offset && replayOffsetUs < offset + 60_000_000; return <button key={offset} type="button" style={{ left: `${percentInRange(offset, view.startUs, view.endUs)}%` }} className={active ? "active" : ""} aria-current={active ? "time" : undefined} onClick={() => onSeek(offset)}>{formatClockOffset(session.document.startedAt, offset, session.document.displayTimeZone, false).slice(0, 5)}</button>; })}</div></div>
       <div className="timeline-stack">
         <div className="shared-grid" aria-hidden="true" />
@@ -794,7 +840,7 @@ function MissionTimeline({ session, incident, incidentEditable, markers, replayO
         <PlotLane label="Packet loss" unit="drop % (1s avg)" value={playheadInView ? finiteOrDash(current?.lossPct ?? null, 2, "%") : "Out of view"} scale={[`${lossScaleMax}%`, `${lossScaleMax / 2}%`, "0%"]}><SignalChart data={data} dataKey="loss" color="#ea6f66" label="Packet loss" bar /></PlotLane>
         <PlotLane label="Packet families" className="families-lane"><PacketFamilyTrack rows={familyRows} startUs={view.startUs} endUs={view.endUs} /></PlotLane>
         <PlotLane label="Decoder" unit={session.document.decoder.id} className="event-lane"><div className="decoder-track">{decoderStateSegments.map((segment) => { const left = percentInRange(segment.startUs, view.startUs, view.endUs); const width = percentInRange(segment.endUs, view.startUs, view.endUs) - left; const label = segment.state === "locked" ? `Locked ${formatDecoderRevision(session.document.decoder.revision)}` : "Resync search"; return <span key={`${segment.state}-${segment.startUs}`} className={`decoder-segment ${segment.state}`} style={{ left: `${left}%`, width: `${width}%` }} aria-label={`${label} from ${formatClockOffset(session.document.startedAt, segment.startUs, session.document.displayTimeZone)} to ${formatClockOffset(session.document.startedAt, segment.endUs, session.document.displayTimeZone)}`} title={label}>{width >= 9 ? label : <span className="visually-hidden">{label}</span>}{segment.state === "resync" && width >= 16 && <small>invalid frames retained</small>}</span>; })}</div></PlotLane>
-        <PlotLane label="Diagnostics" className="event-lane"><div className="event-track diagnostics-track">{diagnosticGroups.map((group) => { const anchorUs = Math.max(view.startUs, group.first.startUs); return <button key={group.first.id} type="button" style={{ left: `${percentInRange(anchorUs, view.startUs, view.endUs)}%` }} onClick={() => onSeek(anchorUs)} aria-label={`${group.count} ${group.severity} diagnostic${group.count === 1 ? "" : "s"}; ${failureDomainLabel(group.first.domain)} domain; first: ${group.first.title}, ${formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone)}${group.first.startUs < view.startUs ? "; began before this view" : ""}`}>{shortDiagnosticTitle(group.first)}{group.count > 1 && ` +${group.count - 1}`}<small>{formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone, false)}</small></button>; })}</div></PlotLane>
+        <PlotLane label="Diagnostics" className="event-lane diagnostics-lane"><div className="event-track diagnostics-track">{diagnosticGroups.map((group) => { const anchorUs = Math.max(view.startUs, group.first.startUs); return <button className={`severity-${group.severity}`} key={group.first.id} type="button" style={{ left: `${percentInRange(anchorUs, view.startUs, view.endUs)}%` }} onClick={() => onSeek(anchorUs)} aria-label={`${group.count} ${group.severity} diagnostic${group.count === 1 ? "" : "s"}; ${failureDomainLabel(group.first.domain)} domain; first: ${group.first.title}, ${formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone)}${group.first.startUs < view.startUs ? "; began before this view" : ""}`}><span className="timeline-diagnostic-severity" aria-hidden="true">{group.severity === "critical" ? "C" : group.severity === "warning" ? "W" : "I"}</span><span className="timeline-diagnostic-copy">{shortDiagnosticTitle(group.first)}{group.count > 1 && ` +${group.count - 1}`}</span><small>{formatClockOffset(session.document.startedAt, group.first.startUs, session.document.displayTimeZone, false)}</small></button>; })}</div></PlotLane>
         <PlotLane label="Markers" className="event-lane"><div className="event-track marker-track">{visibleMarkers.map((marker) => <button key={marker.id} type="button" style={{ left: `${percentInRange(marker.offsetUs, view.startUs, view.endUs)}%` }} onClick={() => onSeek(marker.offsetUs)}><BookmarkSimple size={12} weight="fill" /> {marker.title}<small>{formatClockOffset(session.document.startedAt, marker.offsetUs, session.document.displayTimeZone)}</small></button>)}</div></PlotLane>
         <PlotLane label="Latitude" unit="deg" value={playheadInView ? finiteOrDash(current?.latitude ?? null, 4) : "Out of view"}><SignalChart data={data} dataKey="lat" color="#8bc879" label="Latitude" /></PlotLane>
         <PlotLane label="Longitude" unit="deg" value={playheadInView ? finiteOrDash(current?.longitude ?? null, 4) : "Out of view"}><SignalChart data={data} dataKey="lon" color="#8bc879" label="Longitude" /></PlotLane>
@@ -831,6 +877,76 @@ function summarizeNarrative(events: DiagnosticEvent[]): DiagnosticEvent[] {
   return selected.sort((left, right) => left.startUs - right.startUs);
 }
 
+function TransportProvenancePanel({ session, incident }: { session: ParsedSession; incident: IncidentProjection }) {
+  const provenance = sessionTransportProvenance(session);
+  if (!provenance) {
+    const reason = session.document.formatVersion === 1
+      ? "This unchanged version 1 replay predates durable capture receipts and transport provenance."
+      : "This valid version 2 replay predates structured transport provenance.";
+    return (
+      <div className="provenance-view provenance-unavailable" id="incident-panel-provenance" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-provenance">
+        <div className="provenance-title"><h2>Transport provenance</h2><span className="provenance-status unavailable">Unavailable</span></div>
+        <p>{reason} NarrowsLink leaves the evidence unavailable instead of reconstructing it from recorder totals.</p>
+      </div>
+    );
+  }
+
+  const issues = provenance.issueCodes;
+  if (provenance.transport === "serial") {
+    return (
+      <div className="provenance-view" id="incident-panel-provenance" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-provenance">
+        <div className="provenance-title"><h2>Serial provenance</h2><span className={`provenance-status ${provenance.status}`}>{provenance.status}</span></div>
+        <dl className="provenance-facts">
+          <div><dt>Source identity</dt><dd>{provenance.sourceId}</dd></div>
+          <div><dt>USB vendor</dt><dd>{formatUsbIdentifier(provenance.device.usbVendorId)}</dd></div>
+          <div><dt>USB product</dt><dd>{formatUsbIdentifier(provenance.device.usbProductId)}</dd></div>
+          <div><dt>Bluetooth service</dt><dd>{provenance.device.bluetoothServiceClassId ?? "Unavailable"}</dd></div>
+          <div><dt>Negotiated line</dt><dd>{provenance.settings.baudRate.toLocaleString("en-US")} baud · {provenance.settings.dataBits}{provenance.settings.parity[0]?.toUpperCase() ?? "N"}{provenance.settings.stopBits}</dd></div>
+          <div><dt>Flow / buffer</dt><dd>{provenance.settings.flowControl} · {formatBytes(provenance.settings.bufferSize)}</dd></div>
+        </dl>
+        <section className="provenance-section" aria-label="Serial provenance boundaries"><h3>Evidence boundaries</h3>{issues.length > 0 ? <ul className="provenance-issues">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : <p>No provenance reconciliation issues.</p>}</section>
+      </div>
+    );
+  }
+
+  const rangeEndpoints = new Map<string, { endpoint: UdpRemoteEndpoint; records: number; bytes: number }>();
+  for (const record of rowsInRange(session.document.records, incident.startUs, incident.endUs)) {
+    const endpoint = record.transport.remoteEndpoint;
+    if (!endpoint) continue;
+    const key = `${endpoint.family}\u0000${endpoint.address}\u0000${endpoint.port}`;
+    const existing = rangeEndpoints.get(key);
+    if (existing) {
+      existing.records += 1;
+      existing.bytes += record.captureBytes;
+    } else {
+      rangeEndpoints.set(key, { endpoint, records: 1, bytes: record.captureBytes });
+    }
+  }
+  const journal = provenance.journal;
+  const rangeJournalEntries = journal?.entries.filter((entry) => entry.offsetUs >= incident.startUs && entry.offsetUs < incident.endUs) ?? [];
+  const kernelDrops = journal?.kernelDroppedDatagrams === null
+    ? "Unavailable · bridge API"
+    : "Unavailable";
+
+  return (
+    <div className="provenance-view" id="incident-panel-provenance" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-provenance">
+      <div className="provenance-title"><h2>UDP provenance</h2><span className={`provenance-status ${provenance.status}`}>{provenance.status}</span></div>
+      <dl className="provenance-facts">
+        <div><dt>Capture identity</dt><dd>{journal?.captureId ?? "Unavailable"}</dd></div>
+        <div><dt>Bound socket</dt><dd>{journal ? formatUdpAddressPort(journal.bind.host, journal.bind.port, journal.bind.family) : "Unavailable"}</dd></div>
+        <div><dt>Multicast</dt><dd>{journal?.multicast ? `${journal.multicast.group}${journal.multicast.interface ? ` · ${journal.multicast.interface}` : ""}` : "None"}</dd></div>
+        <div><dt>Endpoint attribution</dt><dd>{provenance.endpointAttribution.attributedRecords.toLocaleString()} / {provenance.endpointAttribution.totalRecords.toLocaleString()} records · {provenance.endpointAttribution.distinctEndpoints.length.toLocaleString()} endpoint{provenance.endpointAttribution.distinctEndpoints.length === 1 ? "" : "s"}</dd></div>
+        <div><dt>Bridge totals</dt><dd>{journal ? `${journal.datagrams.toLocaleString()} datagrams · ${formatBytes(journal.bytes)}` : "Unavailable"}</dd></div>
+        <div><dt>Kernel drops</dt><dd>{kernelDrops}</dd></div>
+        <div><dt>Journal</dt><dd>{journal ? `${journal.state} · ${journal.entries.length.toLocaleString()} entries${journal.omittedEntries > 0 ? ` · ${journal.omittedEntries.toLocaleString()} omitted` : ""}` : "Unavailable"}</dd></div>
+      </dl>
+      <section className="provenance-section" aria-label="Remote endpoints in selected incident"><h3>Endpoints in range</h3>{rangeEndpoints.size > 0 ? <ol className="endpoint-list">{[...rangeEndpoints.values()].map(({ endpoint, records, bytes }) => <li key={`${endpoint.family}-${endpoint.address}-${endpoint.port}`}><code>{formatUdpEndpoint(endpoint)}</code><span>{endpoint.family} · {records.toLocaleString()} record{records === 1 ? "" : "s"} · {formatBytes(bytes)}</span></li>)}</ol> : <p>No attributed UDP records intersect this half-open range.</p>}</section>
+      <section className="provenance-section" aria-label="Bridge journal entries in selected incident"><h3>Journal in range</h3>{rangeJournalEntries.length > 0 ? <ol className="journal-list">{rangeJournalEntries.map((entry) => <li key={entry.sequence}><time>{formatClockOffset(session.document.startedAt, entry.offsetUs, session.document.displayTimeZone, false)}</time><div><strong>{entry.type}</strong><span>{entry.datagrams.toLocaleString()} datagrams · {formatBytes(entry.bytes)}</span>{entry.message && <small>{entry.message}</small>}</div></li>)}</ol> : <p>No bridge lifecycle entry intersects this range. Whole-session state: {journal?.state ?? "unavailable"}.</p>}</section>
+      <section className="provenance-section" aria-label="UDP provenance boundaries"><h3>Evidence boundaries</h3>{issues.length > 0 ? <ul className="provenance-issues">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : <p>No provenance reconciliation issues.</p>}</section>
+    </div>
+  );
+}
+
 interface IncidentPanelProps {
   session: ParsedSession;
   incidents: IncidentProjection[];
@@ -841,7 +957,7 @@ interface IncidentPanelProps {
   workspacePersistence: WorkspacePersistenceState;
   onTabChange: (tab: ActiveTab) => void;
   onNoteChange: (note: string) => void;
-  onSelectIncident: (id: string) => void;
+  onSelectIncident: (id: string, focusPanel?: boolean) => void;
   onEditRange: () => void;
   onClear: () => void;
 }
@@ -852,7 +968,7 @@ function IncidentPanel(props: IncidentPanelProps) {
   useEffect(() => { setNarrativeLimit(6); }, [incident?.id]);
   if (!incident) {
     const firstIncident = props.incidents[0];
-    return <aside className="incident-panel empty-incident" aria-label="Incident details"><div className="incident-heading"><div><BookmarkSimple size={14} /><span>Incident selection</span></div></div><div className="empty-state"><ClockCounterClockwise size={24} /><h2>{firstIncident ? "No incident selected" : "No incident ranges"}</h2><p>{firstIncident ? "Choose an incident from the session overview to inspect decoded evidence and prepare a handoff bundle." : "This replay does not declare any incident presets. Playback, decoded values, markers, and the session overview remain available."}</p>{firstIncident && <button className="secondary-action" type="button" onClick={() => props.onSelectIncident(firstIncident.id)}>Select first incident</button>}</div></aside>;
+    return <aside className="incident-panel empty-incident" aria-label="Incident details"><div className="incident-heading"><div><BookmarkSimple size={14} /><span>Incident selection</span></div></div><div className="empty-state"><ClockCounterClockwise size={24} /><h2 data-incident-empty-focus tabIndex={-1}>{firstIncident ? "No incident selected" : "No incident ranges"}</h2><p>{firstIncident ? "Choose an incident from the session overview to inspect decoded evidence and prepare a handoff bundle." : "This replay does not declare any incident presets. Playback, decoded values, markers, and the session overview remain available."}</p>{firstIncident && <button className="secondary-action" type="button" onClick={() => props.onSelectIncident(firstIncident.id, true)}>Select first incident</button>}</div></aside>;
   }
   const clock = incidentClock(session, incident);
   const stats = incident.stats;
@@ -882,10 +998,11 @@ function IncidentPanel(props: IncidentPanelProps) {
   return (
     <aside className="incident-panel" aria-label="Incident details">
       <div className="incident-heading"><div><BookmarkSimple size={14} weight="fill" /><span>Incident selection</span></div><div className="incident-heading-actions"><button className="icon-button" type="button" aria-label={props.incidentEditable ? "Edit operator range" : "Refine replay preset as a local range"} title={props.incidentEditable ? "Edit operator range" : "Refine as local range"} onClick={props.onEditRange}><NotePencil size={15} /></button><button className="icon-button" type="button" aria-label="Clear incident" onClick={props.onClear}><X size={15} /></button></div></div>
-      <div className="incident-range"><select className="incident-switcher" value={incident.id} onChange={(event) => props.onSelectIncident(event.target.value)} aria-label="Selected incident">{props.incidents.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</select><strong>{clock.start} – {clock.end}</strong><span>{props.incidentEditable ? "Local range" : "Replay preset"} · {clock.duration}</span></div>
+      <div className="incident-range"><select className="incident-switcher" data-incident-selected-focus value={incident.id} onChange={(event) => props.onSelectIncident(event.target.value)} aria-label="Selected incident">{props.incidents.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}</select><strong>{clock.start} – {clock.end}</strong><span>{props.incidentEditable ? "Local range" : "Replay preset"} · {clock.duration}</span></div>
       <div className="incident-tabs" role="tablist" aria-label="Incident information" onKeyDown={handleTabKeyDown}>{INCIDENT_TABS.map((tab) => <button id={`incident-tab-${tab}`} aria-controls={`incident-panel-${tab}`} aria-selected={props.activeTab === tab} role="tab" tabIndex={props.activeTab === tab ? 0 : -1} type="button" key={tab} className={props.activeTab === tab ? "active" : ""} onClick={() => props.onTabChange(tab)}>{tab}</button>)}</div>
-      {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p className="visually-hidden">{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{displayedNarrative.map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong>{event.title}<small> · {failureDomainLabel(event.domain)}</small><span className="visually-hidden"> — {event.severity} severity</span></strong><p>{event.description}</p></div></li>)}</ol>{narrativeSummary.length < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit(showingAllNarrative ? 6 : narrative.length)}>{showingAllNarrative ? "Show six key events" : `Show all ${narrative.length} events`} <small>{displayedNarrative.length} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
+      {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p className="visually-hidden">{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{displayedNarrative.map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong><span className={`diagnostic-severity severity-${event.severity}`}>{event.severity}</span>{event.title}<small> · {failureDomainLabel(event.domain)}</small></strong><p>{event.description}</p></div></li>)}</ol>{narrativeSummary.length < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit(showingAllNarrative ? 6 : narrative.length)}>{showingAllNarrative ? "Show six key events" : `Show all ${narrative.length} events`} <small>{displayedNarrative.length} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
       {props.activeTab === "details" && <dl className="details-view" id="incident-panel-details" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-details"><div><dt>Source</dt><dd>{formatSource(session)}</dd></div><div><dt>Capture integrity</dt><dd>{captureIntegrityLabel(session)}</dd></div><div><dt>Evidence domains</dt><dd>{evidenceDomainSummary}</dd></div><div><dt>Decoder</dt><dd>{session.document.decoder.id} {formatDecoderRevision(session.document.decoder.revision)}</dd></div><div><dt>Frames in range</dt><dd>{stats.receivedFrames.toLocaleString()}</dd></div><div><dt>Missing</dt><dd className="danger">{stats.missingFrames}</dd></div><div><dt>Loss</dt><dd className="danger">{finiteOrDash(stats.lossPct, 2, "%")}</dd></div><div><dt>Lowest RSSI</dt><dd>{finiteOrDash(stats.lowestRssiDbm, 1, " dBm")}</dd></div><div><dt>Peak jitter</dt><dd>{finiteOrDash(stats.peakJitterMs, 1, " ms")}</dd></div><div><dt>Complete packets</dt><dd>{stats.completePackets.toLocaleString()}</dd></div></dl>}
+      {props.activeTab === "provenance" && <TransportProvenancePanel session={session} incident={incident} />}
       {props.activeTab === "stats" && <div className="stats-view" id="incident-panel-stats" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-stats"><StatBar label="Link availability" value={stats.linkAvailabilityPct} /><StatBar label="Decode confidence" value={stats.decodeConfidencePct} /><StatBar label="Delivery" value={stats.lossPct == null ? null : 100 - stats.lossPct} /></div>}
       <div className="operator-notes"><div><span>Session-wide operator note</span><NotePencil size={14} aria-hidden="true" /></div><textarea maxLength={2000} value={props.note} onChange={(event) => props.onNoteChange(event.target.value)} aria-label="Session-wide operator note" /><small className={props.workspacePersistence === "stored" ? "" : "storage-warning"}>{props.workspacePersistence === "stored" ? "Stored in this browser only; included with any range when selected for export" : props.workspacePersistence === "memory-only" ? "Removed from browser storage; save this replay again to persist the visible workspace" : "Browser storage is unavailable; edits remain in memory until this page closes"}</small></div>
     </aside>
@@ -916,7 +1033,7 @@ function BundlePanel(props: BundlePanelProps) {
   return (
     <section className="bundle-panel" aria-label="Incident bundle preview">
       <div className="bundle-summary"><div><span>Incident bundle preview</span><p>A local, verifiable archive for reproducing and investigating the selected incident.</p></div><dl><div><dt>Time range</dt><dd>{clock ? <>{clock.start} – {clock.end}<small>{clock.duration}</small></> : <span className="no-selection-copy">No incident selected</span>}</dd></div><div><dt>Size (est.)</dt><dd>{formatBytes(estimatedBytes)}</dd></div><div><dt>Groups</dt><dd>{selected.length}</dd></div></dl><button className="primary-action bundle-create" type="button" disabled={!props.incident || selected.length === 0} onClick={props.onCreateBundle}><DownloadSimple size={17} /> Create incident bundle</button></div>
-      <div className="bundle-body"><div className="bundle-table-wrap" role="table" aria-label="Evidence bundle contents"><div className="bundle-table-head" role="row"><span role="columnheader">Include</span><span role="columnheader">Item</span><span role="columnheader">Description</span><span role="columnheader">Source</span><span role="columnheader">Size (est.)</span></div><div className="bundle-table" role="rowgroup">{props.items.map((item) => <label className={!item.selected && !item.required ? "excluded" : ""} key={item.id} role="row"><span className="checkbox" role="cell"><input type="checkbox" checked={item.required || item.selected} disabled={!props.incident || item.required} title={item.required ? "Required in every verifiable archive" : undefined} onChange={() => toggle(item.id)} /></span><strong role="cell">{item.name}</strong><span role="cell">{item.description}</span><span role="cell">{item.source}</span><span role="cell">{formatBytes(item.estimatedBytes)}</span></label>)}</div></div><label className="bundle-notes"><span>Session-wide note for bundle</span><small className={props.workspacePersistence === "stored" ? "" : "storage-warning"}>{props.workspacePersistence === "stored" ? "This note applies to the session and is included with the selected range." : props.workspacePersistence === "memory-only" ? "This visible note is memory-only until the replay is saved again; it can still be included now." : "Browser storage is unavailable; this note remains in memory and can still be included now."}</small><textarea disabled={!props.incident} value={props.note} maxLength={2000} onChange={(event) => props.onNoteChange(event.target.value)} /><b>{props.note.length} / 2000</b></label></div>
+      <div className="bundle-body"><p id="bundle-table-keyboard-scroll-instructions" className="visually-hidden">This evidence table scrolls horizontally in narrow layouts. When the table region is focused, use the Left and Right Arrow keys to reveal columns or Home and End to move to either edge.</p><div className="bundle-table-wrap keyboard-scroll-region" role="region" tabIndex={0} aria-label="Scrollable evidence bundle contents" aria-describedby="bundle-table-keyboard-scroll-instructions" onKeyDown={handleHorizontalScrollKey}><div role="table" aria-label="Evidence bundle contents"><div className="bundle-table-head" role="row"><span role="columnheader">Include</span><span role="columnheader">Item</span><span role="columnheader">Description</span><span role="columnheader">Source</span><span role="columnheader">Size (est.)</span></div><div className="bundle-table" role="rowgroup">{props.items.map((item) => <label className={!item.selected && !item.required ? "excluded" : ""} key={item.id} role="row"><span className="checkbox" role="cell"><input type="checkbox" checked={item.required || item.selected} disabled={!props.incident || item.required} title={item.required ? "Required in every verifiable archive" : undefined} onChange={() => toggle(item.id)} /></span><strong role="cell">{item.name}</strong><span role="cell">{item.description}</span><span role="cell">{item.source}</span><span role="cell">{formatBytes(item.estimatedBytes)}</span></label>)}</div></div></div><label className="bundle-notes"><span>Session-wide note for bundle</span><small className={props.workspacePersistence === "stored" ? "" : "storage-warning"}>{props.workspacePersistence === "stored" ? "This note applies to the session and is included with the selected range." : props.workspacePersistence === "memory-only" ? "This visible note is memory-only until the replay is saved again; it can still be included now." : "Browser storage is unavailable; this note remains in memory and can still be included now."}</small><textarea disabled={!props.incident} value={props.note} maxLength={2000} onChange={(event) => props.onNoteChange(event.target.value)} /><b>{props.note.length} / 2000</b></label></div>
     </section>
   );
 }
@@ -1065,6 +1182,8 @@ function IncidentRangeDialog({ session, mode, range, onClose, onSave, onDelete }
   const titleRef = useRef<HTMLInputElement>(null);
   const startRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLInputElement>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const deleteKeepRef = useRef<HTMLButtonElement>(null);
   const [title, setTitle] = useState(range.title);
   const [startValue, setStartValue] = useState(() => formatOffsetUsInput(range.startUs));
   const [endValue, setEndValue] = useState(() => formatOffsetUsInput(range.endUs));
@@ -1080,6 +1199,14 @@ function IncidentRangeDialog({ session, mode, range, onClose, onSave, onDelete }
   const zone = timeZoneAbbreviation(session.document.startedAt, session.document.displayTimeZone, startUs ?? 0);
   const clearFieldError = (field: "title" | "start" | "end") => {
     if (error?.field === field || error?.field === "range") setError(null);
+  };
+  const requestDelete = () => {
+    setConfirmDelete(true);
+    requestAnimationFrame(() => deleteKeepRef.current?.focus({ preventScroll: true }));
+  };
+  const cancelDelete = () => {
+    setConfirmDelete(false);
+    requestAnimationFrame(() => deleteTriggerRef.current?.focus({ preventScroll: true }));
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -1125,7 +1252,7 @@ function IncidentRangeDialog({ session, mode, range, onClose, onSave, onDelete }
         </div>
         <div className="range-semantics"><strong>{validDuration == null ? "Invalid range" : formatDurationUs(validDuration, true)}</strong><span>[start, end) · the end instant is excluded</span><small>Session clock uses {session.document.displayTimeZone} ({zone}). Offsets are stored as integer microseconds.</small></div>
         {error && <p id="range-dialog-error" className="dialog-error" role="alert">{error.message}</p>}
-        {mode === "edit" && onDelete && <div className="range-delete">{confirmDelete ? <><p>Delete this local range? The replay and exported archives are not changed.</p><div><button className="secondary-action" type="button" onClick={() => setConfirmDelete(false)}>Keep range</button><button className="destructive-action" type="button" onClick={onDelete}><Trash size={15} /> Delete range</button></div></> : <button className="destructive-link" type="button" onClick={() => setConfirmDelete(true)}><Trash size={14} /> Delete local range</button>}</div>}
+        {mode === "edit" && onDelete && <div className="range-delete">{confirmDelete ? <><p>Delete this local range? The replay and exported archives are not changed.</p><div><button ref={deleteKeepRef} className="secondary-action" type="button" onClick={cancelDelete}>Keep range</button><button className="destructive-action" type="button" onClick={onDelete}><Trash size={15} /> Delete range</button></div></> : <button ref={deleteTriggerRef} className="destructive-link" type="button" onClick={requestDelete}><Trash size={14} /> Delete local range</button>}</div>}
         <div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Cancel</button><button className="primary-action" type="submit"><Check size={16} weight="bold" /> {mode === "create" ? "Create range" : "Save range"}</button></div>
       </form>
     </div>,
@@ -1238,13 +1365,18 @@ function Workspace({ session, onOpenReplay, onOpenCapture, library, workspacePer
     bundleIncidentIdRef.current = selectedIncident?.id ?? null;
   }, [selectedIncident?.endUs, selectedIncident?.id, selectedIncident?.startUs, session]);
   const notify = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2600); }, []);
-  const selectIncident = (id: string) => {
+  const selectIncident = (id: string, focusPanel = false) => {
     const next = incidents.find((candidate) => candidate.id === id);
     if (!next) return;
     setSelectedIncidentId(next.id);
     replay.pause();
     replay.seek(next.startUs);
     setActiveTab("narrative");
+    if (focusPanel) scheduleElementFocus("[data-incident-selected-focus]");
+  };
+  const clearIncident = () => {
+    setSelectedIncidentId(null);
+    scheduleElementFocus("[data-incident-empty-focus]");
   };
   const togglePlayback = () => replay.snapshot.status === "playing" ? replay.pause() : replay.play();
   const addMarker = (marker: Marker) => { setMarkers((current) => [...current, marker].sort((left, right) => left.offsetUs - right.offsetUs)); setMarkerDialogOpen(false); replay.seek(marker.offsetUs); notify(`Marker added at ${formatClockOffset(session.document.startedAt, marker.offsetUs, session.document.displayTimeZone)}`); };
@@ -1296,6 +1428,7 @@ function Workspace({ session, onOpenReplay, onOpenCapture, library, workspacePer
     setSelectedIncidentId(replacement?.id ?? null);
     setRangeDialog(null);
     if (replacement) replay.seek(replacement.startUs);
+    scheduleElementFocus(replacement ? "[data-incident-selected-focus]" : "[data-incident-empty-focus]");
     notify("Local incident range deleted");
   };
   const resizeSelectedRange = (startUs: number, endUs: number) => {
@@ -1310,7 +1443,7 @@ function Workspace({ session, onOpenReplay, onOpenCapture, library, workspacePer
       <TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} onOpenLibrary={() => setLibraryDialogOpen(true)} savedSessionCount={library.entries.length} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} />
       <SessionOverview session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onSelectIncident={(incident) => selectIncident(incident.id)} onCreateRange={openNewRange} onRangeChange={resizeSelectedRange} />
       {selectedIncident ? <MissionTimeline session={session} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onRangeChange={resizeSelectedRange} /> : <section className="timeline-panel"><div className="empty-state"><BookmarkSimple size={24} /><h2>Select an incident</h2><p>The full replay remains available in the session overview.</p></div></section>}
-      <IncidentPanel session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} activeTab={activeTab} note={note} workspacePersistence={workspacePersistence} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onEditRange={openRangeEditor} onClear={() => setSelectedIncidentId(null)} />
+      <IncidentPanel session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} activeTab={activeTab} note={note} workspacePersistence={workspacePersistence} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onEditRange={openRangeEditor} onClear={clearIncident} />
       <BundlePanel session={session} incident={selectedIncident} items={bundleItems} note={note} workspacePersistence={workspacePersistence} onItemsChange={setBundleItems} onNoteChange={setNote} onCreateBundle={() => setBundleDialogOpen(true)} />
       {markerDialogOpen && <MarkerDialog session={session} initialOffsetUs={replay.snapshot.offsetUs} onClose={() => setMarkerDialogOpen(false)} onCreate={addMarker} />}
       {rangeDialog && <IncidentRangeDialog session={session} mode={rangeDialog.mode} range={rangeDialog.range} onClose={() => setRangeDialog(null)} onSave={saveRange} onDelete={rangeDialog.mode === "edit" ? deleteRange : undefined} />}
@@ -1458,12 +1591,13 @@ export function App() {
     return () => { cancelled = true; };
   }, [libraryEntries, state]);
 
+  const stateFocusKey = state.status === "ready" ? sessionWorkspaceKey(state.session) : state.status;
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(state.status === "ready" ? ".workspace-heading" : "[data-load-focus]")?.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(frame);
-  }, [state.status]);
+  }, [state.status, stateFocusKey]);
   const openReplay = () => fileInputRef.current?.click();
   const completeCapture = useCallback(async (document: SessionDocument) => {
     sessionOperationGate.begin();
@@ -1471,6 +1605,7 @@ export function App() {
       const session = parseSession(document);
       setState({ status: "ready", session });
       setCaptureDialogOpen(false);
+      scheduleElementFocus(".workspace-heading");
       void persistSession(session, "Capture saved to the local session library");
     } catch (cause) {
       setCaptureDialogOpen(false);

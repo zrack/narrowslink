@@ -28,13 +28,13 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 **Workflow:**
 
 1. Select UDP bridge or Web Serial capture and configure the source.
-2. Record raw datagrams or serial frames while NarrowsLink retains byte counts, monotonic offsets, transport observations, and malformed input.
+2. Record raw datagrams or serial frames while NarrowsLink retains byte counts, monotonic offsets, malformed input, UDP remote endpoints and bridge-journal events, or the browser-exposed serial device identity and negotiated settings.
 3. Stop the source with **Stop, save & replay**.
 4. Save the downloaded version 2 `.nlsession`, continue into replay with the validated finalized session, and retain the canonical session in the local library when IndexedDB succeeds.
 
 **Current constraints:** UDP requires the token-protected local bridge. Serial capture requires a browser with Web Serial support and a secure context such as `localhost` or `127.0.0.1`. The built-in decoder targets NSL-01, and captures must remain within the current serialized-file, record-count, duration, and browser-storage limits. The automatic handoff validates and replays the finalized in-memory document; it does not re-import the downloaded bytes as a separate file-selection step. If IndexedDB, Web Crypto, or the available quota prevents library persistence, the downloaded file and active replay remain usable, but NarrowsLink reports that the session was not saved in the library.
 
-**Implementation evidence:** [capture dialog](src/capture/CaptureDialog.tsx), [bounded recorder](src/capture/recorder.ts), [UDP client](src/capture/udp-bridge.ts), [Web Serial adapter](src/capture/web-serial.ts), [durable session library](src/storage/session-library.ts), [session-library tests](src/storage/session-library.test.ts), and [capture-pipeline tests](src/capture/capture-pipeline.test.ts).
+**Implementation evidence:** [capture dialog](src/capture/CaptureDialog.tsx), [bounded recorder](src/capture/recorder.ts), [UDP client](src/capture/udp-bridge.ts), [Web Serial adapter](src/capture/web-serial.ts), [durable session library](src/storage/session-library.ts), [session-library tests](src/storage/session-library.test.ts), [capture-pipeline tests](src/capture/capture-pipeline.test.ts), the [cross-browser real-UDP capture gate](tests/e2e/capture-to-evidence.spec.ts), and [browser storage/failure recovery](tests/e2e/storage-failures.spec.ts).
 
 ## UC-002 — Investigate a recorded telemetry fault
 
@@ -52,7 +52,7 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 
 **Current constraints:** Active-session processing occurs in browser memory. Saved session documents use IndexedDB, while markers, notes, and authored ranges use separate per-session local storage; either store can be unavailable or reject a write. Exact duplicate session content shares one SHA-256 library identity and retains its original saved date. Removing a saved replay attempts to clear both its library document and separate operator workspace; the active in-memory replay stays open, exported files are unaffected, and a persistent warning identifies any residual workspace that could not be cleared. NarrowsLink displays one active replay and does not provide automatic comparison between separate captures.
 
-**Implementation evidence:** [session projection](src/domain/session.ts), [replay clock](src/replay/ReplayClock.ts), [timeline helpers](src/lib/telemetry.ts), [durable session library](src/storage/session-library.ts), [session-library tests](src/storage/session-library.test.ts), and [workspace persistence](src/storage/session-storage.ts).
+**Implementation evidence:** [session projection](src/domain/session.ts), [replay clock](src/replay/ReplayClock.ts), [timeline helpers](src/lib/telemetry.ts), [durable session library](src/storage/session-library.ts), [session-library tests](src/storage/session-library.test.ts), [workspace persistence](src/storage/session-storage.ts), [browser replay and library coverage](tests/e2e/replay-library.spec.ts), [browser storage/failure recovery](tests/e2e/storage-failures.spec.ts), and [keyboard/accessibility coverage](tests/e2e/accessibility.spec.ts).
 
 ## UC-003 — Audit capture-path integrity
 
@@ -62,15 +62,15 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 
 **Workflow:**
 
-1. For a version 2 session, review the workspace integrity summary and capture-path diagnostics; legacy version 1 sessions have no receipt and are normalized to an unknown assessment.
-2. Inspect the saved `.nlsession` or exported `transport/integrity-receipt.json` and `transport/events.json` when the exact evidence basis, counters, issue codes, and structured events are required.
+1. For a version 2 session, review the workspace integrity summary, structured Provenance inspector, and capture-path diagnostics; legacy version 1 sessions have no receipt or provenance and are normalized to an unknown assessment.
+2. Inspect the saved `.nlsession` or exported `transport/integrity-receipt.json`, `transport/events.json`, `transport/provenance.json`, and `transport/journal.json` when the exact evidence basis, counters, endpoint or device attribution, issue codes, and structured lifecycle entries are required.
 3. Review immutable transport evidence for UDP bridge event-stream sequence discontinuities, counter mismatches, bridge or event-stream errors, recorder limits, serial failures, disconnects, and shutdown disposition.
 4. Correlate `capture-path` diagnostics with the selected incident while keeping link, decoder, and unattributed evidence domains distinct.
-5. Reconcile retained totals with transport-reported totals when the adapter supplied them.
+5. Reconcile retained totals with transport-reported totals, endpoint-attribution totals, and the capture-scoped bridge journal when those observations are available.
 
-**Current constraints:** The workspace presents a summary label and flattened diagnostic descriptions rather than a complete structured receipt-and-event inspector, so exact field-level auditing requires the saved session or exported JSON. A version 2 receipt can only attest to observations available to the local adapters; per-datagram remote endpoints, a durable bridge-side event journal, and operating-system drop counters are not yet captured.
+**Current constraints:** A version 2 receipt and provenance document can attest only to observations exposed by the local adapters. Node's portable UDP API does not expose a capture-scoped operating-system drop counter, so current bridge journals preserve that value as explicitly unavailable rather than claiming zero. Captured and reported byte totals describe retained payload bytes, not measured link-layer traffic. Earlier version 2 sessions that predate provenance remain valid and are not rewritten; their provenance inspector and exported provenance artifacts state that the evidence is unavailable.
 
-**Implementation evidence:** [integrity types](src/domain/types.ts), [capture finalization](src/capture/recorder.ts), [session validation and diagnostics](src/domain/session.ts), and [session integrity tests](src/domain/session.test.ts).
+**Implementation evidence:** [integrity types](src/domain/types.ts), [capture finalization](src/capture/recorder.ts), [session validation and diagnostics](src/domain/session.ts), [session integrity tests](src/domain/session.test.ts), and the [cross-browser capture-to-evidence gate](tests/e2e/capture-to-evidence.spec.ts).
 
 ## UC-004 — Run decoder and session regressions
 
@@ -87,7 +87,7 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 
 **Current constraints:** This is a repeatable NarrowsLink development and QA workflow, not a firmware harness or built-in side-by-side comparison screen. It covers the bundled NSL-01 schema; runtime schema import and third-party decoder conformance are not implemented.
 
-**Implementation evidence:** [fixture generator](scripts/generate-demo-session.mjs), [decoder](src/domain/decoder.ts), [fixture integration tests](src/domain/fixture.integration.test.ts), [decoder tests](src/domain/decoder.test.ts), and [session tests](src/domain/session.test.ts).
+**Implementation evidence:** [fixture generator](scripts/generate-demo-session.mjs), [decoder](src/domain/decoder.ts), [fixture integration tests](src/domain/fixture.integration.test.ts), [decoder tests](src/domain/decoder.test.ts), [session tests](src/domain/session.test.ts), and the [cross-browser replay/library regression](tests/e2e/replay-library.spec.ts).
 
 ## UC-005 — Hand off a verifiable incident bundle
 
@@ -98,13 +98,13 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 **Workflow:**
 
 1. Select the operator-authored half-open incident range.
-2. Add the relevant markers and notes, choose optional artifact groups, and retain the mandatory capture-integrity evidence.
+2. Add the relevant markers and notes, choose optional artifact groups, and retain the mandatory transport events, provenance, bridge journal, and capture-integrity receipt.
 3. Generate and download the `.nlb` ZIP archive.
 4. Verify the manifest, inclusion list, byte sizes, record counts, and SHA-256 checksums after extraction.
 
 **Current constraints:** Checksums establish internal archive integrity but do not authenticate who created the unsigned bundle or whether its originating NarrowsLink build was trustworthy. Raw telemetry, coordinates, identifiers, and notes may be sensitive and must be reviewed before sharing.
 
-**Implementation evidence:** [bundle builder](src/domain/bundle.ts), [bundle tests](src/domain/bundle.test.ts), and [session workspace persistence](src/storage/session-storage.ts).
+**Implementation evidence:** [bundle builder](src/domain/bundle.ts), [bundle tests](src/domain/bundle.test.ts), [session workspace persistence](src/storage/session-storage.ts), the [cross-browser capture-to-evidence gate](tests/e2e/capture-to-evidence.spec.ts), and its [independent archive verifier](tests/e2e/support/archive.ts).
 
 ## Maintaining this log
 

@@ -29,10 +29,12 @@ Treat `docs/design/narrowslink-mission-timeline-source.png` as the source of tru
 - New live captures must emit session format v2 with immutable transport events and a terminal capture-integrity receipt. Keep v1 imports unchanged and label their capture integrity as unknown rather than inferring a clean capture.
 - Never infer transport-reported counters from browser or recorder totals. Missing UDP terminal status remains null and yields incomplete `udp-browser-observed` evidence; recorder finalization without adapter evidence remains incomplete and `recorder-only`.
 - Reconcile receipt counters and issue codes for every v2 status. Complete event logs require exact matching events; an explicitly incomplete event log may omit an exhausted-budget event but must retain the corresponding receipt code and counters.
+- Preserve transport provenance as explicit evidence rather than inference. New UDP captures must retain each remote endpoint and the bridge's bounded capture journal; new serial captures must retain the selected device identifiers the browser exposes and the negotiated port settings. Represent unavailable host counters as null with their evidence source, never as zero.
 - Project transport anomalies as `capture-path` diagnostics so operators can distinguish local capture failures from link, decoder, and unattributed telemetry evidence.
 - Evidence exports must produce a real local archive and describe exactly which artifacts they contain.
-- Every evidence bundle must include the range-filtered transport event log and the whole-session integrity receipt, even when optional artifact groups are excluded.
+- Every evidence bundle must include the range-filtered transport event log, whole-session provenance and bridge-journal artifacts, and whole-session integrity receipt, even when optional artifact groups are excluded.
 - Keep the core decoder, replay, incident, and bundle logic pure and covered by automated tests.
+- Preserve the cross-browser release gate from real loopback UDP capture through validated `.nlsession` reimport, replay, operator-authored evidence, independently verified `.nlb` archive, persistence, failure recovery, and removal. Keep physical Web Serial and manual assistive-technology claims explicitly separate from automated browser-engine evidence.
 
 ## Documentation Ownership
 

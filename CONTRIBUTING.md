@@ -11,6 +11,7 @@ NarrowsLink is a local-first telemetry capture, replay, incident-analysis, and e
 | [CHANGELOG.md](CHANGELOG.md) | The sole chronological record of notable completed changes and releases |
 | [ROADMAP.md](ROADMAP.md) | Planned work and exit criteria only |
 | [design-qa.md](design-qa.md) | The current accepted visual baseline and verification evidence |
+| [ACCESSIBILITY.md](ACCESSIBILITY.md) | Current automated accessibility evidence, keyboard contract, support limits, and manual certification matrix |
 | [AGENTS.md](AGENTS.md) | Durable product direction and project constraints for coding agents |
 | [CONTRIBUTING.md](CONTRIBUTING.md) and the pull-request template | Current contributor and review policy |
 
@@ -33,10 +34,13 @@ Use Node.js 20.19 or newer. The repository declares this minimum in `package.jso
 ```bash
 node --version
 npm ci
+npx playwright install chromium firefox webkit
 npm run dev
 ```
 
 Vite prints the local development URL. The application automatically loads the bundled harbor-relay fixture; use **Open local replay** to exercise the user-import path or **Live capture** for UDP/Web Serial.
+
+On a Linux workstation or fresh CI runner, install the required browser system libraries with `npx playwright install --with-deps chromium firefox webkit` instead of the browser-only command above.
 
 ## Required checks
 
@@ -56,7 +60,10 @@ Available commands:
 | `npm run test:watch` | Run Vitest in watch mode |
 | `npm run build` | Typecheck and create the production bundle |
 | `npm run preview` | Serve the production bundle locally |
-| `npm run check` | Run typecheck, tests, and production build |
+| `npm run test:e2e` | Build and run the Playwright release suite in Chromium, Firefox, and WebKit |
+| `npm run test:e2e:run` | Run Playwright against an existing production build |
+| `npm run test:e2e:headed` | Build and run the browser suite with visible browser windows |
+| `npm run check` | Run typecheck, Vitest, production build, and the complete Playwright browser matrix |
 | `npm run capture:bridge` | Start the token-protected local UDP capture bridge |
 | `npm run capture:demo` | Send checked-in fixture frames as real UDP datagrams |
 | `npm run fixture:generate` | Regenerate the deterministic bundled replay |
@@ -89,13 +96,14 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 - Never let a control client stop or adopt a UDP capture it did not start; reconcile bridge sequence, datagram, and byte totals before claiming a capture is complete.
 - New live captures must finalize as session v2 with immutable transport events and a terminal receipt. Preserve strict v1 import behavior and never infer verified integrity for legacy evidence.
 - Never substitute browser or recorder counts for an unavailable transport-reported count. Preserve null observations, use the truthful incomplete assessment basis, and require explicit adapter evidence before verification.
+- Preserve the bridge journal, per-datagram UDP remote endpoint, and Web Serial device and negotiated-setting evidence when changing capture code. Keep unavailable operating-system counters explicitly null with their observation source; do not convert missing evidence into a clean zero.
 - Reconcile receipt issue codes, counters, and immutable events for incomplete as well as verified captures. If the bounded event log is exhausted, mark it incomplete and retain every known receipt-level fact rather than fabricating an event.
 - Classify observed capture failures as `capture-path` evidence; CRC or partial-frame detection alone does not prove whether the source, link, decoder, or local capture path caused the corruption.
 - Bound live recording by the serialized `.nlsession` size, not only the binary payload size, so every accepted capture remains importable.
 - Preserve malformed, partial, checksum-failed, and unknown frames with explicit integrity status and source linkage.
 - Keep decoder, replay, range, incident, and bundle behavior pure where practical and add automated tests for changes.
 - Make evidence manifests truthful: every listed file must exist, every inclusion toggle must be honored, and hashes must cover the exact emitted bytes.
-- Always emit and hash `transport/events.json` and `transport/integrity-receipt.json`; transport evidence is a mandatory bundle baseline, not an optional group.
+- Always emit and hash `transport/events.json`, `transport/provenance.json`, `transport/journal.json`, and `transport/integrity-receipt.json`; transport evidence is a mandatory bundle baseline, not an optional group.
 - Do not add a required cloud dependency for capture, replay, analysis, or export.
 
 ## Where changes belong
@@ -114,6 +122,7 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 | Durable session-document library | `src/storage/session-library.ts` |
 | Marker, note, and authored-range persistence | `src/storage/session-storage.ts` |
 | Workspace UI and interactions | `src/App.tsx`, `src/styles.css` |
+| Browser release, accessibility, and archive verification | `tests/e2e/`, `playwright.config.ts` |
 | Deterministic demo data | `scripts/generate-demo-session.mjs` |
 
 The approved visual source is `docs/design/narrowslink-mission-timeline-source.png`. Preserve its restrained, square-cornered, instrument-grade hierarchy unless a change intentionally establishes a new documented direction.
@@ -139,6 +148,7 @@ Screenshots are evidence, not the review itself. Keep `design-qa.md` focused on 
 - Verify evidence changes by inspecting archive paths, manifest metadata, record counts, and SHA-256 values rather than only checking that a download occurred.
 - For session-library changes, cover valid v1 and v2 saves, the pre-database 32 MiB limit, content identity, exact-duplicate behavior, newest-first listing, validated reopen, corruption, missing entries, replay-and-workspace removal, residual-workspace warnings, unavailable IndexedDB, quota exhaustion, and transaction failures.
 - For UI changes, exercise the bundled replay, file-import error state, saved-session save/list/reopen/remove and failure states, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
+- Keep critical dialogs and workspace states clean under axe rules tagged WCAG A/AA. Test keyboard focus when an action, dialog phase, incident selection, or responsive layout replaces the focused element; retain visible non-color state and severity cues.
 - For capture changes, exercise a real loopback UDP socket from start through stop, re-import, replay, annotation, and bundle export. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage.
 - For integrity changes, add a failure round trip through capture finalization, JSON serialization, replay parsing, operator-authored half-open range projection, bundle inspection, and independent SHA-256 verification. Cover both a UDP and serial path when the contract affects both.
 
@@ -166,7 +176,7 @@ Screenshots are evidence, not the review itself. Keep `design-qa.md` focused on 
 - Explain the operator outcome, not only the implementation, and keep the change focused on that outcome.
 - Add a concise `[Unreleased]` changelog entry for notable changes, or explain why the policy does not apply.
 - Include screenshots for material UI changes, document the viewport and replay state used, and update `design-qa.md` when the accepted appearance changes.
-- Report the exact local checks run, including `npm run check`; a local pass complements rather than replaces repository CI.
+- Report the exact local checks run, including `npm run check`; distinguish skipped browser projects or unavailable hardware/manual assistive-technology checks. A local pass complements rather than replaces repository CI.
 - State whether file formats, decoder behavior, timing or half-open range semantics, browser storage, archive inclusions, or verification behavior changed.
 - Avoid committing generated build output, secrets, private telemetry, sensitive location data, or evidence bundles that have not been cleared for publication.
 

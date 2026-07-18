@@ -11,7 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { DownloadSimple, SpinnerGap, WarningCircle, X } from "@phosphor-icons/react";
 
-import type { CaptureIntegrityIssueCode, CaptureIntegrityReceipt, SessionDocument } from "../domain/types";
+import type { CaptureIntegrityIssueCode, CaptureIntegrityReceipt, SessionDocument, UdpBridgeJournal } from "../domain/types";
 import { serializeSessionDocument } from "../data/session-file";
 import { formatBytes, formatDurationUs } from "../lib/time";
 import { Nsl01SerialFrameAssembler } from "./nsl01-serial-assembler";
@@ -21,6 +21,7 @@ import {
   MAX_CAPTURE_BYTES,
   MAX_CAPTURE_RECORDS,
   type CaptureFinalizationEvidence,
+  type CaptureTransportProvenanceEvidence,
   type CapturedBytes,
   type TransportEventDraft,
 } from "./recorder";
@@ -31,11 +32,13 @@ import {
   type UdpBridgeDatagram,
   type UdpBridgeErrorDetail,
   type UdpBridgeStatus,
+  type UdpCaptureLifecycleJournal,
 } from "./udp-bridge";
 import {
   getBrowserSerialApi,
   WebSerialCapture,
   type SerialFlowControl,
+  type SerialCaptureDevice,
   type SerialParity,
 } from "./web-serial";
 
@@ -131,6 +134,7 @@ export interface CaptureFinalizationSnapshot {
   transportReportedBytes: number | null;
   issueCodes?: readonly CaptureIntegrityIssueCode[];
   shutdown?: CaptureFinalizationEvidence["shutdown"];
+  transportProvenance?: CaptureTransportProvenanceEvidence;
 }
 
 /**
@@ -154,6 +158,45 @@ export function captureFinalizationEvidence(
     transportReportedBytes: snapshot.transport === "udp" ? snapshot.transportReportedBytes : null,
     issueCodes: snapshot.issueCodes,
     shutdown: snapshot.shutdown,
+    transportProvenance: snapshot.transportProvenance,
+  };
+}
+
+export function ownedUdpCaptureJournal(
+  status: UdpBridgeStatus,
+  captureId: string,
+): UdpBridgeJournal | null {
+  const journal: UdpCaptureLifecycleJournal | null | undefined = status.captureJournal;
+  if (!journal || journal.captureId !== captureId || status.capture?.id !== captureId) return null;
+  return {
+    captureId: journal.captureId,
+    startedAt: journal.startedAt,
+    endedAt: journal.endedAt,
+    state: journal.state,
+    bind: { ...journal.bind },
+    multicast: journal.multicast ? { ...journal.multicast } : null,
+    datagrams: journal.datagrams,
+    bytes: journal.bytes,
+    kernelDroppedDatagrams: null,
+    kernelDroppedDatagramsSource: "unavailable",
+    entriesComplete: journal.entriesComplete,
+    omittedEntries: journal.omittedEntries,
+    entries: journal.entries.map((entry) => ({ ...entry })),
+  };
+}
+
+export function serialCaptureProvenance(
+  device: SerialCaptureDevice,
+  settings: Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }>["settings"],
+): Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }> {
+  return {
+    transport: "serial",
+    device: {
+      usbVendorId: device.info.usbVendorId ?? null,
+      usbProductId: device.info.usbProductId ?? null,
+      bluetoothServiceClassId: device.info.bluetoothServiceClassId ?? null,
+    },
+    settings: { ...settings },
   };
 }
 
@@ -499,11 +542,14 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
   const dialogRef = useRef<HTMLElement>(null);
   const udpTabRef = useRef<HTMLButtonElement>(null);
   const serialTabRef = useRef<HTMLButtonElement>(null);
+  const captureStatusRef = useRef<HTMLDivElement>(null);
+  const discardTriggerRef = useRef<HTMLButtonElement>(null);
   const discardKeepRef = useRef<HTMLButtonElement>(null);
   const transportRef = useRef<CaptureTransport | null>(null);
   const recorderRef = useRef<CaptureRecorder | null>(null);
   const udpClientRef = useRef<UdpBridgeClient | null>(null);
   const udpStatusRef = useRef<UdpBridgeStatus | null>(null);
+  const udpCaptureJournalRef = useRef<UdpBridgeJournal | null>(null);
   const udpRecorderConfigRef = useRef<PendingUdpRecorderConfig | null>(null);
   // Set only from this dialog's successful POST /start response.
   const ownedUdpCaptureIdRef = useRef<string | null>(null);
@@ -524,6 +570,7 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
   const finalizationIssueCodesRef = useRef<CaptureIntegrityIssueCode[]>([]);
   const durationLimitEventRecordedRef = useRef(false);
   const serialCaptureRef = useRef<WebSerialCapture | null>(null);
+  const serialProvenanceRef = useRef<Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }> | null>(null);
   const serialAssemblerRef = useRef<Nsl01SerialFrameAssembler | null>(null);
   const serialDisconnectedRef = useRef(false);
   const observedSerialReadsRef = useRef(0);
@@ -554,6 +601,7 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
 
   const [transport, setTransport] = useState<CaptureTransport>("udp");
   const [phase, setPhase] = useState<CapturePhase>("ready");
+  const previousPhaseRef = useRef<CapturePhase>(phase);
   const [sessionTitle, setSessionTitle] = useState("Live telemetry capture");
   const [timeZone, setTimeZone] = useState(displayTimeZone ?? browserTimeZone());
   const [bridgeUrl, setBridgeUrl] = useState(DEFAULT_UDP_BRIDGE_URL);
@@ -599,6 +647,16 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
 
   const blockedClose = () => setNotice("Stop and save the capture, or explicitly discard it, before closing this dialog.");
   useDialogFocus(dialogRef, onClose, canDismiss, blockedClose);
+
+  useEffect(() => {
+    if (previousPhaseRef.current === phase) return;
+    previousPhaseRef.current = phase;
+    const frame = requestAnimationFrame(() => {
+      const preferred = dialogRef.current?.querySelector<HTMLElement>(`[data-capture-phase-focus="${phase}"]`);
+      (preferred ?? captureStatusRef.current)?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [phase]);
 
   useEffect(() => {
     if (phase !== "starting" && phase !== "capturing") return;
@@ -692,6 +750,8 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     shutdownEvidenceRef.current = undefined;
     finalizationIssueCodesRef.current = [];
     durationLimitEventRecordedRef.current = false;
+    udpCaptureJournalRef.current = null;
+    serialProvenanceRef.current = null;
     setTotals(EMPTY_TOTALS);
     setIssue("");
     setNotice("");
@@ -717,6 +777,8 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     shutdownEvidenceRef.current = undefined;
     finalizationIssueCodesRef.current = [];
     durationLimitEventRecordedRef.current = false;
+    udpCaptureJournalRef.current = null;
+    serialProvenanceRef.current = null;
     pendingUdpDatagramsRef.current = [];
     pendingUdpBytesRef.current = 0;
     observedUdpDatagramsRef.current = 0;
@@ -883,6 +945,11 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
       offsetUs: datagram.offsetUs,
       bytes: datagram.data,
       wireBytes: datagram.byteLength,
+      remoteEndpoint: {
+        address: datagram.remoteAddress,
+        port: datagram.remotePort,
+        family: datagram.remoteFamily,
+      },
     }, allowPausedRetention ? "pre-status-buffer" : "live");
   };
 
@@ -934,6 +1001,7 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     if (mountedRef.current) setUdpStatus(status);
     const ownedCaptureId = ownedUdpCaptureIdRef.current;
     if (ownedCaptureId && status.capture?.id === ownedCaptureId) {
+      udpCaptureJournalRef.current = ownedUdpCaptureJournal(status, ownedCaptureId);
       if (!durationFrozenRef.current) {
       lastDurationUsRef.current = Math.max(lastDurationUsRef.current, status.capture.durationUs);
       }
@@ -1088,6 +1156,14 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     }
 
     resetForStart("serial");
+    const normalizedSerialSettings: Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }>["settings"] = {
+      baudRate: parsedBaudRate,
+      dataBits: Number(dataBits) as 7 | 8,
+      stopBits: Number(stopBits) as 1 | 2,
+      parity,
+      bufferSize: 65_536,
+      flowControl,
+    };
     const serialCapture = new WebSerialCapture(api);
     serialCaptureRef.current = serialCapture;
     serialDisconnectedRef.current = false;
@@ -1098,19 +1174,14 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     // Keep this call in the Start button's synchronous event path. WebSerialCapture
     // invokes navigator.serial.requestPort() before its first await so the browser's
     // transient user activation is retained for the device chooser.
-    const startPromise = serialCapture.start({
-      baudRate: parsedBaudRate,
-      dataBits: Number(dataBits) as 7 | 8,
-      stopBits: Number(stopBits) as 1 | 2,
-      parity,
-      flowControl,
-    }, {
+    const startPromise = serialCapture.start(normalizedSerialSettings, {
       onOpen: (device) => {
         if (startCancelledRef.current || !mountedRef.current) {
           throw new Error("Serial setup was cancelled before recording began.");
         }
         // WebSerialCapture invokes onOpen synchronously after port.open() and
         // before readLoop(), making this the exact serial capture epoch.
+        serialProvenanceRef.current = serialCaptureProvenance(device, normalizedSerialSettings);
         const recorder = new CaptureRecorder({
           sessionId: serialSessionId,
           title,
@@ -1457,6 +1528,9 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
           transportReportedBytes: transportReportedBytesRef.current,
           issueCodes: finalizationIssueCodesRef.current,
           shutdown: shutdownEvidenceRef.current,
+          transportProvenance: transport === "udp"
+            ? { transport: "udp", journal: udpCaptureJournalRef.current }
+            : serialProvenanceRef.current ?? undefined,
         }),
       });
     } catch (cause) {
@@ -1566,6 +1640,11 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     udpClientRef.current?.disconnect();
     setPhase("canceling");
     setNotice("Setup cancellation requested. Any late transport open will be closed without recording.");
+  };
+
+  const cancelDiscardConfirmation = (): void => {
+    setConfirmDiscard(false);
+    requestAnimationFrame(() => discardTriggerRef.current?.focus({ preventScroll: true }));
   };
 
   const chooseTransport = (nextTransport: CaptureTransport): void => {
@@ -1834,7 +1913,7 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
           </div>
 
           <section className="capture-live-status" aria-labelledby={statusId}>
-            <div className="capture-status-heading" role="status" aria-live="polite">
+            <div ref={captureStatusRef} className="capture-status-heading" role="status" aria-live="polite" tabIndex={-1}>
               <span id={statusId}>{phaseLabel}</span>
               {(phase === "starting" || phase === "stopping" || phase === "saving") && <SpinnerGap className="spin" size={16} aria-hidden="true" />}
             </div>
@@ -1864,7 +1943,7 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
           {confirmDiscard && phase === "capturing" && (
             <div className="capture-discard-confirm" role="group" aria-label="Confirm capture discard">
               <p>This permanently removes the unsaved local recording after the transport stops.</p>
-              <button ref={discardKeepRef} className="secondary-action" type="button" onClick={() => setConfirmDiscard(false)}>Keep recording</button>
+              <button ref={discardKeepRef} className="secondary-action" type="button" onClick={cancelDiscardConfirmation}>Keep recording</button>
               <button className="destructive-action" type="button" onClick={() => void discardCapture()}>Confirm discard</button>
             </div>
           )}
@@ -1874,33 +1953,34 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
               <>
                 <button className="secondary-action" type="button" onClick={onClose}>Cancel</button>
                 {transport === "udp" ? (
-                  <button className="primary-action" type="submit">Start UDP capture</button>
+                  <button className="primary-action" type="submit" data-capture-phase-focus="ready">Start UDP capture</button>
                 ) : (
                   <button
                     className="primary-action"
                     type="button"
                     disabled={!serialAvailable}
                     onClick={startSerialCapture}
+                    data-capture-phase-focus="ready"
                   >
                     Select port &amp; start
                   </button>
                 )}
               </>
             ) : phase === "starting" ? (
-              <button className="secondary-action" type="button" onClick={cancelStartingCapture}>Cancel setup</button>
+              <button className="secondary-action" type="button" onClick={cancelStartingCapture} data-capture-phase-focus="starting">Cancel setup</button>
             ) : phase === "canceling" ? (
-              <button className="secondary-action" type="button" onClick={onClose}>Close</button>
+              <button className="secondary-action" type="button" onClick={onClose} data-capture-phase-focus="canceling">Close</button>
             ) : phase === "capturing" ? (
               <>
-                {!confirmDiscard && <button className="secondary-action" type="button" onClick={() => setConfirmDiscard(true)}>Discard</button>}
-                <button className="primary-action" type="button" onClick={() => void stopAndSave()}>
+                {!confirmDiscard && <button ref={discardTriggerRef} className="secondary-action" type="button" onClick={() => setConfirmDiscard(true)}>Discard</button>}
+                <button className="primary-action" type="button" onClick={() => void stopAndSave()} data-capture-phase-focus="capturing">
                   <DownloadSimple size={16} aria-hidden="true" /> Stop, save &amp; replay
                 </button>
               </>
             ) : phase === "save-error" ? (
               <>
                 <button className="secondary-action" type="button" onClick={() => void discardRetainedCapture()}>Discard finalized session</button>
-                <button className="primary-action" type="button" onClick={() => void retryFinalizedDownload()}>
+                <button className="primary-action" type="button" onClick={() => void retryFinalizedDownload()} data-capture-phase-focus="save-error">
                   <DownloadSimple size={16} aria-hidden="true" /> Retry download
                 </button>
               </>

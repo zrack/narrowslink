@@ -1,6 +1,7 @@
 export const UDP_BRIDGE_PROTOCOL_VERSION = 1 as const;
 export const DEFAULT_UDP_BRIDGE_URL = "http://127.0.0.1:47891";
 export const MAX_UDP_DATAGRAM_BYTES = 65_507;
+export const MAX_UDP_CAPTURE_JOURNAL_ENTRIES = 128;
 
 const START_RECOVERY_MAX_AGE_MS = 25 * 60 * 60 * 1_000;
 const START_RECOVERY_STORAGE_PREFIX = "narrowslink.udp-start-recovery.v1.";
@@ -51,6 +52,49 @@ export interface UdpCaptureProgress {
   lastDatagramAt?: string;
 }
 
+export type UdpCaptureJournalState = "active" | "clean" | "incomplete";
+export type UdpCaptureJournalEntryType =
+  | "capture-started"
+  | "bridge-error"
+  | "subscriber-backpressure"
+  | "capture-stopped";
+
+export interface UdpCaptureJournalBind {
+  readonly requestedHost: string;
+  readonly requestedPort: number;
+  readonly host: string;
+  readonly port: number;
+  readonly family: "IPv4" | "IPv6";
+}
+
+export interface UdpCaptureJournalEntry {
+  readonly sequence: number;
+  readonly type: UdpCaptureJournalEntryType;
+  readonly at: string;
+  readonly offsetUs: number;
+  readonly datagrams: number;
+  readonly bytes: number;
+  readonly code?: string;
+  readonly message?: string;
+  readonly fatal?: boolean;
+}
+
+export interface UdpCaptureLifecycleJournal {
+  readonly captureId: string;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  readonly state: UdpCaptureJournalState;
+  readonly bind: UdpCaptureJournalBind;
+  readonly multicast: Readonly<UdpMulticastMembership> | null;
+  readonly datagrams: number;
+  readonly bytes: number;
+  readonly kernelDroppedDatagrams: null;
+  readonly kernelDroppedDatagramsSource: "unavailable";
+  readonly entriesComplete: boolean;
+  readonly omittedEntries: number;
+  readonly entries: readonly UdpCaptureJournalEntry[];
+}
+
 export interface UdpBridgeErrorDetail {
   protocolVersion: typeof UDP_BRIDGE_PROTOCOL_VERSION;
   code: string;
@@ -72,6 +116,7 @@ export interface UdpBridgeStatus {
   udp: UdpBindAddress | null;
   multicast: UdpMulticastMembership | null;
   capture: UdpCaptureProgress | null;
+  captureJournal?: UdpCaptureLifecycleJournal | null;
   subscribers: number;
   lastError: UdpBridgeErrorDetail | null;
 }
@@ -249,6 +294,167 @@ function parseCaptureProgress(input: unknown): UdpCaptureProgress {
   };
 }
 
+function parseCaptureJournalBind(input: unknown): Readonly<UdpCaptureJournalBind> {
+  if (!isRecord(input)) throw new UdpBridgeProtocolError("The capture journal bind payload is malformed.");
+  const family = input.family;
+  if (family !== "IPv4" && family !== "IPv6") {
+    throw new UdpBridgeProtocolError("The capture journal bind family must be IPv4 or IPv6.");
+  }
+  return Object.freeze({
+    requestedHost: requiredString(input, "requestedHost", 253),
+    requestedPort: integer(input, "requestedPort", 0, 65_535),
+    host: requiredString(input, "host", 253),
+    port: integer(input, "port", 1, 65_535),
+    family,
+  });
+}
+
+function parseCaptureJournalEntry(input: unknown): Readonly<UdpCaptureJournalEntry> {
+  if (!isRecord(input)) throw new UdpBridgeProtocolError("A capture journal entry is malformed.");
+  const types: readonly UdpCaptureJournalEntryType[] = [
+    "capture-started",
+    "bridge-error",
+    "subscriber-backpressure",
+    "capture-stopped",
+  ];
+  if (!types.includes(input.type as UdpCaptureJournalEntryType)) {
+    throw new UdpBridgeProtocolError("The capture journal entry type is unsupported.");
+  }
+  const type = input.type as UdpCaptureJournalEntryType;
+  const code = optionalString(input, "code", 128);
+  const message = optionalString(input, "message", 1_000);
+  const fatal = input.fatal;
+  const isError = type === "bridge-error" || type === "subscriber-backpressure";
+  if (isError && (!code || !message || typeof fatal !== "boolean")) {
+    throw new UdpBridgeProtocolError("Capture journal error entries require code, message, and fatal evidence.");
+  }
+  if (fatal !== undefined && typeof fatal !== "boolean") {
+    throw new UdpBridgeProtocolError("Capture journal entry fatal must be a boolean when present.");
+  }
+  return Object.freeze({
+    sequence: integer(input, "sequence", 0, Number.MAX_SAFE_INTEGER),
+    type,
+    at: isoTimestamp(input, "at"),
+    offsetUs: integer(input, "offsetUs", 0, Number.MAX_SAFE_INTEGER),
+    datagrams: integer(input, "datagrams", 0, Number.MAX_SAFE_INTEGER),
+    bytes: integer(input, "bytes", 0, Number.MAX_SAFE_INTEGER),
+    ...(code ? { code } : {}),
+    ...(message ? { message } : {}),
+    ...(typeof fatal === "boolean" ? { fatal } : {}),
+  });
+}
+
+function parseCaptureJournal(
+  input: unknown,
+  capture: UdpCaptureProgress | null,
+  udp: UdpBindAddress | null,
+): Readonly<UdpCaptureLifecycleJournal> {
+  if (!isRecord(input)) throw new UdpBridgeProtocolError("The capture lifecycle journal is malformed.");
+  const states: readonly UdpCaptureJournalState[] = ["active", "clean", "incomplete"];
+  if (!states.includes(input.state as UdpCaptureJournalState)) {
+    throw new UdpBridgeProtocolError("The capture lifecycle journal state is unsupported.");
+  }
+  const state = input.state as UdpCaptureJournalState;
+  const endedAt = input.endedAt;
+  if (endedAt !== null && (typeof endedAt !== "string" || !Number.isFinite(Date.parse(endedAt)))) {
+    throw new UdpBridgeProtocolError("Capture journal endedAt must be an ISO timestamp or null.");
+  }
+  if (input.kernelDroppedDatagrams !== null || input.kernelDroppedDatagramsSource !== "unavailable") {
+    throw new UdpBridgeProtocolError("Kernel drop evidence must remain null with an unavailable source until the host reports it.");
+  }
+  if (typeof input.entriesComplete !== "boolean" || !Array.isArray(input.entries)) {
+    throw new UdpBridgeProtocolError("The capture journal completeness or entries payload is malformed.");
+  }
+  if (input.entries.length === 0 || input.entries.length > MAX_UDP_CAPTURE_JOURNAL_ENTRIES) {
+    throw new UdpBridgeProtocolError("The capture journal must contain a bounded lifecycle entry list.");
+  }
+  const multicast = input.multicast === null ? null : Object.freeze(parseMulticastMembership(input.multicast));
+  const bind = parseCaptureJournalBind(input.bind);
+  const entries = Object.freeze(input.entries.map(parseCaptureJournalEntry));
+  const captureId = requiredString(input, "captureId", 128);
+  const startedAt = isoTimestamp(input, "startedAt");
+  const datagrams = integer(input, "datagrams", 0, Number.MAX_SAFE_INTEGER);
+  const bytes = integer(input, "bytes", 0, Number.MAX_SAFE_INTEGER);
+  const entriesComplete = input.entriesComplete;
+  const omittedEntries = integer(input, "omittedEntries", 0, Number.MAX_SAFE_INTEGER);
+  if (entriesComplete !== (omittedEntries === 0)) {
+    throw new UdpBridgeProtocolError("Capture journal completeness conflicts with its omitted-entry count.");
+  }
+  if (state === "active" && endedAt !== null) {
+    throw new UdpBridgeProtocolError("An active capture journal cannot declare an end timestamp.");
+  }
+  if (state === "clean" && (endedAt === null || !entriesComplete)) {
+    throw new UdpBridgeProtocolError("A clean capture journal requires a complete terminal lifecycle.");
+  }
+  if (!capture || capture.id !== captureId || capture.startedAt !== startedAt) {
+    throw new UdpBridgeProtocolError("The capture journal identity does not match bridge capture progress.");
+  }
+  if (!udp || bind.host !== udp.host || bind.port !== udp.port || bind.family !== udp.family) {
+    throw new UdpBridgeProtocolError("The capture journal bind evidence does not match the bridge UDP socket.");
+  }
+  if ((capture.endedAt ?? null) !== endedAt || capture.datagrams !== datagrams || capture.bytes !== bytes) {
+    throw new UdpBridgeProtocolError("The capture journal terminal counters do not match bridge capture progress.");
+  }
+  let previous: UdpCaptureJournalEntry | null = null;
+  entries.forEach((entry, index) => {
+    if (
+      (previous && (
+        entry.sequence <= previous.sequence
+        || entry.offsetUs < previous.offsetUs
+        || entry.datagrams < previous.datagrams
+        || entry.bytes < previous.bytes
+      ))
+      || entry.datagrams > datagrams
+      || entry.bytes > bytes
+      || (entriesComplete && entry.sequence !== index)
+    ) {
+      throw new UdpBridgeProtocolError("Capture journal entries are not monotonic or conflict with terminal counters.");
+    }
+    previous = entry;
+  });
+  const first = entries[0];
+  const last = entries.at(-1);
+  if (state === "clean" && entries.some((entry) => (
+    entry.type === "bridge-error" || entry.type === "subscriber-backpressure"
+  ))) {
+    throw new UdpBridgeProtocolError("A clean capture journal cannot contain capture-path error evidence.");
+  }
+  if (
+    first?.type !== "capture-started"
+    || first.sequence !== 0
+    || first.at !== startedAt
+    || first.offsetUs !== 0
+    || first.datagrams !== 0
+    || first.bytes !== 0
+  ) {
+    throw new UdpBridgeProtocolError("The capture journal must begin with an exact capture-started entry.");
+  }
+  if (endedAt !== null && (
+    last?.type !== "capture-stopped"
+    || last.at !== endedAt
+    || last.offsetUs !== capture.durationUs
+    || last.datagrams !== datagrams
+    || last.bytes !== bytes
+  )) {
+    throw new UdpBridgeProtocolError("A terminal capture journal must end with final counter evidence.");
+  }
+  return Object.freeze({
+    captureId,
+    startedAt,
+    endedAt,
+    state,
+    bind,
+    multicast,
+    datagrams,
+    bytes,
+    kernelDroppedDatagrams: null,
+    kernelDroppedDatagramsSource: "unavailable",
+    entriesComplete,
+    omittedEntries,
+    entries,
+  });
+}
+
 export function parseUdpBridgeStatus(input: unknown): UdpBridgeStatus {
   if (!isRecord(input)) throw new UdpBridgeProtocolError("The bridge status payload is malformed.");
   protocolVersion(input);
@@ -263,6 +469,7 @@ export function parseUdpBridgeStatus(input: unknown): UdpBridgeStatus {
   const udp = input.udp === null ? null : parseBindAddress(input.udp);
   const multicast = input.multicast == null ? null : parseMulticastMembership(input.multicast);
   const capture = input.capture === null ? null : parseCaptureProgress(input.capture);
+  const captureJournal = input.captureJournal == null ? null : parseCaptureJournal(input.captureJournal, capture, udp);
   const lastError = input.lastError === null ? null : parseErrorDetail(input.lastError);
   return {
     protocolVersion: UDP_BRIDGE_PROTOCOL_VERSION,
@@ -284,6 +491,7 @@ export function parseUdpBridgeStatus(input: unknown): UdpBridgeStatus {
     udp,
     multicast,
     capture,
+    captureJournal,
     subscribers: integer(input, "subscribers", 0, 10_000),
     lastError,
   };

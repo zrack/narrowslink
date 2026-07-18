@@ -5,6 +5,8 @@ export type OffsetUs = number;
 export const MAX_SESSION_DURATION_US = 24 * 60 * 60 * 1_000_000;
 export const MAX_INCIDENT_TITLE_LENGTH = 240;
 export const MAX_TRANSPORT_EVENTS = 10_000;
+export const MAX_UDP_BRIDGE_JOURNAL_ENTRIES = 128;
+export const MAX_UDP_DISTINCT_ENDPOINTS = 100_000;
 
 export const familyIds = [0x02, 0x17, 0x19, 0x31, 0x44] as const;
 export type FamilyId = (typeof familyIds)[number];
@@ -23,6 +25,14 @@ export interface DecoderDescriptor {
   schemaHash: string;
 }
 
+export type UdpAddressFamily = "IPv4" | "IPv6";
+
+export interface UdpRemoteEndpoint {
+  address: string;
+  port: number;
+  family: UdpAddressFamily;
+}
+
 export interface SourceRecord {
   id: string;
   index: number;
@@ -33,7 +43,8 @@ export interface SourceRecord {
   wireBytes: number;
   transport: {
     kind: "udp" | "serial" | "file";
-    kernelDropCounter?: number;
+    kernelDropCounter?: number | null;
+    remoteEndpoint?: UdpRemoteEndpoint;
   };
   signal?: {
     rssiDbm?: number;
@@ -152,6 +163,7 @@ export const captureIntegrityIssueCodes = [
   "shutdown-unconfirmed",
   "duration-capped",
   "event-log-incomplete",
+  "transport-provenance-incomplete",
   "legacy-session-unassessed",
   "file-source-unassessed",
 ] as const;
@@ -185,10 +197,103 @@ export interface CaptureIntegrityReceipt {
   issueCodes: CaptureIntegrityIssueCode[];
 }
 
+export const transportProvenanceIssueCodes = [
+  "udp-bridge-journal-unavailable",
+  "udp-bridge-journal-incomplete",
+  "udp-bridge-journal-counter-mismatch",
+  "udp-endpoint-attribution-incomplete",
+  "udp-kernel-drop-counter-unavailable",
+  "serial-device-identifiers-unavailable",
+] as const;
+
+export type TransportProvenanceIssueCode = (typeof transportProvenanceIssueCodes)[number];
+
+export interface UdpBindProvenance {
+  requestedHost: string;
+  requestedPort: number;
+  host: string;
+  port: number;
+  family: UdpAddressFamily;
+}
+
+export interface UdpMulticastProvenance {
+  group: string;
+  interface: string | null;
+  family: UdpAddressFamily;
+}
+
+export interface UdpBridgeJournalEntry {
+  sequence: number;
+  type: "capture-started" | "bridge-error" | "subscriber-backpressure" | "capture-stopped";
+  at: string;
+  offsetUs: OffsetUs;
+  datagrams: number;
+  bytes: number;
+  code?: string;
+  message?: string;
+  fatal?: boolean;
+}
+
+export interface UdpBridgeJournal {
+  captureId: string;
+  startedAt: string;
+  endedAt: string | null;
+  state: "active" | "clean" | "incomplete";
+  bind: UdpBindProvenance;
+  multicast: UdpMulticastProvenance | null;
+  datagrams: number;
+  bytes: number;
+  kernelDroppedDatagrams: null;
+  kernelDroppedDatagramsSource: "unavailable";
+  entriesComplete: boolean;
+  omittedEntries: number;
+  entries: readonly UdpBridgeJournalEntry[];
+}
+
+export interface UdpEndpointAttributionSummary {
+  totalRecords: number;
+  attributedRecords: number;
+  unattributedRecords: number;
+  distinctEndpoints: UdpRemoteEndpoint[];
+}
+
+interface TransportProvenanceBase {
+  schemaVersion: 1;
+  sourceId: string;
+  status: "verified" | "incomplete";
+  issueCodes: TransportProvenanceIssueCode[];
+}
+
+export interface UdpTransportProvenance extends TransportProvenanceBase {
+  transport: "udp";
+  journal: UdpBridgeJournal | null;
+  endpointAttribution: UdpEndpointAttributionSummary;
+}
+
+export interface SerialTransportProvenance extends TransportProvenanceBase {
+  transport: "serial";
+  device: {
+    usbVendorId: number | null;
+    usbProductId: number | null;
+    bluetoothServiceClassId: string | null;
+  };
+  settings: {
+    baudRate: number;
+    dataBits: 7 | 8;
+    stopBits: 1 | 2;
+    parity: "none" | "even" | "odd";
+    bufferSize: number;
+    flowControl: "none" | "hardware";
+  };
+}
+
+export type TransportProvenance = UdpTransportProvenance | SerialTransportProvenance;
+
 export interface SessionDocumentV2 extends SessionDocumentBase {
   formatVersion: 2;
   transportEvents: TransportEvent[];
   captureIntegrity: CaptureIntegrityReceipt;
+  transportProvenance?: TransportProvenance;
 }
 
 export type SessionDocument = SessionDocumentV1 | SessionDocumentV2;
@@ -287,6 +392,7 @@ export interface ParsedSession {
   document: SessionDocument;
   transportEvents: readonly TransportEvent[];
   captureIntegrity: CaptureIntegrityReceipt;
+  transportProvenance?: TransportProvenance;
   frames: DecodedFrame[];
   buckets: MetricBucket[];
   diagnostics: DiagnosticEvent[];
@@ -320,13 +426,19 @@ const sourceDescriptorSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
 }).strict();
 
+export const udpRemoteEndpointSchema = z.object({
+  address: wellFormedText(z.string().min(1).max(253)),
+  port: z.number().int().min(1).max(65_535),
+  family: z.enum(["IPv4", "IPv6"]),
+}).strict();
+
 const decoderDescriptorSchema = z.object({
   id: wellFormedText(z.string().min(1).max(128)),
   revision: wellFormedText(z.string().min(1).max(64)),
   schemaHash: z.string().regex(/^[0-9a-fA-F]{64}$/, "Schema hash must be a 64-character SHA-256 digest"),
 }).strict();
 
-const sourceRecordSchema = z.object({
+const sourceRecordCoreShape = {
   id: wellFormedText(z.string().min(1).max(128)),
   index: z.number().int().nonnegative(),
   sourceId: wellFormedText(z.string().min(1).max(128)),
@@ -334,18 +446,59 @@ const sourceRecordSchema = z.object({
   dataHex: z.string().max(131_100).regex(/^(?:[0-9a-fA-F]{2})*$/),
   captureBytes: z.number().int().nonnegative(),
   wireBytes: z.number().int().nonnegative(),
+};
+const sourceRecordSignalSchema = z
+  .object({
+    rssiDbm: z.number().finite().min(-200).max(100).optional(),
+    snrDb: z.number().finite().min(-100).max(100).optional(),
+    provenance: z.enum(["gateway-sidecar", "decoded-packet"]),
+  })
+  .strict()
+  .optional();
+
+const sourceRecordV1Schema = z.object({
+  ...sourceRecordCoreShape,
   transport: z.object({
     kind: z.enum(["udp", "serial", "file"]),
     kernelDropCounter: z.number().int().nonnegative().optional(),
   }).strict(),
-  signal: z
-    .object({
-      rssiDbm: z.number().finite().min(-200).max(100).optional(),
-      snrDb: z.number().finite().min(-100).max(100).optional(),
-      provenance: z.enum(["gateway-sidecar", "decoded-packet"]),
-    })
-    .strict()
-    .optional(),
+  signal: sourceRecordSignalSchema,
+}).strict().superRefine((record, context) => {
+  if (
+    record.transport.kind !== "udp"
+    && (record.dataHex.length === 0 || record.captureBytes === 0 || record.wireBytes === 0)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["dataHex"],
+      message: "Only UDP records may represent a zero-length datagram",
+    });
+  }
+});
+
+const sourceRecordSchema = z.object({
+  ...sourceRecordCoreShape,
+  transport: z.object({
+    kind: z.enum(["udp", "serial", "file"]),
+    kernelDropCounter: z.number().int().nonnegative().nullable().optional(),
+    remoteEndpoint: udpRemoteEndpointSchema.optional(),
+  }).strict().superRefine((transport, context) => {
+    if (transport.kind !== "udp" && transport.kernelDropCounter !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["kernelDropCounter"],
+        message: "Only UDP records may carry a kernel drop counter",
+      });
+    }
+    if (transport.kind !== "udp" && transport.remoteEndpoint != null) {
+      context.addIssue({
+        code: "custom",
+        path: ["remoteEndpoint"],
+        message: "Only UDP records may carry a remote endpoint",
+      });
+    }
+  }),
+  signal: sourceRecordSignalSchema,
 }).strict().superRefine((record, context) => {
   if (
     record.transport.kind !== "udp"
@@ -478,6 +631,91 @@ export const captureIntegrityReceiptSchema = z.object({
   issueCodes: z.array(z.enum(captureIntegrityIssueCodes)).max(captureIntegrityIssueCodes.length),
 }).strict();
 
+const udpAddressFamilySchema = z.enum(["IPv4", "IPv6"]);
+const udpBindProvenanceSchema = z.object({
+  requestedHost: wellFormedText(z.string().min(1).max(253)),
+  requestedPort: z.number().int().min(0).max(65_535),
+  host: wellFormedText(z.string().min(1).max(253)),
+  port: z.number().int().min(1).max(65_535),
+  family: udpAddressFamilySchema,
+}).strict();
+const udpMulticastProvenanceSchema = z.object({
+  group: wellFormedText(z.string().min(1).max(255)),
+  interface: wellFormedText(z.string().min(1).max(255)).nullable(),
+  family: udpAddressFamilySchema,
+}).strict();
+const udpBridgeJournalEntrySchema = z.object({
+  sequence: safeNonnegativeInteger,
+  type: z.enum(["capture-started", "bridge-error", "subscriber-backpressure", "capture-stopped"]),
+  at: wellFormedText(z.string().max(64).datetime({ offset: true })),
+  offsetUs: safeNonnegativeInteger,
+  datagrams: safeNonnegativeInteger,
+  bytes: safeNonnegativeInteger,
+  code: wellFormedText(z.string().min(1).max(128)).optional(),
+  message: wellFormedText(z.string().min(1).max(1_000)).optional(),
+  fatal: z.boolean().optional(),
+}).strict();
+
+export const udpBridgeJournalSchema = z.object({
+  captureId: wellFormedText(z.string().min(1).max(128)),
+  startedAt: wellFormedText(z.string().max(64).datetime({ offset: true })),
+  endedAt: wellFormedText(z.string().max(64).datetime({ offset: true })).nullable(),
+  state: z.enum(["active", "clean", "incomplete"]),
+  bind: udpBindProvenanceSchema,
+  multicast: udpMulticastProvenanceSchema.nullable(),
+  datagrams: safeNonnegativeInteger,
+  bytes: safeNonnegativeInteger,
+  kernelDroppedDatagrams: z.null(),
+  kernelDroppedDatagramsSource: z.literal("unavailable"),
+  entriesComplete: z.boolean(),
+  omittedEntries: safeNonnegativeInteger,
+  entries: z.array(udpBridgeJournalEntrySchema).min(1).max(MAX_UDP_BRIDGE_JOURNAL_ENTRIES),
+}).strict();
+
+const udpEndpointAttributionSummarySchema = z.object({
+  totalRecords: safeNonnegativeInteger,
+  attributedRecords: safeNonnegativeInteger,
+  unattributedRecords: safeNonnegativeInteger,
+  distinctEndpoints: z.array(udpRemoteEndpointSchema).max(MAX_UDP_DISTINCT_ENDPOINTS),
+}).strict();
+
+const transportProvenanceBaseShape = {
+  schemaVersion: z.literal(1),
+  sourceId: wellFormedText(z.string().min(1).max(128)),
+  status: z.enum(["verified", "incomplete"]),
+  issueCodes: z.array(z.enum(transportProvenanceIssueCodes)).max(transportProvenanceIssueCodes.length),
+};
+
+export const udpTransportProvenanceSchema = z.object({
+  ...transportProvenanceBaseShape,
+  transport: z.literal("udp"),
+  journal: udpBridgeJournalSchema.nullable(),
+  endpointAttribution: udpEndpointAttributionSummarySchema,
+}).strict();
+
+export const serialTransportProvenanceSchema = z.object({
+  ...transportProvenanceBaseShape,
+  transport: z.literal("serial"),
+  device: z.object({
+    usbVendorId: z.number().int().min(0).max(65_535).nullable(),
+    usbProductId: z.number().int().min(0).max(65_535).nullable(),
+    bluetoothServiceClassId: wellFormedText(z.string().min(1).max(255)).nullable(),
+  }).strict(),
+  settings: z.object({
+    baudRate: z.number().int().positive().safe(),
+    dataBits: z.union([z.literal(7), z.literal(8)]),
+    stopBits: z.union([z.literal(1), z.literal(2)]),
+    parity: z.enum(["none", "even", "odd"]),
+    bufferSize: z.number().int().positive().safe(),
+    flowControl: z.enum(["none", "hardware"]),
+  }).strict(),
+}).strict();
+
+export const transportProvenanceSchema = z.discriminatedUnion("transport", [
+  udpTransportProvenanceSchema,
+  serialTransportProvenanceSchema,
+]);
+
 export const incidentPresetSchema = z
   .object({
     id: wellFormedText(z.string().min(1).max(128)),
@@ -507,6 +745,7 @@ const sessionDocumentBaseShape = {
 export const sessionDocumentV1Schema = z.object({
   ...sessionDocumentBaseShape,
   formatVersion: z.literal(1),
+  records: z.array(sourceRecordV1Schema).min(1).max(100_000),
 }).strict();
 
 export const sessionDocumentV2Schema = z.object({
@@ -514,6 +753,7 @@ export const sessionDocumentV2Schema = z.object({
   formatVersion: z.literal(2),
   transportEvents: z.array(transportEventSchema).max(MAX_TRANSPORT_EVENTS),
   captureIntegrity: captureIntegrityReceiptSchema,
+  transportProvenance: transportProvenanceSchema.optional(),
 }).strict();
 
 export const sessionDocumentSchema = z.discriminatedUnion("formatVersion", [

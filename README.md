@@ -1,6 +1,6 @@
 # NarrowsLink
 
-NarrowsLink records live UDP or serial telemetry, turns the capture into an immutable local replay, and provides a synchronized incident-review workspace. Every new capture also carries durable transport anomalies and a terminal integrity receipt. One playhead based on integer microsecond offsets drives link health, packet families, decoder state, diagnostics, markers, and decoded signals; the selected interval can then be exported as a reproducible evidence bundle.
+NarrowsLink records live UDP or serial telemetry, turns the capture into an immutable local replay, and provides a synchronized incident-review workspace. Every new capture also carries durable transport anomalies, explicit endpoint or device provenance, a capture-scoped bridge journal where applicable, and a terminal integrity receipt. One playhead based on integer microsecond offsets drives link health, packet families, decoder state, diagnostics, markers, and decoded signals; the selected interval can then be exported as a reproducible evidence bundle.
 
 ![NarrowsLink mission-timeline session review workspace](docs/assets/narrowslink-dashboard.png)
 
@@ -14,7 +14,7 @@ The application is local-first. UDP ingest uses a local Node.js bridge whose tok
 - Decode the NSL-01 envelope, CRC-16/CCITT-FALSE integrity, and Heartbeat, Power, Attitude, Position, and Thermal families while retaining malformed, partial, checksum-failed, and unknown frames as inspectable diagnostics.
 - Correlate connection health, packet cadence, decoder state, diagnostics, markers, and decoded signals on one monotonic microsecond replay clock.
 - Create, rename, classify, resize, and precisely edit operator-owned half-open incident ranges; markers, ranges, and notes persist per session when browser storage is available, without mutating the source replay.
-- Export the selected range as a local `.nlb` archive with an exact manifest, mandatory transport events and capture-integrity receipt, and a SHA-256 checksum for every emitted artifact.
+- Export the selected range as a local `.nlb` archive with an exact manifest, mandatory transport events, provenance, bridge journal, and capture-integrity receipt, and a SHA-256 checksum for every emitted artifact.
 
 ## Operator use cases
 
@@ -35,7 +35,7 @@ See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, 
 1. Load the bundled fixture, choose a saved session from the Sessions rail, or select **Open local replay** for a `.json` or `.nlsession` file.
 2. Select a replay preset or choose **New range** to create a local incident around the playhead. A preset can be refined as a separate local copy.
 3. Drag the amber start/end handles for rapid adjustment, or use the incident editor to name the range and enter exact included-start and excluded-end offsets.
-4. Use **Play replay**, seeking, and rate controls to inspect the range while correlating Narrative, Details, and Stats with decoder, diagnostic, marker, packet-family, decoded-signal, capture-integrity, and evidence-domain context.
+4. Use **Play replay**, seeking, and rate controls to inspect the range while correlating Narrative, Details, Stats, and Provenance with decoder, diagnostic, marker, packet-family, decoded-signal, capture-integrity, endpoint or device, and evidence-domain context.
 5. Use **Add marker** and the session-wide note to preserve operator context locally.
 6. Choose the evidence groups to include and review the estimated archive size; this pre-build preview is not a byte-exact manifest.
 7. Select **Create incident bundle** to download the verifiable `.nlb` archive for that exact operator-authored range.
@@ -52,10 +52,11 @@ npm run dev
 Vite prints the local URL when the server is ready. For the full verification suite:
 
 ```bash
+npx playwright install chromium firefox webkit
 npm run check
 ```
 
-`npm run check` runs TypeScript validation, the Vitest suite, and a production build.
+`npm run check` runs TypeScript validation, the Vitest suite, a production build, and the Playwright release suite against Chromium, Firefox, and WebKit. CI installs the matching browser runtimes and retains traces, screenshots, and video when a browser check fails.
 
 ## Record live UDP
 
@@ -102,15 +103,17 @@ Web Serial is available in supported Chromium browsers and requires a secure con
 
 ## Browser capability and test matrix
 
-This matrix separates intended capability from verification already performed; it is not a blanket support claim for untested browser and operating-system combinations.
+This matrix separates automated browser-engine evidence from hardware and assistive-technology certification. A Playwright WebKit pass is engine-level evidence, not a claim that every Safari, operating-system, or device combination has been manually certified.
 
-| Workflow | Chromium-based browser | Firefox and Safari | Current verification |
-| --- | --- | --- | --- |
-| Replay, local import, saved-session library, timeline review, markers, notes, and `.nlb` export | Uses standard browser file, IndexedDB, local storage, download, and Web Crypto APIs | Expected to use the same standards-based path, but not yet tested | Domain and IndexedDB storage tests plus manual Chromium acceptance of save, reload, exact-duplicate deduplication, multi-session ordering, validated reopen, workspace restoration and cleanup, guarded removal, keyboard focus, and responsive access |
-| Live UDP through the local bridge | Available through the loopback control API and browser SSE client | Architecture does not depend on Web Serial, but these browsers are not yet tested | Automated real-loopback bridge and capture-pipeline tests; capture setup manually exercised in Chromium |
-| Live serial | Available only when `navigator.serial` is present and the page is a secure context | Web Serial is normally unavailable; use UDP capture or a supported Chromium browser | Serial adapter and frame-assembly tests; broad hardware/driver coverage remains outstanding |
+| Workflow | Playwright Chromium | Playwright Firefox | Playwright WebKit | Current verification |
+| --- | --- | --- | --- | --- |
+| Replay, local import, saved-session library, timeline review, markers, notes, and `.nlb` export | Automated | Automated | Automated | Invalid-file recovery, validated import, exact-content deduplication, playback/rate controls, per-session workspace restoration, guarded removal, and storage failure states |
+| Live UDP through the local bridge | Automated | Automated | Automated | A real ephemeral loopback bridge records fixture datagrams, stops with reconciled v2 integrity, reimports the `.nlsession`, replays it, and completes the exact-range evidence workflow |
+| Independent `.nlb` verification | Automated | Automated | Automated | Browser downloads are opened independently; paths, half-open boundaries, required transport evidence, artifact bytes, record counts, manifest hashes, and `SHA256SUMS` are verified |
+| Keyboard, dialogs, and responsive access | Automated | Automated | Automated | axe rules tagged WCAG A/AA, critical focus handoffs, `960`, `640`, and `390` CSS-pixel reflow, keyboard scrollers, and forced-color cues run in all three engines |
+| Live serial hardware | Browser API requires `navigator.serial` and a secure context; physical path not automated | No automated hardware path | No automated hardware path | Serial lifecycle, framing, resynchronization, failure, and receipt logic are automated below the hardware permission layer; packaged browser, device, and driver combinations remain a manual boundary |
 
-Expanded cross-browser, device, screen-reader, and `200%` zoom coverage is tracked in [ROADMAP.md](ROADMAP.md).
+See [ACCESSIBILITY.md](ACCESSIBILITY.md) for the tested interaction matrix, claim boundary, and remaining manual screen-reader work.
 
 ## Bundled replay
 
@@ -150,14 +153,19 @@ Session
 │   ├── verified, incomplete, or unknown assessment
 │   ├── stop disposition and event-log completeness
 │   └── observed, transport-reported, and retained totals
+├── structured transport provenance (new v2 captures)
+│   ├── UDP capture identity, bind and multicast configuration
+│   ├── per-record remote endpoint attribution and bounded bridge journal
+│   ├── serial device identifiers and negotiated settings
+│   └── explicit unavailable observations and provenance issue codes
 └── zero or more incident presets using [startUs, endUs)
 ```
 
-Records must be ordered by nondecreasing `offsetUs`, reference the declared source, fit inside `durationUs`, and declare byte counts that match their hexadecimal payload. Version 2 additionally requires ordered, uniquely identified transport events and a receipt whose retained totals exactly match the records. A verified UDP receipt requires bridge, browser, and recorder parity; a verified serial receipt requires clean stop and retained-byte parity. Format validation is implemented in `src/domain/types.ts` and `src/domain/session.ts`.
+Records must be ordered by nondecreasing `offsetUs`, reference the declared source, fit inside `durationUs`, and declare byte counts that match their hexadecimal payload. Version 2 additionally requires ordered, uniquely identified transport events and a receipt whose retained totals exactly match the records. New captures also preserve a validated provenance document: UDP endpoint-attribution totals and journal counters must reconcile with immutable records and the receipt, while serial device and negotiated-setting values must remain bounded and explicit. A verified UDP receipt requires bridge, browser, recorder, journal, and endpoint parity; a verified serial receipt requires clean stop, retained-byte parity, and explicit serial provenance. Format validation is implemented in `src/domain/types.ts` and `src/domain/session.ts`.
 
 Receipt assessment bases state what was actually observed. `udp-bridge-reconciled` includes terminal bridge counters; `udp-browser-observed` leaves unavailable bridge totals null and cannot be verified; `web-serial-observed` reconciles observed serial bytes; and `recorder-only` records that no adapter finalization evidence was supplied. UDP and serial counter disagreements require their own issue code and exact counter evidence. When a bounded event log is complete, every transport issue must have a matching immutable event. If its evidence budget is exhausted, the receipt explicitly marks the log incomplete while preserving the known issue codes and terminal counters.
 
-Imported v1 evidence is not rewritten. Replay normalizes it to an in-memory `unknown · legacy replay` assessment because the original file has no durable capture receipt.
+Imported v1 evidence is not rewritten. Replay normalizes it to an in-memory `unknown · legacy replay` assessment because the original file has no durable capture receipt. Earlier valid v2 sessions without the optional provenance field also remain unchanged; the workspace and bundle artifacts report provenance as unavailable instead of inferring it from retained records.
 
 ![NarrowsLink replaying a durable UDP capture-path anomaly with incomplete integrity](docs/design/implementation-capture-integrity.png)
 
@@ -171,6 +179,8 @@ An `.nlb` file is an ordinary ZIP archive generated entirely in the browser. Dep
 manifest.json
 SHA256SUMS
 transport/events.json
+transport/provenance.json
+transport/journal.json
 transport/integrity-receipt.json
 raw/source-records.ndjson
 decoded/packets.csv
@@ -181,9 +191,9 @@ notes/notes.json
 schema/schema.json
 ```
 
-Every time-bearing artifact is filtered to the selected half-open range. Point transport events at `startUs` are included and events at `endUs` are excluded; overlapping intervals and session-scoped integrity events are included. `transport/integrity-receipt.json` always describes the whole capture, including an honest unknown assessment for legacy v1 input. These two transport artifacts are mandatory even when every optional evidence group is excluded.
+Every time-bearing artifact is filtered to the selected half-open range. Point transport events at `startUs` are included and events at `endUs` are excluded; overlapping intervals and session-scoped integrity events are included. `transport/integrity-receipt.json`, `transport/provenance.json`, and `transport/journal.json` always describe whole-session evidence, including explicit unavailable states for legacy or pre-provenance input. All four transport artifacts are mandatory even when every optional evidence group is excluded.
 
-`manifest.json` records the session and decoder identity, full capture-integrity receipt, exact selection, actual inclusions, media types, byte sizes, record counts, and artifact hashes. Those values describe the generated bytes, unlike the selected-group and size estimates shown before generation. `decoded/packets.csv` retains complete integrity JSON for forensic failures, and `schema/schema.json` includes the reproducible byte-level decoder definition. `SHA256SUMS` covers the manifest and each included evidence artifact.
+`manifest.json` records the session and decoder identity, capture-integrity receipt, provenance availability and summary, exact selection, actual inclusions, media types, byte sizes, record counts, and artifact hashes. Those values describe the generated bytes, unlike the selected-group and size estimates shown before generation. `decoded/packets.csv` retains complete integrity JSON for forensic failures, and `schema/schema.json` includes the reproducible byte-level decoder definition. `SHA256SUMS` covers the manifest and each included evidence artifact.
 
 ### Verify a bundle independently
 
@@ -198,7 +208,7 @@ shasum -a 256 -c SHA256SUMS
 
 On systems that provide GNU Coreutils instead of `shasum`, use `sha256sum -c SHA256SUMS`. Every listed path must report `OK`; otherwise, treat the bundle as modified or incomplete. Then inspect `manifest.json` to confirm the expected session, decoder revision and schema hash, half-open selection, inclusions, file sizes, and record counts.
 
-Checksums establish internal integrity only. Version 2 bundles are unsigned: they do not prove who created the archive or that the NarrowsLink build used to generate it was uncompromised. The receipt proves which capture-integrity checks NarrowsLink could perform and preserves every known anomaly; it cannot rule out failures that the local transport did not expose. Exchange the `.nlb` checksum or the expected manifest identity through a separately trusted channel when provenance matters.
+Checksums establish internal integrity only. Version 3 bundles are unsigned: they do not prove who created the archive or that the NarrowsLink build used to generate it was uncompromised. The receipt, provenance document, and journal prove which internal consistency checks NarrowsLink could perform and preserve every known anomaly; they cannot rule out failures that the local transport or host did not expose. Exchange the `.nlb` checksum or the expected manifest identity through a separately trusted channel when authenticity matters.
 
 ## Architecture
 
@@ -224,6 +234,7 @@ Checksums establish internal integrity only. Version 2 bundles are unsigned: the
 | `scripts/capture-bridge.mjs` | Token-protected loopback control plane, UDP socket, multicast membership, and SSE delivery |
 | `scripts/send-demo-udp.mjs` | Replays checked-in fixture records as real UDP datagrams for acceptance testing |
 | `scripts/generate-demo-session.mjs` | Deterministic synthetic fixture generator |
+| `tests/e2e/` | Cross-browser capture-to-evidence, archive-verification, persistence, failure-recovery, accessibility, and responsive release gates |
 
 Raw source records remain immutable. Frames, fields, metrics, diagnostics, incidents, and bundle artifacts are derived from those records, and the same path is used for the bundled fixture and imported files.
 
@@ -239,9 +250,9 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 - The serial adapter is bound to the bundled NSL-01 decoder schema, and decoder families are compiled into the application; external schemas and protocol plug-ins are not supported.
 - The active session is parsed, decoded, indexed, and bundled in browser memory. The local library stores bounded whole session documents rather than streaming or indexing large captures; every entry remains subject to the 32 MiB replay limit and the browser's available storage quota, while captures also retain the 100,000-record and 24-hour schema limits.
 - IndexedDB or Web Crypto can be unavailable or reject a save. NarrowsLink surfaces the failure and keeps the validated replay usable in memory instead of claiming it was saved.
-- New live captures use version 2 durable transport events and integrity receipts; legacy version 1 replays remain supported with an explicit unknown assessment.
+- New live captures use version 2 durable transport events, explicit UDP or serial provenance, bridge journals where applicable, and integrity receipts; legacy v1 and earlier pre-provenance v2 replays remain supported with explicit unknown or unavailable assessments.
 - Version 2 does not persist each UDP sender endpoint or the bridge's internal capture ID in every source record. It does preserve browser-observed bridge errors, event-stream gaps, stop-time counter reconciliation, recorder limits, serial failures, and shutdown disposition.
-- Automated coverage includes capture adapters, the real loopback bridge, decoder/replay behavior, and capture-to-evidence byte/hash verification. Cross-browser and assistive-technology coverage is still limited.
+- Automated coverage exercises the complete UDP capture-to-evidence loop in Playwright Chromium, Firefox, and WebKit and gates axe rules tagged WCAG A/AA, critical keyboard focus, responsive reflow, failure recovery, and independent archive verification. Physical Web Serial devices and manual screen-reader/browser combinations remain outside the automated release gate.
 
 ## Project documentation
 
@@ -251,6 +262,7 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 | [CHANGELOG.md](CHANGELOG.md) | Canonical record of notable completed changes and, once they exist, tagged releases |
 | [ROADMAP.md](ROADMAP.md) | Planned work, constraints, and exit criteria; completed work moves to the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, engineering invariants, review expectations, and changelog policy |
+| [ACCESSIBILITY.md](ACCESSIBILITY.md) | Current automated accessibility evidence, keyboard contract, support boundary, and manual certification matrix |
 | [design-qa.md](design-qa.md) | Current accepted visual baseline and verification evidence |
 
 For usage help, see [SUPPORT.md](SUPPORT.md). Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md), and review [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating in project spaces.

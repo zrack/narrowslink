@@ -11,6 +11,8 @@ import type {
   ParsedSession,
   SourceRecord,
   TransportEvent,
+  TransportProvenance,
+  UdpBridgeJournal,
 } from "./types";
 
 export const EVIDENCE_BUNDLE_MEDIA_TYPE = "application/vnd.narrowslink.evidence-bundle+zip";
@@ -60,13 +62,87 @@ export interface EvidenceBundleArtifact {
   recordCount?: number;
 }
 
+export type EvidenceTransportUnavailableReason =
+  | "legacy-v1"
+  | "pre-provenance-v2"
+  | "journal-unavailable"
+  | "not-applicable";
+
+export type EvidenceTransportProvenanceDocument =
+  | {
+      format: "narrowslink/transport-provenance";
+      formatVersion: 1;
+      availability: "available";
+      sessionFormatVersion: 2;
+      sourceId: string;
+      transport: "udp" | "serial";
+      provenance: TransportProvenance;
+    }
+  | {
+      format: "narrowslink/transport-provenance";
+      formatVersion: 1;
+      availability: "unavailable";
+      reason: "legacy-v1" | "pre-provenance-v2";
+      sessionFormatVersion: 1 | 2;
+      sourceId: string;
+      transport: "udp" | "serial" | "file";
+      provenance: null;
+    };
+
+export type EvidenceTransportJournalDocument =
+  | {
+      format: "narrowslink/transport-journal";
+      formatVersion: 1;
+      availability: "available";
+      sessionFormatVersion: 2;
+      sourceId: string;
+      transport: "udp";
+      captureId: string;
+      journal: UdpBridgeJournal;
+    }
+  | {
+      format: "narrowslink/transport-journal";
+      formatVersion: 1;
+      availability: "unavailable";
+      reason: EvidenceTransportUnavailableReason;
+      sessionFormatVersion: 1 | 2;
+      sourceId: string;
+      transport: "udp" | "serial" | "file";
+      captureId: null;
+      journal: null;
+    };
+
+export interface EvidenceBundleProvenanceSummary {
+  availability: "available" | "unavailable";
+  status: "verified" | "incomplete" | "unknown";
+  sourceId: string;
+  transport: "udp" | "serial" | "file";
+  issueCodes: string[];
+  captureId: string | null;
+  endpointAttribution: {
+    totalRecords: number;
+    attributedRecords: number;
+    unattributedRecords: number;
+    distinctEndpointCount: number;
+  } | null;
+  journal: {
+    availability: "available" | "unavailable";
+    reason: EvidenceTransportUnavailableReason | null;
+    state: "active" | "clean" | "incomplete" | null;
+    entriesComplete: boolean | null;
+    entryCount: number;
+    omittedEntries: number;
+  };
+}
+
 export interface EvidenceBundleManifest {
   format: "narrowslink/evidence-bundle";
-  formatVersion: 2;
+  formatVersion: 3;
   generatedAt: string;
   session: {
     id: string;
     title: string;
+    formatVersion: 1 | 2;
     startedAt: string;
     displayTimeZone: string;
     sourceId: string;
@@ -75,6 +151,7 @@ export interface EvidenceBundleManifest {
     schemaHash: string;
     captureIntegrity: CaptureIntegrityReceipt;
   };
+  provenance: EvidenceBundleProvenanceSummary;
   selection: {
     id: string | null;
     title: string | null;
@@ -306,6 +383,154 @@ function addTextArtifact(
   artifacts.push({ path, mediaType, bytes: textBytes(contents), ...(recordCount == null ? {} : { recordCount }) });
 }
 
+function transportEvidenceDocuments(session: ParsedSession): {
+  provenanceDocument: EvidenceTransportProvenanceDocument;
+  journalDocument: EvidenceTransportJournalDocument;
+  summary: EvidenceBundleProvenanceSummary;
+} {
+  const { document } = session;
+  const provenance = document.formatVersion === 2 ? document.transportProvenance : undefined;
+  if (!provenance) {
+    const unavailableReason = document.formatVersion === 1 ? "legacy-v1" : "pre-provenance-v2";
+    const provenanceDocument: EvidenceTransportProvenanceDocument = {
+      format: "narrowslink/transport-provenance",
+      formatVersion: 1,
+      availability: "unavailable",
+      reason: unavailableReason,
+      sessionFormatVersion: document.formatVersion,
+      sourceId: document.source.id,
+      transport: document.source.kind,
+      provenance: null,
+    };
+    const journalDocument: EvidenceTransportJournalDocument = {
+      format: "narrowslink/transport-journal",
+      formatVersion: 1,
+      availability: "unavailable",
+      reason: unavailableReason,
+      sessionFormatVersion: document.formatVersion,
+      sourceId: document.source.id,
+      transport: document.source.kind,
+      captureId: null,
+      journal: null,
+    };
+    return {
+      provenanceDocument,
+      journalDocument,
+      summary: {
+        availability: "unavailable",
+        status: "unknown",
+        sourceId: document.source.id,
+        transport: document.source.kind,
+        issueCodes: [],
+        captureId: null,
+        endpointAttribution: null,
+        journal: {
+          availability: "unavailable",
+          reason: unavailableReason,
+          state: null,
+          entriesComplete: null,
+          entryCount: 0,
+          omittedEntries: 0,
+        },
+      },
+    };
+  }
+
+  const provenanceDocument: EvidenceTransportProvenanceDocument = {
+    format: "narrowslink/transport-provenance",
+    formatVersion: 1,
+    availability: "available",
+    sessionFormatVersion: 2,
+    sourceId: provenance.sourceId,
+    transport: provenance.transport,
+    provenance,
+  };
+  if (provenance.transport === "udp") {
+    const journal = provenance.journal;
+    const journalDocument: EvidenceTransportJournalDocument = journal
+      ? {
+          format: "narrowslink/transport-journal",
+          formatVersion: 1,
+          availability: "available",
+          sessionFormatVersion: 2,
+          sourceId: provenance.sourceId,
+          transport: "udp",
+          captureId: journal.captureId,
+          journal,
+        }
+      : {
+          format: "narrowslink/transport-journal",
+          formatVersion: 1,
+          availability: "unavailable",
+          reason: "journal-unavailable",
+          sessionFormatVersion: 2,
+          sourceId: provenance.sourceId,
+          transport: "udp",
+          captureId: null,
+          journal: null,
+        };
+    return {
+      provenanceDocument,
+      journalDocument,
+      summary: {
+        availability: "available",
+        status: provenance.status,
+        sourceId: provenance.sourceId,
+        transport: provenance.transport,
+        issueCodes: [...provenance.issueCodes],
+        captureId: journal?.captureId ?? null,
+        endpointAttribution: {
+          totalRecords: provenance.endpointAttribution.totalRecords,
+          attributedRecords: provenance.endpointAttribution.attributedRecords,
+          unattributedRecords: provenance.endpointAttribution.unattributedRecords,
+          distinctEndpointCount: provenance.endpointAttribution.distinctEndpoints.length,
+        },
+        journal: {
+          availability: journal ? "available" : "unavailable",
+          reason: journal ? null : "journal-unavailable",
+          state: journal?.state ?? null,
+          entriesComplete: journal?.entriesComplete ?? null,
+          entryCount: journal?.entries.length ?? 0,
+          omittedEntries: journal?.omittedEntries ?? 0,
+        },
+      },
+    };
+  }
+
+  const journalDocument: EvidenceTransportJournalDocument = {
+    format: "narrowslink/transport-journal",
+    formatVersion: 1,
+    availability: "unavailable",
+    reason: "not-applicable",
+    sessionFormatVersion: 2,
+    sourceId: provenance.sourceId,
+    transport: "serial",
+    captureId: null,
+    journal: null,
+  };
+  return {
+    provenanceDocument,
+    journalDocument,
+    summary: {
+      availability: "available",
+      status: provenance.status,
+      sourceId: provenance.sourceId,
+      transport: provenance.transport,
+      issueCodes: [...provenance.issueCodes],
+      captureId: null,
+      endpointAttribution: null,
+      journal: {
+        availability: "unavailable",
+        reason: "not-applicable",
+        state: null,
+        entriesComplete: null,
+        entryCount: 0,
+        omittedEntries: 0,
+      },
+    },
+  };
+}
+
 function schemaArtifact(session: ParsedSession): object {
   return {
     schema: {
@@ -328,6 +553,8 @@ function schemaArtifact(session: ParsedSession): object {
       eventRangeSemantics: "point events at start are included; point events at end are excluded; interval events use half-open overlap",
       sessionScopeEvents: "included in every selected range",
       integrityReceiptScope: "whole session",
+      provenanceScope: "whole session",
+      bridgeJournalScope: "whole session when available; explicit unavailability otherwise",
     },
     decoder: DECODER_SCHEMA,
   };
@@ -351,6 +578,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
   const transportEvents = transportEventsForRange(session.transportEvents, range);
   const markers = markersForRange(options.markers ?? [], range);
   const notes = notesForRange(options.notes ?? [], range);
+  const transportEvidence = transportEvidenceDocuments(session);
   const pendingArtifacts: PendingArtifact[] = [];
 
   addTextArtifact(
@@ -373,6 +601,20 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     "application/json",
     canonicalJson(session.captureIntegrity, true),
     1,
+  );
+  addTextArtifact(
+    pendingArtifacts,
+    "transport/provenance.json",
+    "application/json",
+    canonicalJson(transportEvidence.provenanceDocument, true),
+    1,
+  );
+  addTextArtifact(
+    pendingArtifacts,
+    "transport/journal.json",
+    "application/json",
+    canonicalJson(transportEvidence.journalDocument, true),
+    transportEvidence.journalDocument.journal?.entries.length ?? 0,
   );
 
   if (inclusions.rawRecords) {
@@ -454,11 +696,12 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
   );
   const manifest: EvidenceBundleManifest = {
     format: "narrowslink/evidence-bundle",
-    formatVersion: 2,
+    formatVersion: 3,
     generatedAt,
     session: {
       id: session.document.id,
       title: session.document.title,
+      formatVersion: session.document.formatVersion,
       startedAt: session.document.startedAt,
       displayTimeZone: session.document.displayTimeZone,
       sourceId: session.document.source.id,
@@ -467,6 +710,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
       schemaHash: session.document.decoder.schemaHash,
       captureIntegrity: session.captureIntegrity,
     },
+    provenance: transportEvidence.summary,
     selection: {
       id: range.id ?? null,
       title: range.title ?? null,
