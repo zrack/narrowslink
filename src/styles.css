@@ -349,6 +349,164 @@ select:focus-visible {
   padding-bottom: 5px;
 }
 
+.saved-session-list {
+  display: grid;
+  min-width: 0;
+}
+
+.library-save-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 47px;
+  margin: 0 10px 5px;
+  padding: 6px 9px;
+  border: 1px solid #43584a;
+  background: #141c17;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.library-save-row:hover {
+  border-color: #607a66;
+  background: #19241d;
+}
+
+.library-save-row > svg {
+  color: var(--green);
+}
+
+.library-save-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.library-save-row strong {
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.library-save-row small {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8px;
+}
+
+.saved-session-entry {
+  border-left: 2px solid transparent;
+}
+
+.saved-session-entry.active {
+  border-left-color: #a9d6e6;
+  background: var(--surface-3);
+}
+
+.saved-session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 29px;
+  min-width: 0;
+}
+
+.saved-session-row .recent-row {
+  min-width: 0;
+  min-height: 47px;
+  padding-left: 14px;
+  padding-right: 6px;
+}
+
+.saved-session-row .recent-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-session-remove {
+  display: grid;
+  place-items: center;
+  width: 29px;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.saved-session-remove:hover,
+.saved-session-remove:focus-visible {
+  color: #e6aaa3;
+  background: rgb(255 255 255 / 3%);
+}
+
+@media (hover: hover) {
+  .saved-session-remove {
+    opacity: 0;
+  }
+
+  .saved-session-entry:hover .saved-session-remove,
+  .saved-session-entry:focus-within .saved-session-remove {
+    opacity: 1;
+  }
+}
+
+.saved-session-delete {
+  display: grid;
+  gap: 7px;
+  padding: 8px 9px 9px 14px;
+  border-top: 1px solid var(--line-soft);
+  background: #121412;
+}
+
+.saved-session-delete p,
+.library-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.saved-session-delete > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.saved-session-delete > div > button:not(.destructive-link) {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.library-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 14px 10px 16px;
+}
+
+.library-state.error {
+  color: #ef9a8f;
+}
+
+.library-retry {
+  justify-self: start;
+  min-height: 27px;
+  margin: 0 14px 9px 16px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 9px;
+  cursor: pointer;
+}
+
 .recent-row {
   display: flex;
   align-items: center;
@@ -435,6 +593,14 @@ select:focus-visible {
 
 .session-info .saved svg {
   color: var(--green);
+}
+
+.session-info .saved.unsaved {
+  color: var(--dim);
+}
+
+.session-info .saved.unsaved svg {
+  color: var(--amber);
 }
 
 .settings-button {
@@ -526,7 +692,8 @@ select:focus-visible {
 }
 
 .topbar .open-replay-mobile,
-.topbar .capture-mobile {
+.topbar .capture-mobile,
+.topbar .library-mobile {
   display: none;
 }
 
@@ -1983,6 +2150,32 @@ select:focus-visible {
   width: min(590px, calc(100vw - 32px));
 }
 
+.session-library-dialog {
+  width: min(540px, calc(100vw - 32px));
+  max-width: 100%;
+}
+
+.session-library-dialog-list {
+  max-height: min(420px, 44dvh);
+  margin: 20px 0;
+  overflow: hidden auto;
+  border: 1px solid var(--line);
+  background: #111410;
+  outline: none;
+}
+
+.session-library-dialog-list:focus-visible {
+  border-color: #6c7d83;
+}
+
+.session-library-dialog .library-save-row {
+  margin-top: 8px;
+}
+
+.session-library-dialog .dialog-actions {
+  margin-top: 0;
+}
+
 .dialog-close {
   position: absolute;
   top: 10px;
@@ -2660,7 +2853,8 @@ select:focus-visible {
   }
 
   .topbar .open-replay-mobile,
-  .topbar .capture-mobile {
+  .topbar .capture-mobile,
+  .topbar .library-mobile {
     display: inline-flex;
     flex: 0 0 auto;
     min-height: 32px;
@@ -2740,6 +2934,10 @@ select:focus-visible {
 }
 
 @media (max-width: 600px) {
+  .session-library-dialog {
+    padding: 20px 16px;
+  }
+
   .range-boundaries {
     grid-template-columns: 1fr;
   }

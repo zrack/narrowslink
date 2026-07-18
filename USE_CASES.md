@@ -23,18 +23,18 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 
 **Actor:** Field or test operator
 
-**Outcome:** Preserve live NSL-01 traffic as an immutable local session that can immediately enter the normal replay and investigation workflow.
+**Outcome:** Preserve live NSL-01 traffic as an immutable local session that can immediately enter the normal replay and investigation workflow and be reopened from the local session library.
 
 **Workflow:**
 
 1. Select UDP bridge or Web Serial capture and configure the source.
 2. Record raw datagrams or serial frames while NarrowsLink retains byte counts, monotonic offsets, transport observations, and malformed input.
 3. Stop the source with **Stop, save & replay**.
-4. Save the downloaded version 2 `.nlsession`, continue into replay with the validated finalized session, and review its terminal integrity status.
+4. Save the downloaded version 2 `.nlsession`, continue into replay with the validated finalized session, and retain the canonical session in the local library when IndexedDB succeeds.
 
-**Current constraints:** UDP requires the token-protected local bridge. Serial capture requires a browser with Web Serial support and a secure context such as `localhost` or `127.0.0.1`. The built-in decoder targets NSL-01, and captures must remain within the current serialized-file, record-count, and duration limits. The automatic handoff validates and replays the finalized in-memory document; it does not re-import the downloaded bytes as a separate file-selection step.
+**Current constraints:** UDP requires the token-protected local bridge. Serial capture requires a browser with Web Serial support and a secure context such as `localhost` or `127.0.0.1`. The built-in decoder targets NSL-01, and captures must remain within the current serialized-file, record-count, duration, and browser-storage limits. The automatic handoff validates and replays the finalized in-memory document; it does not re-import the downloaded bytes as a separate file-selection step. If IndexedDB, Web Crypto, or the available quota prevents library persistence, the downloaded file and active replay remain usable, but NarrowsLink reports that the session was not saved in the library.
 
-**Implementation evidence:** [capture dialog](src/capture/CaptureDialog.tsx), [bounded recorder](src/capture/recorder.ts), [UDP client](src/capture/udp-bridge.ts), [Web Serial adapter](src/capture/web-serial.ts), and [capture-pipeline tests](src/capture/capture-pipeline.test.ts).
+**Implementation evidence:** [capture dialog](src/capture/CaptureDialog.tsx), [bounded recorder](src/capture/recorder.ts), [UDP client](src/capture/udp-bridge.ts), [Web Serial adapter](src/capture/web-serial.ts), [durable session library](src/storage/session-library.ts), [session-library tests](src/storage/session-library.test.ts), and [capture-pipeline tests](src/capture/capture-pipeline.test.ts).
 
 ## UC-002 — Investigate a recorded telemetry fault
 
@@ -44,15 +44,15 @@ Use-case IDs are permanent. Update an entry when its current workflow, support l
 
 **Workflow:**
 
-1. Load the bundled replay or a validated local session.
+1. Load the bundled replay, choose a validated local session, or reopen a saved session from the Sessions rail.
 2. Seek or play the recording on the shared monotonic replay clock.
 3. Select a preset or create an operator-authored half-open range around the event.
 4. Refine the exact microsecond boundaries and inspect the projected narrative, details, statistics, diagnostics, and decoded values.
-5. Add markers and a session note without modifying the source records; they persist locally when browser storage is available.
+5. Add markers and a session note without modifying the source records; they persist locally by session identity when browser storage is available and are restored when the same saved content is reopened.
 
-**Current constraints:** Processing occurs in browser memory. Marker, note, and authored-range persistence is best-effort; when browser local storage is unavailable or rejects a write, edits remain available only in the current page state. NarrowsLink displays one active replay and does not yet provide a saved-session library or automatic comparison between separate captures.
+**Current constraints:** Active-session processing occurs in browser memory. Saved session documents use IndexedDB, while markers, notes, and authored ranges use separate per-session local storage; either store can be unavailable or reject a write. Exact duplicate session content shares one SHA-256 library identity and retains its original saved date. Removing a saved replay attempts to clear both its library document and separate operator workspace; the active in-memory replay stays open, exported files are unaffected, and a persistent warning identifies any residual workspace that could not be cleared. NarrowsLink displays one active replay and does not provide automatic comparison between separate captures.
 
-**Implementation evidence:** [session projection](src/domain/session.ts), [replay clock](src/replay/ReplayClock.ts), [timeline helpers](src/lib/telemetry.ts), and [workspace persistence](src/storage/session-storage.ts).
+**Implementation evidence:** [session projection](src/domain/session.ts), [replay clock](src/replay/ReplayClock.ts), [timeline helpers](src/lib/telemetry.ts), [durable session library](src/storage/session-library.ts), [session-library tests](src/storage/session-library.test.ts), and [workspace persistence](src/storage/session-storage.ts).
 
 ## UC-003 — Audit capture-path integrity
 

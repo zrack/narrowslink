@@ -83,6 +83,9 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 - Use half-open incident and export ranges: `[startUs, endUs)`.
 - Route bundled and user-imported sessions through the same validation and decoding functions.
 - Route finalized live captures through that same validation and decoding path before replay.
+- Store only validated canonical session documents in the IndexedDB library, identify them by SHA-256 over canonical `.nlsession` bytes, and keep exact duplicate saves idempotent without changing their original saved date.
+- Re-hash, parse, and validate every saved-session reopen. Surface corruption and storage failures without replacing the active validated replay or claiming an uncommitted save succeeded.
+- Treat saved-session removal as a two-store operation: delete the IndexedDB replay, clear its per-session local-storage workspace when identifiable, keep any active replay in memory, and warn if residual operator context could not be cleared.
 - Never let a control client stop or adopt a UDP capture it did not start; reconcile bridge sequence, datagram, and byte totals before claiming a capture is complete.
 - New live captures must finalize as session v2 with immutable transport events and a terminal receipt. Preserve strict v1 import behavior and never infer verified integrity for legacy evidence.
 - Never substitute browser or recorder counts for an unavailable transport-reported count. Preserve null observations, use the truthful incomplete assessment basis, and require explicit adapter evidence before verification.
@@ -108,7 +111,8 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 | Capture lifecycle and session finalization | `src/capture/CaptureDialog.tsx`, `src/capture/recorder.ts` |
 | Serial capture and NSL-01 assembly | `src/capture/web-serial.ts`, `src/capture/nsl01-serial-assembler.ts` |
 | UDP browser protocol and local bridge | `src/capture/udp-bridge.ts`, `scripts/capture-bridge.mjs` |
-| Marker and note persistence | `src/storage/session-storage.ts` |
+| Durable session-document library | `src/storage/session-library.ts` |
+| Marker, note, and authored-range persistence | `src/storage/session-storage.ts` |
 | Workspace UI and interactions | `src/App.tsx`, `src/styles.css` |
 | Deterministic demo data | `scripts/generate-demo-session.mjs` |
 
@@ -133,7 +137,8 @@ Screenshots are evidence, not the review itself. Keep `design-qa.md` focused on 
 - Test exact boundaries at `startUs` and `endUs`; values at `endUs` must be excluded.
 - Keep clock tests deterministic by injecting the monotonic time source and frame scheduler.
 - Verify evidence changes by inspecting archive paths, manifest metadata, record counts, and SHA-256 values rather than only checking that a download occurred.
-- For UI changes, exercise the bundled replay, file-import error state, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
+- For session-library changes, cover valid v1 and v2 saves, the pre-database 32 MiB limit, content identity, exact-duplicate behavior, newest-first listing, validated reopen, corruption, missing entries, replay-and-workspace removal, residual-workspace warnings, unavailable IndexedDB, quota exhaustion, and transaction failures.
+- For UI changes, exercise the bundled replay, file-import error state, saved-session save/list/reopen/remove and failure states, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
 - For capture changes, exercise a real loopback UDP socket from start through stop, re-import, replay, annotation, and bundle export. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage.
 - For integrity changes, add a failure round trip through capture finalization, JSON serialization, replay parsing, operator-authored half-open range projection, bundle inspection, and independent SHA-256 verification. Cover both a UDP and serial path when the contract affects both.
 

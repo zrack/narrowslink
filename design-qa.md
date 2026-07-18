@@ -8,11 +8,11 @@ This document records the currently accepted visual baseline and its verificatio
 - Final browser-rendered implementation: [desktop implementation](docs/design/implementation-final-production.png)
 - Full source/implementation comparison: [full comparison](docs/design/comparison-production-final.png)
 - Focused comparison: [focused comparison](docs/design/comparison-production-focused.png)
-- Responsive implementation: [responsive implementation](docs/design/implementation-functional-mobile.png)
+- Responsive session library: [responsive implementation](docs/design/implementation-functional-mobile.png)
 - Capture-integrity functional evidence: [incomplete UDP capture replay](docs/design/implementation-capture-integrity.png)
 - Desktop viewport: `1487 × 1058`, matching the source image.
-- Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`.
-- State: bundled Harbor relay replay; replay paused inside the link-fade incident at `23:40`; Narrative tab; all six evidence groups selected; one local operator marker and a session-wide note present.
+- Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`, and the open library dialog measures `358 px` wide.
+- State: bundled Harbor relay replay reopened from the library; replay paused inside the link-fade incident at `23:40`; Narrative tab; all six evidence groups selected; two genuine saved sessions; two local operator markers, one in the visible timeline; and a session-wide note present.
 
 ### Accepted desktop comparison
 
@@ -20,7 +20,7 @@ This document records the currently accepted visual baseline and its verificatio
 
 ### Accepted responsive result
 
-[![NarrowsLink responsive implementation at 390 by 844 pixels](docs/design/implementation-functional-mobile.png)](docs/design/implementation-functional-mobile.png)
+[![NarrowsLink responsive saved-session library at 390 by 844 pixels](docs/design/implementation-functional-mobile.png)](docs/design/implementation-functional-mobile.png)
 
 ### Accepted capture-integrity result
 
@@ -34,7 +34,7 @@ The final implementation matches the source's primary composition and geometry: 
 
 Five visible differences are intentional and accepted product/data constraints:
 
-- The source mocks several active and recent sessions. The implementation shows the one session actually loaded and does not present invented sessions as available data.
+- The source mocks several active and recent sessions. The implementation shows one genuine loaded source plus two genuinely persisted sessions and does not present invented sessions as available data.
 - The source shows a live-follow control. A recorded session truthfully exposes replay controls, while live capture remains available from the source rail and command bar.
 - Packet-family gaps, decoder resynchronization, diagnostics, estimates, and bundle metadata are derived from the validated fixture rather than copied as decorative source values.
 - Evidence rows describe the real local NarrowsLink archive contents and sizes rather than the source's illustrative PCAP and `24.7 MB` copy.
@@ -45,7 +45,8 @@ Five visible differences are intentional and accepted product/data constraints:
 - Timeline: the final comparison confirms equivalent label and scale gutters, minute-aligned ticks, connection/received-packet-rate/inferred-missing-frame order (labeled Connection, Throughput, and Loss in the UI), five packet-family bands, extended decoder-resync state, diagnostic and marker lanes, geographic traces, and selected-range treatment.
 - Incident rail: the final comparison confirms equivalent range summary, selector, semantic tabs, compact chronological narrative, severity dots, and session-wide operator-note region.
 - Evidence workspace: the current full and focused comparisons confirm the summary-to-table hierarchy, operator context, estimated size/group count, source-aligned primary export placement, and a fully visible six-row table. Optional Diagnostics remains independently selectable while the sixth Capture integrity row is required.
-- Source rail and header: widths, dividers, title/meta hierarchy, compact replay actions, source navigation, and capture entry align with the prototype while remaining truthful to the one loaded replay.
+- Source rail and header: widths, dividers, title/meta hierarchy, compact replay actions, loaded-source navigation, live capture, and dense real saved-session rows align with the prototype without fabricating availability.
+- Session library: the current desktop and responsive evidence confirms two real IndexedDB entries, active-row treatment, meaningful date/duration/integrity metadata, guarded removal, a reachable narrow-screen dialog, and no horizontal body overflow.
 - Capture integrity: the functional evidence confirms that an incomplete v2 receipt is visible in session context, its immutable UDP anomaly appears in the shared Diagnostics lane and Narrative as `Capture path`, and the evidence workspace keeps Capture integrity mandatory while Diagnostics remains optional.
 
 ## Required fidelity surfaces
@@ -55,7 +56,7 @@ Five visible differences are intentional and accepted product/data constraints:
 - Colors and visual tokens: warm near-black surfaces, muted gray structure, amber incident selection, green link/position data, blue received packet rate, red inferred missing frames, purple markers, cyan packet-family data, and pale-blue primary actions preserve the source semantics.
 - Image and icon fidelity: the repository's NarrowsLink mark is reused as a real image asset. The source contains no photography or illustration. Recharts renders data plots and Phosphor supplies the icon family; no placeholder art, emoji, or improvised CSS/SVG illustration was introduced.
 - Copy and content: session metadata, diagnostics, units, decoder state, bundle contents, and privacy language remain coherent and derived from the same replay pipeline instead of reproducing contradictory prototype numbers.
-- Responsiveness: at `390 × 844`, the page has no horizontal body overflow, labels no longer collide, the command strip remains reachable, the telemetry surface uses its deliberate internal scroller, and panels preserve the desktop hierarchy.
+- Responsiveness: at `390 × 844`, the page has no horizontal body overflow, labels no longer collide, the command strip and Saved control remain reachable, the `358 px` library dialog fits the viewport, the telemetry surface uses its deliberate internal scroller, and panels preserve the desktop hierarchy.
 - Accessibility review: semantic buttons, native checkboxes/selects, labels, tabs, dialogs, focus treatment, status text, chart summaries, disabled states, and reduced-motion behavior were inspected. This is not a claim of full accessibility compliance; screen-reader and 200% zoom matrices remain follow-up coverage.
 
 ## Primary interactions tested
@@ -71,11 +72,16 @@ Five visible differences are intentional and accepted product/data constraints:
 - Imported a purpose-built v2 UDP failure replay and confirmed the incomplete receipt, sequence-discontinuity event, exact capture-path diagnostic, and narrative entry survived reopen and projected into the selected incident range.
 - Built and downloaded `capture-integrity-browser-review-capture-integrity-incident.nlb`; the success state reported six selected groups and verifiable local evidence with Capture integrity locked on while Diagnostics remained independently selectable.
 - Opened and closed the live UDP/serial capture setup.
+- Saved the bundled replay, reloaded the page, and confirmed its genuine IndexedDB row and active state survived browser navigation.
+- Imported the exact same fixture and confirmed content-addressed deduplication kept the library at one entry and preserved the original saved order.
+- Added a second validated session through the real repository path, confirmed newest-first ordering, reopened it from the rail, switched away and back, and verified its per-session operator note restored.
+- Exercised removal confirmation and cancellation with keyboard focus, deleted the active library copy while keeping its replay and note in memory, restored the same session document, and confirmed the deleted workspace note did not resurrect.
+- Opened and closed the responsive Saved `(2)` dialog at `390 × 844`; focus moved to the labeled heading and returned to the Saved control, with document and body widths both measuring `390 px`.
 - Verified the final desktop document is exactly `1487 × 1058` with no page overflow.
 - Verified the operator range editor at `390 × 844`; exact boundary fields stack cleanly and the primary action remains visible.
-- Checked browser warnings and errors after a clean reload: none.
+- Checked browser warnings and errors after the complete session-library flow: none.
 - Checked and saved the capture-integrity replay at a `1487 × 1058` browser viewport with no document overflow; the header, required Capture integrity row, and all optional evidence controls remain visible in the accepted frame.
-- Ran `npm run check`: TypeScript validation, `141` tests across `16` files, and the production Vite build passed.
+- Ran `npm run check`: TypeScript validation, `160` tests across `18` files, and the production Vite build passed.
 
 ## Implementation checklist
 
@@ -84,6 +90,7 @@ Five visible differences are intentional and accepted product/data constraints:
 - [x] Keep the fixture and imported sources on the same validation, decode, replay, incident, and export pipeline.
 - [x] Preserve malformed and partial frames as inspectable diagnostics.
 - [x] Preserve capture-path anomalies and the terminal integrity receipt through replay, operator range projection, and checksummed export.
+- [x] Populate the source rail with real durable sessions and preserve validated reopen, explicit removal, and responsive access.
 - [x] Verify desktop, responsive, and primary interaction states.
 - [x] Resolve every P0, P1, and P2 visual QA finding.
 

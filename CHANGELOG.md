@@ -8,6 +8,7 @@ NarrowsLink has not published a tagged release. Until a maintainer publishes a m
 
 ### Added
 
+- Content-addressed local session library with IndexedDB persistence, real session metadata, validated reopen, exact-content deduplication, explicit replay-and-workspace removal, and surfaced storage, cleanup, or corruption failures.
 - Canonical use-case log with stable IDs, actors, outcomes, current constraints, and implementation evidence for five supported workflows.
 - Mission-timeline-first local session review with a deterministic bundled replay, one synchronized replay clock, telemetry and decoder lanes, incident narrative, details and statistics, markers, and operator notes.
 - Validated session import and NSL-01 decoding that preserve malformed and partial frames while deriving link, inferred missing-frame, jitter, decoder, diagnostic, and decoded-signal evidence.

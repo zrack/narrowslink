@@ -42,14 +42,6 @@ Exit criteria: the browser receipt can be cross-checked against a durable bridge
 
 Exit criteria: critical operator workflows pass automated browser tests and a documented accessibility audit.
 
-## Persisted session library
-
-- Persist and reopen more than one genuine local session.
-- Populate the source rail from saved session metadata rather than decorative records.
-- Define explicit deletion and storage-limit behavior without weakening the immutable source-evidence model.
-
-Exit criteria: an operator can save, reopen, identify, and remove real local sessions from the source rail with predictable storage behavior.
-
 ## Product boundary
 
 Cloud storage, accounts, collaboration, and hosted ingestion are not current commitments. The default posture remains local-first, inspectable, and portable; any networked service should be optional and should not become necessary for capture, replay, diagnosis, or evidence export.

@@ -20,7 +20,9 @@ import {
   Check,
   Circle,
   ClockCounterClockwise,
+  Database,
   DownloadSimple,
+  FloppyDisk,
   FunnelSimple,
   Gear,
   NotePencil,
@@ -51,7 +53,15 @@ import { loadBundledSession, loadSessionFile, SessionLoadError } from "./data/lo
 import { downsampleBuckets, finiteOrDash, incidentViewRange, percentInRange, valueAtOffset } from "./lib/telemetry";
 import { formatBytes, formatClockOffset, formatDurationUs, formatOffsetUsInput, formatSessionDate, parseOffsetUsInput, timeZoneAbbreviation } from "./lib/time";
 import { useReplay } from "./replay/useReplay";
-import { loadSessionWorkspace, saveSessionWorkspace } from "./storage/session-storage";
+import {
+  createSessionLibrary,
+  sessionLibraryIdentity,
+  SessionLibraryError,
+  type SessionLibrary,
+  type SessionLibraryEntry,
+} from "./storage/session-library";
+import { createOperationGate, resolveCommittedSave } from "./storage/session-library-workflow";
+import { clearSessionWorkspace, loadSessionWorkspace, saveSessionWorkspace } from "./storage/session-storage";
 
 type ActiveTab = "narrative" | "details" | "stats";
 const INCIDENT_TABS: ActiveTab[] = ["narrative", "details", "stats"];
@@ -59,6 +69,36 @@ type LoadState =
   | { status: "loading"; message: string }
   | { status: "ready"; session: ParsedSession }
   | { status: "error"; error: SessionLoadError };
+
+type SessionLibraryStatus = "loading" | "ready" | "unavailable" | "error";
+type SessionLibraryAction =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "opening"; identity: string }
+  | { kind: "removing"; identity: string };
+
+type WorkspacePersistenceState = "stored" | "memory-only" | "unavailable";
+type WorkspacePersistenceCommand = {
+  identity: string;
+  kind: "clear" | "save";
+  revision: number;
+};
+
+interface SessionLibraryController {
+  entries: SessionLibraryEntry[];
+  status: SessionLibraryStatus;
+  action: SessionLibraryAction;
+  activeIdentity: string | null;
+  pendingDeleteIdentity: string | null;
+  error: string | null;
+  notice: string;
+  onSaveCurrent: () => void;
+  onRetry: () => void;
+  onOpen: (identity: string) => void;
+  onRequestDelete: (identity: string) => void;
+  onCancelDelete: () => void;
+  onConfirmDelete: (identity: string) => void;
+}
 
 type BundleItemId = "rawRecords" | "decodedPackets" | "schema" | "diagnostics" | "captureIntegrity" | "notes";
 
@@ -128,6 +168,11 @@ function sessionWorkspaceIdentity(session: ParsedSession): string {
   return identity;
 }
 
+function sessionWorkspaceStorageIdentity(session: ParsedSession): string {
+  const identity = sessionWorkspaceIdentity(session);
+  return isBundledDemoSession(session) ? `${identity}:${BUNDLED_DEMO_WORKSPACE_REVISION}` : identity;
+}
+
 function createSeedMarkers(session: ParsedSession): Marker[] {
   const incident = session.incidents.find((candidate) => candidate.id === "fade") ?? session.incidents[0];
   if (!incident) return [];
@@ -183,6 +228,46 @@ function captureIntegrityLabel(session: ParsedSession): string {
   if (session.captureIntegrity.assessmentBasis === "legacy-v1") return "Unknown · legacy replay";
   if (session.captureIntegrity.assessmentBasis === "file-source-unassessed") return "Unknown · file replay";
   return "Unknown";
+}
+
+function savedIntegrityLabel(status: SessionLibraryEntry["captureIntegrityStatus"]): string {
+  if (status === "verified") return "Verified";
+  if (status === "incomplete") return "Incomplete";
+  return "Unknown";
+}
+
+function sessionLibraryErrorMessage(error: unknown): string {
+  if (!(error instanceof SessionLibraryError)) {
+    return "The local session library could not complete this operation.";
+  }
+  switch (error.code) {
+    case "unavailable":
+      return "The local session library is unavailable in this browser. The active replay remains usable.";
+    case "quota":
+      return "Browser storage is full. Remove a saved replay or free site storage, then try again.";
+    case "not-found":
+      return "That saved replay is no longer present in the local library.";
+    case "corrupt":
+      return "The saved replay failed its content or validation checks and was not opened.";
+    case "too-large":
+      return "This session exceeds the 32 MiB local-library limit. The active replay remains usable.";
+    case "open-failed":
+      return "The local session library could not be opened. Close other NarrowsLink windows and retry.";
+    case "transaction-failed":
+    case "write-failed":
+      return "The local session library could not finish the operation. The active replay was not changed.";
+  }
+}
+
+function scheduleSavedSessionFocus(preferredIdentity: string | null = null): void {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const candidates = [...document.querySelectorAll<HTMLElement>("[data-saved-session-focus]")]
+      .filter((candidate) => candidate.getClientRects().length > 0);
+    const preferred = preferredIdentity === null
+      ? null
+      : candidates.find((candidate) => candidate.dataset.savedSessionIdentity === preferredIdentity) ?? null;
+    (preferred ?? candidates[0])?.focus({ preventScroll: true });
+  }));
 }
 
 function diagnosticIntersectsRange(event: DiagnosticEvent, startUs: number, endUs: number): boolean {
@@ -316,15 +401,94 @@ function StatusBars({ rssi }: { rssi: number | null }) {
   return <CellSignalFull className={`status-bars ${quality}`} size={20} weight="fill" aria-label={`${quality} signal`} />;
 }
 
+function SavedSessionRows({ library, announceErrors = false }: { library: SessionLibraryController; announceErrors?: boolean }) {
+  const actionBusy = library.action.kind !== "idle";
+  const saving = library.action.kind === "saving";
+  return (
+    <div className="saved-session-list" aria-busy={library.status === "loading" || actionBusy}>
+      {library.status === "loading" && <p className="library-state"><SpinnerGap className="spin" size={13} /> Loading saved sessions…</p>}
+      {library.status === "ready" && library.activeIdentity === null && (
+        <button className="library-save-row" type="button" disabled={actionBusy} onClick={library.onSaveCurrent}>
+          {saving ? <SpinnerGap className="spin" size={15} /> : <FloppyDisk size={15} />}
+          <span><strong>{saving ? "Saving current replay…" : "Save current replay"}</strong><small>Validated replay · local only</small></span>
+        </button>
+      )}
+      {library.entries.map((entry) => {
+        const active = entry.identity === library.activeIdentity;
+        const opening = library.action.kind === "opening" && library.action.identity === entry.identity;
+        const removing = library.action.kind === "removing" && library.action.identity === entry.identity;
+        const confirming = library.pendingDeleteIdentity === entry.identity;
+        return (
+          <div className={`saved-session-entry${active ? " active" : ""}`} key={entry.identity}>
+            <div className="saved-session-row">
+              <button
+                className="recent-row"
+                type="button"
+                disabled={actionBusy}
+                aria-current={active ? "true" : undefined}
+                aria-label={`${active ? "Reopen current saved session" : "Open saved session"} ${entry.title}, ${formatSessionDate(entry.startedAt, entry.displayTimeZone)}, ${formatDurationUs(entry.durationUs)}, ${savedIntegrityLabel(entry.captureIntegrityStatus)} integrity`}
+                data-saved-session-focus
+                data-saved-session-identity={entry.identity}
+                onClick={() => library.onOpen(entry.identity)}
+              >
+                <span>
+                  <strong>{entry.title}</strong>
+                  <small>{formatSessionDate(entry.startedAt, entry.displayTimeZone)} <i>•</i> {formatDurationUs(entry.durationUs)} <i>•</i> {savedIntegrityLabel(entry.captureIntegrityStatus)}</small>
+                </span>
+                {opening ? <SpinnerGap className="spin" size={13} /> : <CaretRight size={13} />}
+              </button>
+              <button
+                className="saved-session-remove"
+                type="button"
+                disabled={actionBusy}
+                aria-label={`Remove saved session ${entry.title}`}
+                title="Remove saved replay"
+                onClick={(event) => {
+                  const entryElement = event.currentTarget.closest(".saved-session-entry");
+                  library.onRequestDelete(entry.identity);
+                  requestAnimationFrame(() => entryElement?.querySelector<HTMLButtonElement>("[data-saved-session-cancel]")?.focus({ preventScroll: true }));
+                }}
+              ><Trash size={13} /></button>
+            </div>
+            {confirming && (
+              <div className="saved-session-delete" role="group" aria-label={`Confirm removal of ${entry.title}`}>
+                <p>Remove this saved replay and its stored markers, notes, and incident ranges? The current in-memory workspace stays open; exported files are not affected.</p>
+                <div>
+                  <button
+                    type="button"
+                    data-saved-session-cancel
+                    disabled={removing}
+                    onClick={(event) => {
+                      const removeButton = event.currentTarget.closest(".saved-session-entry")?.querySelector<HTMLButtonElement>(".saved-session-remove");
+                      library.onCancelDelete();
+                      requestAnimationFrame(() => removeButton?.focus({ preventScroll: true }));
+                    }}
+                  >Cancel</button>
+                  <button className="destructive-link" type="button" disabled={removing} onClick={() => library.onConfirmDelete(entry.identity)}>
+                    {removing ? <SpinnerGap className="spin" size={12} /> : <Trash size={12} />} Remove
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {library.status === "ready" && library.entries.length === 0 && <p className="library-state" tabIndex={-1} data-saved-session-focus>No saved sessions yet.</p>}
+      {library.error && <p className="library-state error" role={announceErrors ? "alert" : undefined}>{library.error}</p>}
+      {(library.status === "error" || library.status === "unavailable") && <button className="library-retry" type="button" disabled={actionBusy} onClick={library.onRetry}>Retry local library</button>}
+    </div>
+  );
+}
+
 interface LeftRailProps {
   session: ParsedSession;
   replayOffsetUs: number;
   onOpenReplay: () => void;
   onOpenCapture: () => void;
-  onResetReplay: () => void;
+  library: SessionLibraryController;
 }
 
-function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, onResetReplay }: LeftRailProps) {
+function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, library }: LeftRailProps) {
   const { document } = session;
   const current = valueAtOffset(session.buckets, replayOffsetUs);
   const replaySummary = useMemo(() => {
@@ -334,6 +498,13 @@ function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, onRese
     return { invalidFrames, missingFrames, droppedPct: expectedFrames > 0 ? (missingFrames / expectedFrames) * 100 : 0 };
   }, [document.records.length, session.buckets, session.frames]);
   const endClock = formatClockOffset(document.startedAt, document.durationUs, document.displayTimeZone, false);
+  const savedState = library.activeIdentity !== null
+    ? "In library"
+    : library.action.kind === "saving"
+      ? "Saving…"
+      : library.status === "unavailable"
+        ? "Unavailable"
+        : "Not saved";
 
   return (
     <aside className="left-rail" aria-label="Session navigation">
@@ -367,12 +538,9 @@ function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, onRese
             </div>
           </div>
         </section>
-        <section className="rail-section recent-sessions">
-          <div className="section-kicker-row"><span>Current replay</span></div>
-          <button className="recent-row" type="button" onClick={onResetReplay}>
-            <span><strong>{document.title}</strong><small>{formatSessionDate(document.startedAt, document.displayTimeZone)} <i>•</i> {formatDurationUs(document.durationUs)}</small></span>
-            <CaretRight size={13} />
-          </button>
+        <section className="rail-section recent-sessions saved-sessions">
+          <div className="section-kicker-row"><span>Saved sessions</span><b>{library.entries.length}</b></div>
+          <SavedSessionRows library={library} />
         </section>
         <section className="rail-section session-info">
           <div className="section-kicker-row"><span>Session info</span></div>
@@ -387,7 +555,7 @@ function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, onRese
             <div><dt>End</dt><dd>{endClock}</dd></div>
             <div><dt>Duration</dt><dd>{formatDurationUs(document.durationUs)}</dd></div>
             <div><dt>Integrity</dt><dd>{captureIntegrityLabel(session)}</dd></div>
-            <div><dt>Saved</dt><dd className="saved"><Circle size={7} weight="fill" /> Local only</dd></div>
+            <div><dt>Saved</dt><dd className={`saved${library.activeIdentity === null ? " unsaved" : ""}`}><Circle size={7} weight="fill" /> {savedState}</dd></div>
           </dl>
         </section>
       </div>
@@ -408,6 +576,8 @@ interface TopBarProps {
   onCreateBundle: () => void;
   onOpenReplay: () => void;
   onOpenCapture: () => void;
+  onOpenLibrary: () => void;
+  savedSessionCount: number;
   bundleDisabled: boolean;
 }
 
@@ -424,6 +594,7 @@ function TopBar(props: TopBarProps) {
         {formatSessionDate(document.startedAt, document.displayTimeZone)} <i>•</i> {formatClockOffset(document.startedAt, 0, document.displayTimeZone, false)} – {end} {timeZoneAbbreviation(document.startedAt, document.displayTimeZone, document.durationUs)} <i>•</i> {formatDurationUs(document.durationUs)}
       </div>
       <div className="header-actions">
+        <button className="secondary-action library-mobile" type="button" aria-haspopup="dialog" onClick={props.onOpenLibrary}><Database size={15} /> Saved ({props.savedSessionCount})</button>
         <button className="secondary-action capture-mobile" type="button" onClick={props.onOpenCapture}><Broadcast size={15} /> Capture</button>
         <button className="secondary-action open-replay-mobile" type="button" onClick={props.onOpenReplay}><UploadSimple size={15} /> Open replay</button>
         <div className="replay-action-group">
@@ -667,7 +838,7 @@ interface IncidentPanelProps {
   incidentEditable: boolean;
   activeTab: ActiveTab;
   note: string;
-  workspacePersisted: boolean;
+  workspacePersistence: WorkspacePersistenceState;
   onTabChange: (tab: ActiveTab) => void;
   onNoteChange: (note: string) => void;
   onSelectIncident: (id: string) => void;
@@ -716,7 +887,7 @@ function IncidentPanel(props: IncidentPanelProps) {
       {props.activeTab === "narrative" && <div className="narrative-view" id="incident-panel-narrative" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-narrative"><h2>{incident.title}</h2>{narrative.length > 0 ? <><p className="visually-hidden">{narrative.length} evidence-backed event{narrative.length === 1 ? "" : "s"} in the selected half-open range.</p><ol className="event-narrative">{displayedNarrative.map((event) => <li key={event.id} className={diagnosticTone(event)}><time>{formatClockOffset(session.document.startedAt, event.startUs, session.document.displayTimeZone, false)}</time><div><strong>{event.title}<small> · {failureDomainLabel(event.domain)}</small><span className="visually-hidden"> — {event.severity} severity</span></strong><p>{event.description}</p></div></li>)}</ol>{narrativeSummary.length < narrative.length && <button className="narrative-more" type="button" onClick={() => setNarrativeLimit(showingAllNarrative ? 6 : narrative.length)}>{showingAllNarrative ? "Show six key events" : `Show all ${narrative.length} events`} <small>{displayedNarrative.length} of {narrative.length} shown</small></button>}</> : <div className="incident-evidence-empty"><p>No derived diagnostic events intersect this operator-defined range.</p><small>The range remains available for replay, marker review, and exact-range export.</small></div>}</div>}
       {props.activeTab === "details" && <dl className="details-view" id="incident-panel-details" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-details"><div><dt>Source</dt><dd>{formatSource(session)}</dd></div><div><dt>Capture integrity</dt><dd>{captureIntegrityLabel(session)}</dd></div><div><dt>Evidence domains</dt><dd>{evidenceDomainSummary}</dd></div><div><dt>Decoder</dt><dd>{session.document.decoder.id} {formatDecoderRevision(session.document.decoder.revision)}</dd></div><div><dt>Frames in range</dt><dd>{stats.receivedFrames.toLocaleString()}</dd></div><div><dt>Missing</dt><dd className="danger">{stats.missingFrames}</dd></div><div><dt>Loss</dt><dd className="danger">{finiteOrDash(stats.lossPct, 2, "%")}</dd></div><div><dt>Lowest RSSI</dt><dd>{finiteOrDash(stats.lowestRssiDbm, 1, " dBm")}</dd></div><div><dt>Peak jitter</dt><dd>{finiteOrDash(stats.peakJitterMs, 1, " ms")}</dd></div><div><dt>Complete packets</dt><dd>{stats.completePackets.toLocaleString()}</dd></div></dl>}
       {props.activeTab === "stats" && <div className="stats-view" id="incident-panel-stats" role="tabpanel" tabIndex={0} aria-labelledby="incident-tab-stats"><StatBar label="Link availability" value={stats.linkAvailabilityPct} /><StatBar label="Decode confidence" value={stats.decodeConfidencePct} /><StatBar label="Delivery" value={stats.lossPct == null ? null : 100 - stats.lossPct} /></div>}
-      <div className="operator-notes"><div><span>Session-wide operator note</span><NotePencil size={14} aria-hidden="true" /></div><textarea maxLength={2000} value={props.note} onChange={(event) => props.onNoteChange(event.target.value)} aria-label="Session-wide operator note" /><small className={!props.workspacePersisted ? "storage-warning" : ""}>{props.workspacePersisted ? "Stored in this browser only; included with any range when selected for export" : "Browser storage is unavailable; edits remain in memory until this page closes"}</small></div>
+      <div className="operator-notes"><div><span>Session-wide operator note</span><NotePencil size={14} aria-hidden="true" /></div><textarea maxLength={2000} value={props.note} onChange={(event) => props.onNoteChange(event.target.value)} aria-label="Session-wide operator note" /><small className={props.workspacePersistence === "stored" ? "" : "storage-warning"}>{props.workspacePersistence === "stored" ? "Stored in this browser only; included with any range when selected for export" : props.workspacePersistence === "memory-only" ? "Removed from browser storage; save this replay again to persist the visible workspace" : "Browser storage is unavailable; edits remain in memory until this page closes"}</small></div>
     </aside>
   );
 }
@@ -731,7 +902,7 @@ interface BundlePanelProps {
   incident: IncidentProjection | null;
   items: BundleItem[];
   note: string;
-  workspacePersisted: boolean;
+  workspacePersistence: WorkspacePersistenceState;
   onItemsChange: (items: BundleItem[]) => void;
   onNoteChange: (note: string) => void;
   onCreateBundle: () => void;
@@ -745,7 +916,7 @@ function BundlePanel(props: BundlePanelProps) {
   return (
     <section className="bundle-panel" aria-label="Incident bundle preview">
       <div className="bundle-summary"><div><span>Incident bundle preview</span><p>A local, verifiable archive for reproducing and investigating the selected incident.</p></div><dl><div><dt>Time range</dt><dd>{clock ? <>{clock.start} – {clock.end}<small>{clock.duration}</small></> : <span className="no-selection-copy">No incident selected</span>}</dd></div><div><dt>Size (est.)</dt><dd>{formatBytes(estimatedBytes)}</dd></div><div><dt>Groups</dt><dd>{selected.length}</dd></div></dl><button className="primary-action bundle-create" type="button" disabled={!props.incident || selected.length === 0} onClick={props.onCreateBundle}><DownloadSimple size={17} /> Create incident bundle</button></div>
-      <div className="bundle-body"><div className="bundle-table-wrap" role="table" aria-label="Evidence bundle contents"><div className="bundle-table-head" role="row"><span role="columnheader">Include</span><span role="columnheader">Item</span><span role="columnheader">Description</span><span role="columnheader">Source</span><span role="columnheader">Size (est.)</span></div><div className="bundle-table" role="rowgroup">{props.items.map((item) => <label className={!item.selected && !item.required ? "excluded" : ""} key={item.id} role="row"><span className="checkbox" role="cell"><input type="checkbox" checked={item.required || item.selected} disabled={!props.incident || item.required} title={item.required ? "Required in every verifiable archive" : undefined} onChange={() => toggle(item.id)} /></span><strong role="cell">{item.name}</strong><span role="cell">{item.description}</span><span role="cell">{item.source}</span><span role="cell">{formatBytes(item.estimatedBytes)}</span></label>)}</div></div><label className="bundle-notes"><span>Session-wide note for bundle</span><small className={!props.workspacePersisted ? "storage-warning" : ""}>{props.workspacePersisted ? "This note applies to the session and is included with the selected range." : "Browser storage is unavailable; this note remains in memory and can still be included now."}</small><textarea disabled={!props.incident} value={props.note} maxLength={2000} onChange={(event) => props.onNoteChange(event.target.value)} /><b>{props.note.length} / 2000</b></label></div>
+      <div className="bundle-body"><div className="bundle-table-wrap" role="table" aria-label="Evidence bundle contents"><div className="bundle-table-head" role="row"><span role="columnheader">Include</span><span role="columnheader">Item</span><span role="columnheader">Description</span><span role="columnheader">Source</span><span role="columnheader">Size (est.)</span></div><div className="bundle-table" role="rowgroup">{props.items.map((item) => <label className={!item.selected && !item.required ? "excluded" : ""} key={item.id} role="row"><span className="checkbox" role="cell"><input type="checkbox" checked={item.required || item.selected} disabled={!props.incident || item.required} title={item.required ? "Required in every verifiable archive" : undefined} onChange={() => toggle(item.id)} /></span><strong role="cell">{item.name}</strong><span role="cell">{item.description}</span><span role="cell">{item.source}</span><span role="cell">{formatBytes(item.estimatedBytes)}</span></label>)}</div></div><label className="bundle-notes"><span>Session-wide note for bundle</span><small className={props.workspacePersistence === "stored" ? "" : "storage-warning"}>{props.workspacePersistence === "stored" ? "This note applies to the session and is included with the selected range." : props.workspacePersistence === "memory-only" ? "This visible note is memory-only until the replay is saved again; it can still be included now." : "Browser storage is unavailable; this note remains in memory and can still be included now."}</small><textarea disabled={!props.incident} value={props.note} maxLength={2000} onChange={(event) => props.onNoteChange(event.target.value)} /><b>{props.note.length} / 2000</b></label></div>
     </section>
   );
 }
@@ -819,6 +990,31 @@ function useModalFocus(dialogRef: RefObject<HTMLElement | null>, onClose: () => 
       opener?.focus({ preventScroll: true });
     };
   }, [dialogRef]);
+}
+
+function SessionLibraryDialog({ library, onClose }: { library: SessionLibraryController; onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const storedBytes = library.entries.reduce((total, entry) => total + entry.byteLength, 0);
+  useModalFocus(dialogRef, onClose, library.action.kind === "idle");
+  return createPortal(
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && library.action.kind === "idle" && onClose()}>
+      <section ref={dialogRef} className="bundle-dialog session-library-dialog" role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="session-library-dialog-title" aria-describedby="session-library-dialog-description">
+        <button className="dialog-close" type="button" aria-label="Close saved sessions" onClick={onClose} disabled={library.action.kind !== "idle"}><X size={17} /></button>
+        <div className="dialog-icon"><Database size={24} /></div>
+        <span className="dialog-kicker">Local session library</span>
+        <h2 id="session-library-dialog-title" data-dialog-focus tabIndex={-1}>Saved sessions</h2>
+        <p id="session-library-dialog-description">Reopen validated local captures without uploading telemetry or changing their immutable source records.</p>
+        <dl className="dialog-summary">
+          <div><dt>Sessions</dt><dd>{library.entries.length}</dd></div>
+          <div><dt>Stored bytes</dt><dd>{formatBytes(storedBytes)}</dd></div>
+          <div><dt>Location</dt><dd>Browser IndexedDB</dd></div>
+        </dl>
+        <div className="session-library-dialog-list" tabIndex={-1}><SavedSessionRows library={library} announceErrors /></div>
+        <div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose} disabled={library.action.kind !== "idle"}>Close</button></div>
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 function MarkerDialog({ session, initialOffsetUs, onClose, onCreate }: MarkerDialogProps) {
@@ -981,17 +1177,14 @@ function Toast({ message }: { message: string }) {
   return message ? <div className="toast" role="status"><Check size={15} weight="bold" /> {message}</div> : null;
 }
 
-function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSession; onOpenReplay: () => void; onOpenCapture: () => void }) {
+function Workspace({ session, onOpenReplay, onOpenCapture, library, workspacePersistenceCommand }: { session: ParsedSession; onOpenReplay: () => void; onOpenCapture: () => void; library: SessionLibraryController; workspacePersistenceCommand: WorkspacePersistenceCommand | null }) {
   const firstIncident = session.incidents.find((candidate) => candidate.id === "fade") ?? session.incidents[0] ?? null;
   const initialReplayOffsetUs = firstIncident ? incidentViewRange(session, firstIncident).startUs : 0;
   const replay = useReplay({ durationUs: session.document.durationUs, initialOffsetUs: initialReplayOffsetUs, initialRate: 1 });
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(firstIncident?.id ?? null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("narrative");
   const isBundledDemo = isBundledDemoSession(session);
-  const workspaceIdentity = useMemo(() => {
-    const identity = sessionWorkspaceIdentity(session);
-    return isBundledDemo ? `${identity}:${BUNDLED_DEMO_WORKSPACE_REVISION}` : identity;
-  }, [isBundledDemo, session]);
+  const workspaceIdentity = useMemo(() => sessionWorkspaceStorageIdentity(session), [session]);
   const workspaceContext = useMemo(() => ({
     durationUs: session.document.durationUs,
     reservedIncidentIds: session.incidents.map((incident) => incident.id),
@@ -1003,8 +1196,11 @@ function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSe
   const [markerDialogOpen, setMarkerDialogOpen] = useState(false);
   const [rangeDialog, setRangeDialog] = useState<{ mode: "create" | "edit"; range: AuthoredIncidentRange } | null>(null);
   const [bundleDialogOpen, setBundleDialogOpen] = useState(false);
+  const [libraryDialogOpen, setLibraryDialogOpen] = useState(false);
   const [toast, setToast] = useState("");
-  const [workspacePersisted, setWorkspacePersisted] = useState(true);
+  const [workspacePersistence, setWorkspacePersistence] = useState<WorkspacePersistenceState>("stored");
+  const workspaceAutosaveEnabledRef = useRef(true);
+  const workspacePersistenceCommandRef = useRef(0);
   const authoredIncidents = useMemo(() => authoredIncidentRanges.map((range) => projectIncident({ id: range.id, title: range.title, startUs: range.startUs, endUs: range.endUs, severity: range.severity }, session.frames, session.diagnostics)), [authoredIncidentRanges, session.diagnostics, session.frames]);
   const incidents = useMemo(() => [...session.incidents, ...authoredIncidents], [authoredIncidents, session.incidents]);
   const selectedIncident = incidents.find((candidate) => candidate.id === selectedIncidentId) ?? null;
@@ -1013,8 +1209,24 @@ function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSe
   const bundleIncidentIdRef = useRef<string | null>(firstIncident?.id ?? null);
 
   useEffect(() => {
-    setWorkspacePersisted(saveSessionWorkspace(workspaceIdentity, { markers, notes: note, authoredIncidentRanges }, workspaceContext));
+    if (!workspaceAutosaveEnabledRef.current) return;
+    setWorkspacePersistence(saveSessionWorkspace(workspaceIdentity, { markers, notes: note, authoredIncidentRanges }, workspaceContext) ? "stored" : "unavailable");
   }, [authoredIncidentRanges, markers, note, workspaceContext, workspaceIdentity]);
+  useEffect(() => {
+    if (
+      workspacePersistenceCommand === null
+      || workspacePersistenceCommand.identity !== workspaceIdentity
+      || workspacePersistenceCommand.revision <= workspacePersistenceCommandRef.current
+    ) return;
+    workspacePersistenceCommandRef.current = workspacePersistenceCommand.revision;
+    if (workspacePersistenceCommand.kind === "clear") {
+      workspaceAutosaveEnabledRef.current = false;
+      setWorkspacePersistence("memory-only");
+      return;
+    }
+    workspaceAutosaveEnabledRef.current = true;
+    setWorkspacePersistence(saveSessionWorkspace(workspaceIdentity, { markers, notes: note, authoredIncidentRanges }, workspaceContext) ? "stored" : "unavailable");
+  }, [authoredIncidentRanges, markers, note, workspaceContext, workspaceIdentity, workspacePersistenceCommand]);
   useEffect(() => {
     const nextItems = selectedIncident ? initialBundleItems(session, selectedIncident) : [];
     const preserveSelections = selectedIncident != null && bundleIncidentIdRef.current === selectedIncident.id;
@@ -1094,16 +1306,18 @@ function Workspace({ session, onOpenReplay, onOpenCapture }: { session: ParsedSe
 
   return (
     <main className="app-shell" aria-label="Telemetry review workspace">
-      <LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} onResetReplay={replay.reset} />
-      <TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} />
+      <LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} library={library} />
+      <TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} onOpenLibrary={() => setLibraryDialogOpen(true)} savedSessionCount={library.entries.length} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} />
       <SessionOverview session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onSelectIncident={(incident) => selectIncident(incident.id)} onCreateRange={openNewRange} onRangeChange={resizeSelectedRange} />
       {selectedIncident ? <MissionTimeline session={session} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onRangeChange={resizeSelectedRange} /> : <section className="timeline-panel"><div className="empty-state"><BookmarkSimple size={24} /><h2>Select an incident</h2><p>The full replay remains available in the session overview.</p></div></section>}
-      <IncidentPanel session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} activeTab={activeTab} note={note} workspacePersisted={workspacePersisted} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onEditRange={openRangeEditor} onClear={() => setSelectedIncidentId(null)} />
-      <BundlePanel session={session} incident={selectedIncident} items={bundleItems} note={note} workspacePersisted={workspacePersisted} onItemsChange={setBundleItems} onNoteChange={setNote} onCreateBundle={() => setBundleDialogOpen(true)} />
+      <IncidentPanel session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} activeTab={activeTab} note={note} workspacePersistence={workspacePersistence} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onEditRange={openRangeEditor} onClear={() => setSelectedIncidentId(null)} />
+      <BundlePanel session={session} incident={selectedIncident} items={bundleItems} note={note} workspacePersistence={workspacePersistence} onItemsChange={setBundleItems} onNoteChange={setNote} onCreateBundle={() => setBundleDialogOpen(true)} />
       {markerDialogOpen && <MarkerDialog session={session} initialOffsetUs={replay.snapshot.offsetUs} onClose={() => setMarkerDialogOpen(false)} onCreate={addMarker} />}
       {rangeDialog && <IncidentRangeDialog session={session} mode={rangeDialog.mode} range={rangeDialog.range} onClose={() => setRangeDialog(null)} onSave={saveRange} onDelete={rangeDialog.mode === "edit" ? deleteRange : undefined} />}
       {bundleDialogOpen && selectedIncident && <BundleDialog session={session} incident={selectedIncident} items={bundleItems} markers={markers} note={note} onClose={() => setBundleDialogOpen(false)} />}
-      <Toast message={toast} />
+      {libraryDialogOpen && <SessionLibraryDialog library={library} onClose={() => setLibraryDialogOpen(false)} />}
+      <div className="visually-hidden" role="alert" aria-atomic="true">{library.error}</div>
+      <Toast message={library.notice || toast} />
     </main>
   );
 }
@@ -1119,13 +1333,131 @@ function ErrorScreen({ error, onRetry, onOpenReplay }: { error: SessionLoadError
 export function App() {
   const [state, setState] = useState<LoadState>({ status: "loading", message: "Validating bundled telemetry…" });
   const [captureDialogOpen, setCaptureDialogOpen] = useState(false);
+  const sessionLibrary = useMemo<SessionLibrary>(() => createSessionLibrary(), []);
+  const [libraryEntries, setLibraryEntries] = useState<SessionLibraryEntry[]>([]);
+  const [libraryStatus, setLibraryStatus] = useState<SessionLibraryStatus>("loading");
+  const [libraryAction, setLibraryAction] = useState<SessionLibraryAction>({ kind: "idle" });
+  const [activeLibraryIdentity, setActiveLibraryIdentity] = useState<string | null>(null);
+  const [pendingDeleteIdentity, setPendingDeleteIdentity] = useState<string | null>(null);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [libraryNotice, setLibraryNotice] = useState("");
+  const libraryOperationGate = useMemo(() => createOperationGate(), []);
+  const sessionOperationGate = useMemo(() => createOperationGate(), []);
+  const [workspacePersistenceCommand, setWorkspacePersistenceCommand] = useState<WorkspacePersistenceCommand | null>(null);
+  const workspacePersistenceCommandRevisionRef = useRef(0);
+  const libraryNoticeTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const loadDefault = useCallback(async () => {
-    setState({ status: "loading", message: "Validating bundled telemetry…" });
-    try { setState({ status: "ready", session: await loadBundledSession() }); }
-    catch (cause) { setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The bundled replay could not be loaded.", [cause instanceof Error ? cause.message : "Unknown error"]) }); }
+
+  const announceLibrary = useCallback((message: string) => {
+    if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
+    setLibraryNotice(message);
+    libraryNoticeTimerRef.current = window.setTimeout(() => setLibraryNotice(""), 3_000);
   }, []);
+
+  useEffect(() => () => {
+    if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
+  }, []);
+
+  const issueWorkspacePersistenceCommand = useCallback((session: ParsedSession, kind: WorkspacePersistenceCommand["kind"]) => {
+    workspacePersistenceCommandRevisionRef.current += 1;
+    setWorkspacePersistenceCommand({
+      identity: sessionWorkspaceStorageIdentity(session),
+      kind,
+      revision: workspacePersistenceCommandRevisionRef.current,
+    });
+  }, []);
+
+  const refreshLibrary = useCallback(async () => {
+    const operation = libraryOperationGate.begin();
+    setLibraryStatus("loading");
+    setLibraryError(null);
+    try {
+      const entries = await sessionLibrary.list();
+      if (!libraryOperationGate.isCurrent(operation)) return;
+      setLibraryEntries(entries);
+      setLibraryStatus("ready");
+    } catch (cause) {
+      if (!libraryOperationGate.isCurrent(operation)) return;
+      setLibraryStatus(cause instanceof SessionLibraryError && cause.code === "unavailable" ? "unavailable" : "error");
+      setLibraryError(sessionLibraryErrorMessage(cause));
+    }
+  }, [libraryOperationGate, sessionLibrary]);
+
+  useEffect(() => { void refreshLibrary(); }, [refreshLibrary]);
+
+  const persistSession = useCallback(async (session: ParsedSession, successMessage: string, focusSavedEntry = false) => {
+    const operation = libraryOperationGate.begin();
+    setLibraryAction({ kind: "saving" });
+    setLibraryError(null);
+    try {
+      const entry = await sessionLibrary.save(session.document);
+      let refreshResult: Parameters<typeof resolveCommittedSave>[2];
+      try {
+        refreshResult = { ok: true, entries: await sessionLibrary.list() };
+      } catch (cause) {
+        refreshResult = {
+          ok: false,
+          warning: `The session was saved, but the local library list could not be refreshed. ${sessionLibraryErrorMessage(cause)}`,
+        };
+      }
+      if (!libraryOperationGate.isCurrent(operation)) return;
+      setLibraryEntries((current) => resolveCommittedSave(current, entry, refreshResult).entries);
+      setActiveLibraryIdentity(entry.identity);
+      setLibraryStatus("ready");
+      setLibraryError(refreshResult.ok ? null : refreshResult.warning);
+      issueWorkspacePersistenceCommand(session, "save");
+      announceLibrary(successMessage);
+      if (focusSavedEntry) scheduleSavedSessionFocus(entry.identity);
+    } catch (cause) {
+      if (!libraryOperationGate.isCurrent(operation)) return;
+      setActiveLibraryIdentity(null);
+      setLibraryError(sessionLibraryErrorMessage(cause));
+      if (cause instanceof SessionLibraryError && cause.code === "unavailable") {
+        setLibraryStatus("unavailable");
+      } else {
+        try {
+          const entries = await sessionLibrary.list();
+          if (!libraryOperationGate.isCurrent(operation)) return;
+          setLibraryEntries(entries);
+          setLibraryStatus("ready");
+        } catch (listCause) {
+          if (!libraryOperationGate.isCurrent(operation)) return;
+          setLibraryStatus(listCause instanceof SessionLibraryError && listCause.code === "unavailable" ? "unavailable" : "error");
+        }
+      }
+    } finally {
+      if (libraryOperationGate.isCurrent(operation)) setLibraryAction({ kind: "idle" });
+    }
+  }, [announceLibrary, issueWorkspacePersistenceCommand, libraryOperationGate, sessionLibrary]);
+
+  const loadDefault = useCallback(async () => {
+    const operation = sessionOperationGate.begin();
+    setState({ status: "loading", message: "Validating bundled telemetry…" });
+    try {
+      const session = await loadBundledSession();
+      if (sessionOperationGate.isCurrent(operation)) setState({ status: "ready", session });
+    } catch (cause) {
+      if (sessionOperationGate.isCurrent(operation)) setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The bundled replay could not be loaded.", [cause instanceof Error ? cause.message : "Unknown error"]) });
+    }
+  }, [sessionOperationGate]);
   useEffect(() => { void loadDefault(); }, [loadDefault]);
+
+  useEffect(() => {
+    if (state.status !== "ready") {
+      setActiveLibraryIdentity(null);
+      return;
+    }
+    let cancelled = false;
+    void sessionLibraryIdentity(state.session.document).then((identity) => {
+      if (!cancelled) setActiveLibraryIdentity(libraryEntries.some((entry) => entry.identity === identity) ? identity : null);
+    }).catch((cause: unknown) => {
+      if (cancelled) return;
+      setActiveLibraryIdentity(null);
+      setLibraryError(sessionLibraryErrorMessage(cause));
+    });
+    return () => { cancelled = true; };
+  }, [libraryEntries, state]);
+
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(state.status === "ready" ? ".workspace-heading" : "[data-load-focus]")?.focus({ preventScroll: true });
@@ -1134,23 +1466,139 @@ export function App() {
   }, [state.status]);
   const openReplay = () => fileInputRef.current?.click();
   const completeCapture = useCallback(async (document: SessionDocument) => {
+    sessionOperationGate.begin();
     try {
-      setState({ status: "ready", session: parseSession(document) });
+      const session = parseSession(document);
+      setState({ status: "ready", session });
       setCaptureDialogOpen(false);
+      void persistSession(session, "Capture saved to the local session library");
     } catch (cause) {
       setCaptureDialogOpen(false);
       setState({ status: "error", error: new SessionLoadError("The captured session could not be opened.", [cause instanceof Error ? cause.message : "Unknown capture error"]) });
     }
-  }, []);
+  }, [persistSession, sessionOperationGate]);
   const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    const operation = sessionOperationGate.begin();
     setState({ status: "loading", message: `Decoding ${file.name}…` });
-    try { setState({ status: "ready", session: await loadSessionFile(file) }); }
-    catch (cause) { setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The selected replay could not be loaded.") }); }
+    try {
+      const session = await loadSessionFile(file);
+      if (!sessionOperationGate.isCurrent(operation)) return;
+      setState({ status: "ready", session });
+      void persistSession(session, `${file.name} saved to the local session library`);
+    }
+    catch (cause) {
+      if (sessionOperationGate.isCurrent(operation)) setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The selected replay could not be loaded.") });
+    }
   };
-  return <><input ref={fileInputRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="Choose a local NarrowsLink replay" accept=".json,.nlsession,application/json" onChange={(event) => void handleFile(event)} />{state.status === "loading" && <LoadingScreen message={state.message} />}{state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} />}{state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} onOpenCapture={() => setCaptureDialogOpen(true)} />}{captureDialogOpen && <CaptureDialog displayTimeZone={state.status === "ready" ? state.session.document.displayTimeZone : undefined} onClose={() => setCaptureDialogOpen(false)} onComplete={completeCapture} />}</>;
+
+  const openSavedSession = useCallback(async (identity: string) => {
+    if (state.status !== "ready") return;
+    const libraryOperation = libraryOperationGate.begin();
+    const sessionOperation = sessionOperationGate.begin();
+    setPendingDeleteIdentity(null);
+    setLibraryAction({ kind: "opening", identity });
+    setLibraryError(null);
+    try {
+      const session = await sessionLibrary.load(identity);
+      if (!libraryOperationGate.isCurrent(libraryOperation) || !sessionOperationGate.isCurrent(sessionOperation)) return;
+      setActiveLibraryIdentity(identity);
+      setState({ status: "ready", session });
+      announceLibrary(`${session.document.title} reopened from the local library`);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(".workspace-heading")?.focus({ preventScroll: true });
+      }));
+    } catch (cause) {
+      if (!libraryOperationGate.isCurrent(libraryOperation) || !sessionOperationGate.isCurrent(sessionOperation)) return;
+      setLibraryError(sessionLibraryErrorMessage(cause));
+      if (cause instanceof SessionLibraryError && cause.code === "not-found") {
+        setLibraryEntries((current) => current.filter((entry) => entry.identity !== identity));
+      }
+      if (cause instanceof SessionLibraryError && cause.code === "unavailable") setLibraryStatus("unavailable");
+    } finally {
+      if (libraryOperationGate.isCurrent(libraryOperation)) setLibraryAction({ kind: "idle" });
+    }
+  }, [announceLibrary, libraryOperationGate, sessionLibrary, sessionOperationGate, state]);
+
+  const removeSavedSession = useCallback(async (identity: string) => {
+    const operation = libraryOperationGate.begin();
+    setLibraryAction({ kind: "removing", identity });
+    setLibraryError(null);
+    const removedIndex = libraryEntries.findIndex((entry) => entry.identity === identity);
+    const nextFocusIdentity = libraryEntries[removedIndex + 1]?.identity
+      ?? libraryEntries[removedIndex - 1]?.identity
+      ?? null;
+    const removesActiveWorkspace = state.status === "ready" && activeLibraryIdentity === identity;
+    let workspaceSession = removesActiveWorkspace && state.status === "ready" ? state.session : null;
+    let workspaceLookupFailed = false;
+    if (workspaceSession === null) {
+      try {
+        workspaceSession = await sessionLibrary.load(identity);
+      } catch {
+        workspaceLookupFailed = true;
+      }
+    }
+    if (!libraryOperationGate.isCurrent(operation)) return;
+    try {
+      await sessionLibrary.remove(identity);
+      if (!libraryOperationGate.isCurrent(operation)) return;
+      const removed = libraryEntries.find((entry) => entry.identity === identity);
+      const workspaceCleared = workspaceSession === null
+        ? false
+        : clearSessionWorkspace(sessionWorkspaceStorageIdentity(workspaceSession));
+      setLibraryEntries((current) => current.filter((entry) => entry.identity !== identity));
+      setActiveLibraryIdentity((current) => current === identity ? null : current);
+      setPendingDeleteIdentity(null);
+      announceLibrary(`${removed?.title ?? "Session"} removed from the local library`);
+      if (removesActiveWorkspace && workspaceSession !== null && workspaceCleared) {
+        issueWorkspacePersistenceCommand(workspaceSession, "clear");
+      }
+      if (workspaceLookupFailed || !workspaceCleared) {
+        setLibraryError("The replay was removed, but its separately stored operator workspace could not be fully cleared. Browser storage may still contain markers, notes, or incident ranges.");
+      }
+      scheduleSavedSessionFocus(nextFocusIdentity);
+    } catch (cause) {
+      if (!libraryOperationGate.isCurrent(operation)) return;
+      setLibraryError(sessionLibraryErrorMessage(cause));
+      if (cause instanceof SessionLibraryError && cause.code === "not-found") {
+        setLibraryEntries((current) => current.filter((entry) => entry.identity !== identity));
+        setActiveLibraryIdentity((current) => current === identity ? null : current);
+        setPendingDeleteIdentity(null);
+        scheduleSavedSessionFocus(nextFocusIdentity);
+      }
+      if (cause instanceof SessionLibraryError && cause.code === "unavailable") setLibraryStatus("unavailable");
+    } finally {
+      if (libraryOperationGate.isCurrent(operation)) setLibraryAction({ kind: "idle" });
+    }
+  }, [activeLibraryIdentity, announceLibrary, issueWorkspacePersistenceCommand, libraryEntries, libraryOperationGate, sessionLibrary, state]);
+
+  const libraryController: SessionLibraryController = {
+    entries: libraryEntries,
+    status: libraryStatus,
+    action: libraryAction,
+    activeIdentity: activeLibraryIdentity,
+    pendingDeleteIdentity,
+    error: libraryError,
+    notice: libraryNotice,
+    onSaveCurrent: () => { if (state.status === "ready") void persistSession(state.session, "Session saved to the local library", true); },
+    onRetry: () => { void refreshLibrary(); },
+    onOpen: (identity) => { void openSavedSession(identity); },
+    onRequestDelete: setPendingDeleteIdentity,
+    onCancelDelete: () => setPendingDeleteIdentity(null),
+    onConfirmDelete: (identity) => { void removeSavedSession(identity); },
+  };
+
+  return (
+    <>
+      <input ref={fileInputRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="Choose a local NarrowsLink replay" accept=".json,.nlsession,application/json" onChange={(event) => void handleFile(event)} />
+      {state.status === "loading" && <LoadingScreen message={state.message} />}
+      {state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} />}
+      {state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} onOpenCapture={() => setCaptureDialogOpen(true)} library={libraryController} workspacePersistenceCommand={workspacePersistenceCommand} />}
+      {captureDialogOpen && <CaptureDialog displayTimeZone={state.status === "ready" ? state.session.document.displayTimeZone : undefined} onClose={() => setCaptureDialogOpen(false)} onComplete={completeCapture} />}
+    </>
+  );
 }
 
 function sessionWorkspaceKey(session: ParsedSession): string {
