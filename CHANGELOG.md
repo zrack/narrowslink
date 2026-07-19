@@ -9,6 +9,7 @@ NarrowsLink has not published a tagged release. Until a maintainer publishes a m
 ### Added
 
 - Cross-browser release gate for the complete UDP capture-to-evidence loop, including real loopback recording, `.nlsession` reimport and deduplication, replay and authored investigation context, independently verified `.nlb` contents and checksums, reload/reopen/removal, and surfaced storage or download failures.
+- Cross-browser simulated Web Serial capture-to-evidence release gate, including fragmented reads, complete and partial NSL-01 assembly, reconciled v2 integrity and device provenance, canonical-session deduplication and reopen, exact-range export, and production receiver verification, while retaining physical hardware and native permission behavior as a manual boundary.
 - Automated axe rules tagged WCAG A/AA, critical keyboard and focus-handoff coverage, narrow and `200%`-equivalent reflow checks, forced-color evidence cues, and a documented accessibility support boundary.
 - Content-addressed local session library with IndexedDB persistence, real session metadata, validated reopen, exact-content deduplication, explicit replay-and-workspace removal, and surfaced storage, cleanup, or corruption failures.
 - Canonical use-case log with stable IDs, actors, outcomes, current constraints, and implementation evidence for five supported workflows.
