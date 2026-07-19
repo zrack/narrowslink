@@ -11,6 +11,7 @@ The Playwright suite runs against Chromium, Firefox, and WebKit in `npm run chec
 | Bundled and local replay | Pass | Pass | Pass | Invalid import recovery, playback, seeking, rate changes, and active-replay preservation |
 | Local session library | Pass | Pass | Pass | Save, exact-content deduplication, reload, validated reopen, workspace restoration, guarded removal, and unavailable/quota/corruption/cleanup failures |
 | UDP capture-to-evidence loop | Pass | Pass | Pass | Real loopback UDP capture, reconciled v2 receipt, `.nlsession` download and reimport, replay, exact authored range, marker/note, `.nlb` generation, independent archive verification, reopen, and removal |
+| Simulated Web Serial capture-to-evidence loop | Pass | Pass | Pass | Injected browser API, fragmented reads, complete and partial NSL-01 assembly, reconciled v2 receipt, durable reopen, replay, exact authored range, `.nlb` generation, and independent archive verification |
 | axe rules tagged WCAG A/AA | Pass | Pass | Pass | Automated scans of the workspace and live-capture, range, marker, and bundle dialogs |
 | Keyboard and focus handoff | Pass | Pass | Pass | Dialog entry/return, incident tabs, range deletion, incident clear/select, capture start-to-recording, and captured-session replacement |
 | Reflow and horizontal evidence access | Pass | Pass | Pass | `960 × 900`, `640 × 900`, and `390 × 844`; no page-level horizontal overflow, wrapped command actions, and explicit keyboard panning for timeline/table scrollers |
@@ -40,7 +41,7 @@ These combinations are not yet certified as release gates:
 | VoiceOver with Safari on iOS or iPadOS | Manual structured review not yet recorded |
 | NVDA with Firefox or Chrome on Windows | Manual structured review not yet recorded |
 | JAWS with Edge or Chrome on Windows | Manual structured review not yet recorded |
-| Physical Web Serial devices and driver/permission combinations | Adapter and framing logic tested; hardware matrix not yet recorded |
+| Physical Web Serial devices and driver/permission combinations | Complete application path passes with an injected API; device, driver, native permission, operating-system, and packaged-browser matrix not yet recorded |
 | Native `200%` browser zoom across packaged browsers | Automated CSS-viewport proxy passes; manual browser/OS matrix not yet recorded |
 
 Do not convert an automated engine pass into a broader assistive-technology or hardware support claim. Record completed manual combinations here with browser, operating system, assistive technology, viewport or zoom, input method, and observed result.

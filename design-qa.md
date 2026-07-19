@@ -93,8 +93,9 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Checked and saved the capture-integrity replay at a `1487 × 1058` browser viewport with no document overflow; the header, required Capture integrity row, and all optional evidence controls remain visible in the accepted frame.
 - Recorded 12 real fixture datagrams through an ephemeral loopback UDP bridge, stopped with verified v2 integrity, saved and reimported the `.nlsession`, replayed it, authored an exact half-open range plus marker and note, and independently verified every `.nlb` path, boundary, byte count, record count, manifest hash, and `SHA256SUMS` entry.
 - Recorded a 24-datagram loopback acceptance capture and visually confirmed the verified Provenance tab reconciled all 24 records and 737 retained bytes to one exact remote endpoint and a clean two-entry bridge journal while preserving the unavailable host-drop-counter boundary.
+- Exercised simulated Web Serial device selection through four fragmented reads, retained four complete frames and one terminal partial frame without byte loss, saved and deduplicated the canonical v2 session, reopened and replayed it from IndexedDB, authored an exact half-open range, and verified the downloaded `.nlb` with the production receiver in Chromium, Firefox, and WebKit. Physical device, driver, and native permission behavior remains a manual boundary.
 - Repeated the capture-to-evidence, replay/library, failure-recovery, axe rules tagged WCAG A/AA, focus-handoff, responsive, keyboard-scroller, and forced-color gates in Playwright Chromium, Firefox, and WebKit.
-- Ran `npm run check`: TypeScript validation, `178` tests across `18` files, the production Vite build, and all `30` Playwright checks across Chromium, Firefox, and WebKit passed.
+- Ran `npm run check`: TypeScript validation, `219` tests across `20` files, the production Vite build, and all `33` Playwright checks across Chromium, Firefox, and WebKit passed.
 
 ## Implementation checklist
 
