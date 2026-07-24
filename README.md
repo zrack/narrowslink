@@ -6,6 +6,42 @@ NarrowsLink records live UDP or serial telemetry, turns the capture into an immu
 
 The application is local-first. The v0.1 distribution starts the production workspace and authenticated UDP bridge together on loopback; the browser uses a same-origin application relay, while the bridge credential remains internal to the managed process and never requires operator copying. Its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, replay, annotations, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
+## Start here
+
+- Follow the [user guide](USER_GUIDE.md) for installation, live capture, replay, incident authoring, evidence handoff, upgrades, removal, and troubleshooting.
+- Download the current package and release evidence from [NarrowsLink v0.1.0](https://github.com/zrack/narrowslink/releases/tag/v0.1.0).
+- Review the [use-case log](USE_CASES.md) for supported operator outcomes and current constraints.
+- Use [SUPPORT.md](SUPPORT.md) to prepare a reproducible support request without disclosing sensitive telemetry.
+- Contributors should start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Quick start
+
+NarrowsLink v0.1.0 is a self-contained package with zero runtime npm dependencies. It contains the production UI, managed UDP bridge, deterministic Harbor relay fixture, and receiver verifier. It requires Node.js 20.19 or newer, but it does not require a repository checkout, Vite, or project dependencies.
+
+Download these four assets from the [v0.1.0 GitHub Release](https://github.com/zrack/narrowslink/releases/tag/v0.1.0):
+
+- `narrowslink-0.1.0.tgz`
+- `narrowslink-0.1.0.release.json`
+- `narrowslink-0.1.0.cdx.json`
+- `SHA256SUMS`
+
+On macOS, verify the assets, install the package without lifecycle scripts, confirm its identity, and start the application:
+
+```bash
+shasum -a 256 -c SHA256SUMS
+npm install --global ./narrowslink-0.1.0.tgz --ignore-scripts
+narrowslink version --json
+narrowslink serve
+```
+
+On GNU/Linux, use `sha256sum -c SHA256SUMS` for the checksum step.
+
+`narrowslink serve` opens the production application at `http://127.0.0.1:47890/` and starts its authenticated bridge in the same managed process. The UI discovers the bridge and UDP defaults automatically; no token, manual URL, second terminal, source tree, or external network service is required. Press `Ctrl+C` in the serving terminal to stop both the application server and bridge cleanly.
+
+The external release manifest identifies the exact version, commit, source tree, build epoch, toolchain, lockfile, and packaged-file hashes. The CycloneDX SBOM describes the shipped application, and `SHA256SUMS` covers the package, manifest, and SBOM. These same-channel checks establish byte consistency, not independent publisher or build-environment authenticity.
+
+Continue with the [guided first run](USER_GUIDE.md#first-run-with-the-bundled-replay).
+
 ## Current capabilities
 
 - Capture unicast or multicast UDP datagrams through the managed authenticated local bridge, or record NSL-01 serial input directly through Web Serial. Stopping a source downloads a versioned `.nlsession`, opens the validated finalized capture for replay, and attempts to retain it in the local session library.
@@ -31,112 +67,41 @@ NarrowsLink currently supports five end-to-end operator outcomes:
 
 See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, current constraints, and implementation evidence.
 
-## Typical incident workflow
+## Operator workflow
 
-1. Load the bundled fixture, choose a saved session from the Sessions rail, or select **Open local replay** for a `.json` or `.nlsession` file.
-2. Select a replay preset or choose **New range** to create a local incident around the playhead. A preset can be refined as a separate local copy.
-3. Drag the amber start/end handles for rapid adjustment, or use the incident editor to name the range and enter exact included-start and excluded-end offsets.
-4. Use **Play replay**, seeking, and rate controls to inspect the range while correlating Narrative, Details, Stats, and Provenance with decoder, diagnostic, marker, packet-family, decoded-signal, capture-integrity, endpoint or device, and evidence-domain context.
-5. Use **Add marker** and the session-wide note to preserve operator context locally.
-6. Choose the evidence groups to include and review the estimated archive size; this pre-build preview is not a byte-exact manifest.
-7. Select **Create incident bundle** to download the verifiable `.nlb` archive for that exact operator-authored range.
-8. Have the receiving engineer run the local verifier and compare its bundle SHA-256 with a value exchanged through a separately trusted channel when authenticity matters.
+NarrowsLink opens the bundled **Harbor relay downlink** replay automatically. An operator can replace it with a validated local file, reopen a saved session, or record live UDP or serial traffic. The normal capture-to-evidence path is:
 
-## Install and start v0.1
+1. Open or capture a session and select a replay preset or operator-authored incident range.
+2. Correlate link health, packet cadence, decoder state, diagnostics, decoded signals, and transport provenance on the shared replay clock.
+3. Add local markers and a session note without changing the captured records.
+4. Choose optional evidence groups; the transport event log, provenance, bridge journal, and capture-integrity receipt remain mandatory.
+5. Build the `.nlb` archive and have the receiver run `narrowslink verify`.
 
-NarrowsLink v0.1 is distributed as one dependency-free package containing the production UI, managed UDP bridge, deterministic Harbor relay fixture, and receiver verifier. It requires Node.js 20.19 or newer at runtime, but it does not require a repository checkout, Vite, or project dependencies.
+The [user guide](USER_GUIDE.md) provides the full procedure, UI labels, recovery steps, and authenticity boundaries.
 
-Download these four assets from the [v0.1.0 GitHub Release](https://github.com/zrack/narrowslink/releases/tag/v0.1.0):
+## Local data continuity
 
-- `narrowslink-0.1.0.tgz`
-- `narrowslink-0.1.0.release.json`
-- `narrowslink-0.1.0.cdx.json`
-- `SHA256SUMS`
+Saved sessions use IndexedDB at the stable `http://127.0.0.1:47890` browser origin. Markers, notes, and authored ranges use separate storage tied to the same session identity and origin. Upgrade on the same `127.0.0.1` application port and browser profile to retain access to that library. Changing the application port or browser profile selects different browser storage and can make the prior library appear absent.
 
-Verify the downloaded release bytes, install the local package without running lifecycle scripts, and start NarrowsLink:
+Uninstalling the package does not delete the local session library, operator workspace, downloaded `.nlsession` files, or exported `.nlb` bundles. Follow the [upgrade and removal guide](USER_GUIDE.md#upgrade-narrowslink) before replacing the package or intentionally clearing site data.
 
-```bash
-shasum -a 256 -c SHA256SUMS
-npm install --global ./narrowslink-0.1.0.tgz --ignore-scripts
-narrowslink version --json
-narrowslink serve
-```
-
-`narrowslink serve` opens the production application at `http://127.0.0.1:47890/` and starts its authenticated bridge in the same managed process. The UI discovers the bridge and UDP defaults automatically; no token, manual URL, second terminal, source tree, or external network service is required. Use `narrowslink serve --help` for bind and browser-launch controls.
-
-The external release manifest identifies the exact version, commit, source tree, build epoch, toolchain, lockfile, and packaged-file hashes. The CycloneDX SBOM describes the shipped application, and `SHA256SUMS` covers the other three published release assets.
-
-These checks establish the internal consistency of bytes obtained from the release channel; they do not independently authenticate the publisher or build environment. The v0.1 tag, release assets, and checksum file are unsigned. When source-channel authenticity matters, confirm the expected tag and commit through a separately trusted channel before accepting the checksums.
-
-### Upgrade without losing saved sessions
-
-1. Download and verify the newer release assets.
-2. Stop the running `narrowslink serve` process cleanly.
-3. Install the new local package with `npm install --global ./narrowslink-<version>.tgz --ignore-scripts`.
-4. Start `narrowslink serve` on the same default host and port using the same browser profile.
-
-The session library and its separately persisted markers, notes, and authored ranges belong to the browser origin `http://127.0.0.1:47890`, not to the installed package directory. Replacing release bytes leaves them intact. Changing the application host, port, or browser profile selects a different browser storage origin and will make the prior library appear absent; it does not migrate or delete that data.
-
-### Remove NarrowsLink
-
-Stop the running process, then remove the executable:
-
-```bash
-npm uninstall --global narrowslink
-```
-
-Uninstalling the package does not delete the local session library, operator workspace, downloaded `.nlsession` files, or exported `.nlb` bundles. To intentionally purge browser-held sessions and workspace data, clear site data for `http://127.0.0.1:47890` in the browser after preserving any needed captures. Exported files remain untouched.
-
-## Development setup
-
-Contributors working from a source checkout use Node.js 20.19 or newer:
-
-```bash
-npm ci
-npm run dev
-```
-
-Vite prints the development URL when it is ready. For the full source verification suite:
-
-```bash
-npx playwright install chromium firefox webkit
-npm run check
-```
-
-`npm run check` runs TypeScript validation, the Vitest suite, a production build, the source Playwright browser suite, two independent release compilations with byte-for-byte comparison, and the unpacked-distribution capture-to-verification gate against Chromium, Firefox, and WebKit. CI retains traces, screenshots, and video when a browser check fails.
-
-## Record live UDP
+## Live capture
 
 ![NarrowsLink live UDP capture setup](docs/design/live-capture-setup.jpg)
 
-Start the installed release with `narrowslink serve`, choose **Live capture → UDP bridge**, select the UDP bind host and port, and start recording. The managed runtime shows its authenticated status in the dialog; the browser reaches the loopback-only control API through the application origin, while the managed process supplies the bridge credential internally.
+The installed release offers **UDP bridge** and **Serial port** from the **Live capture** dialog.
 
-Source contributors can exercise the complete flow without hardware by starting a capture on `127.0.0.1:9104` and, from a repository checkout, running:
+For UDP, the managed process keeps its bridge credential internal and exposes bind, port, and optional multicast settings in the dialog. Command-line UDP flags populate dialog defaults; no socket starts until the operator selects **Start UDP capture**. The chosen bind controls which local interface receives telemetry, so `0.0.0.0` should be used only when listening on every local IPv4 interface is intentional.
 
-```bash
-npm run capture:demo
-```
+For serial, the operator selects port settings and then chooses the device through the browser's native Web Serial prompt. Web Serial requires a supporting Chromium browser and a secure loopback context. Automated coverage exercises the application path with an injected standards-based serial API; physical adapters, drivers, native chooser behavior, and operating-system disconnect handling remain a manual boundary.
 
-The development-only demo sends 480 exact datagrams from the checked-in fixture. Stop the capture with **Stop, save & replay**; NarrowsLink downloads the `.nlsession`, reopens it, attempts to save it in the local session library, and selects its full captured interval for investigation and evidence export.
+Stopping either source with **Stop, save & replay** downloads a version 2 `.nlsession`, opens the validated finalized capture, and attempts to retain it in the local session library. Follow the [UDP procedure](USER_GUIDE.md#record-live-udp) or [serial procedure](USER_GUIDE.md#record-live-serial-telemetry) before connecting a field source.
 
 ![NarrowsLink replaying and investigating a captured UDP burst](docs/design/live-capture-replay.jpg)
 
-For multicast, bind an address in the same IP family and provide the group in the dialog. Managed bridge defaults can be supplied to `narrowslink serve`, but the dialog's bind host and port are explicit per-capture values; mirror `0.0.0.0` and `9104` there when using this example. `0.0.0.0` listens on every local IPv4 interface, so use a narrower interface address when appropriate.
+## Development
 
-```bash
-narrowslink serve \
-  --udp-host 0.0.0.0 \
-  --udp-port 9104 \
-  --multicast-group 239.42.91.4
-```
-
-Use `narrowslink serve --help` for all managed-runtime options. Source contributors can still run `npm run capture:bridge` to exercise the manual bearer-token development mode and `npm run capture:demo -- --help` to send fixture datagrams.
-
-## Record live serial
-
-Choose **Live capture → Serial port**, configure the baud rate, data bits, stop bits, parity, and flow control, then select the device in the browser prompt. Device selection and connection setup are excluded from the capture clock; recording starts only after the port opens.
-
-Web Serial is available in supported Chromium browsers and requires a secure context. Local development on `localhost` or `127.0.0.1` satisfies that requirement; see [MDN's Web Serial guide](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API) for current browser support. NarrowsLink retains undecodable input rather than silently dropping it. Framing and sync failures remain inspectable records; a read error or disconnect produces an incomplete receipt plus an exact capture-path event that remains visible after reopening.
+Source development, fixture regeneration, test commands, and the manual bearer-token bridge belong to [CONTRIBUTING.md](CONTRIBUTING.md). The complete `npm run check` gate covers TypeScript, unit and integration tests, production builds, source browser workflows, deterministic release packaging, and the unpacked-distribution capture-to-verification workflow in Chromium, Firefox, and WebKit.
 
 ## Browser capability and test matrix
 
@@ -164,11 +129,7 @@ See [ACCESSIBILITY.md](ACCESSIBILITY.md) for the tested interaction matrix, clai
 - Three incident presets covering a link fade and decoder resync, an interference burst, and a clean schema-revision transition.
 - Varied deterministic packet cadence, a sustained fade and recovery, intentional missing-frame episodes, CRC failures, missing sync words, and truncated frames for forensic and error-state testing.
 
-Regenerate it from the checked-in source script with:
-
-```bash
-npm run fixture:generate
-```
+Fixture regeneration and review requirements are documented in [CONTRIBUTING.md](CONTRIBUTING.md#regenerating-the-fixture).
 
 ## Session file format
 
@@ -235,34 +196,18 @@ Range-scoped events, records, decoded packets, diagnostics, markers, and notes a
 
 ### Verify a bundle independently
 
-After installing the v0.1 release package, a receiving engineer can verify a version 3 bundle locally without a repository checkout, application server, browser workspace, or network access:
+After installing the v0.1.0 package, a receiving engineer can verify a version 3 bundle locally without a repository checkout, application server, browser workspace, or network access:
 
 ```bash
 narrowslink verify path/to/incident.nlb
-```
-
-The shipped receiver CLI is the same production verifier exercised against the unpacked release artifact. A passing report includes the bundle SHA-256, exact half-open selection, artifact count, internal-integrity verdict, aggregate evidence verdict, capture-integrity status, provenance status, warnings, and authenticity status. Use the stable machine-readable report for automation:
-
-```bash
 narrowslink verify path/to/incident.nlb --json
 ```
 
-Exit status `0` means the version 3 archive is internally consistent with its declared contract. Exit `1` means the archive is invalid, tampered, unsafe, or unsupported; exit `2` means command usage or local file I/O failed. A consistent bundle can still report `incomplete` or `unknown` evidence when the capture receipt or provenance truthfully lacks observations. The verifier always reports authenticity as `not-established` because version 3 bundles are unsigned.
+The production verifier bounds and preflights the archive before decompression, then checks canonical paths, schemas, inclusions, checksums, counts, range semantics, receipts, provenance, journals, and decoder identity. Do not extract an untrusted `.nlb` before this verification.
 
-The verifier treats the archive as untrusted input before decompression. It enforces bounded compressed and expanded sizes, a fixed canonical path set, supported ZIP features, strict UTF-8 and artifact schemas, exact inclusion and checksum coverage, record counts, range semantics, and agreement among the manifest, receipt, provenance, journal, optional artifacts, and embedded decoder schema.
+Exit status `0` means the archive is internally consistent. Exit `1` means it is invalid, tampered, unsafe, or unsupported. Exit `2` means command usage or local file I/O failed. A consistent bundle can still report `incomplete` or `unknown` capture evidence. Version 3 bundles are unsigned, so authenticity remains `not-established`.
 
-Do not open an unverified received bundle with a general-purpose ZIP extractor: extractor-specific path or link handling occurs before checksum validation. After the production verifier has passed the archive preflight, an `.nlb` remains an ordinary ZIP archive with standard SHA-256 checksum lines. For an additional checksum-only audit, extract that already-preflighted bundle into a new disposable directory and verify from inside it:
-
-```bash
-mkdir narrowslink-bundle-check
-unzip path/to/incident.nlb -d narrowslink-bundle-check
-cd narrowslink-bundle-check
-shasum -a 256 -c SHA256SUMS
-```
-
-On systems that provide GNU Coreutils instead of `shasum`, use `sha256sum -c SHA256SUMS`. Every listed path must report `OK`; otherwise, treat the bundle as modified or incomplete. This fallback checks listed bytes only; it does not perform the production verifier's archive-safety, schema, inclusion, range, count, or cross-artifact semantic checks. Inspect `manifest.json` to confirm the expected session, decoder revision and schema hash, half-open selection, inclusions, file sizes, and record counts.
-
-Checksums establish internal integrity only. Version 3 bundles are unsigned: they do not prove who created the archive or that the NarrowsLink build used to generate it was uncompromised. The receipt, provenance document, and journal prove which internal consistency checks NarrowsLink could perform and preserve every known anomaly; they cannot rule out failures that the local transport or host did not expose. Exchange the `.nlb` checksum or the expected manifest identity through a separately trusted channel when authenticity matters.
+Follow the [receiver procedure](USER_GUIDE.md#verify-a-received-bundle) to interpret the report and exchange the bundle identity through a separately trusted channel.
 
 ## Architecture
 
@@ -319,15 +264,16 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 
 | Document | Purpose |
 | --- | --- |
+| [USER_GUIDE.md](USER_GUIDE.md) | Step-by-step installation, capture, replay, incident, evidence handoff, upgrade, removal, and troubleshooting |
 | [USE_CASES.md](USE_CASES.md) | Stable catalog of supported operator outcomes, constraints, and implementation evidence |
-| [CHANGELOG.md](CHANGELOG.md) | Canonical record of notable completed changes and, once they exist, tagged releases |
+| [CHANGELOG.md](CHANGELOG.md) | Canonical record of notable completed changes and tagged releases |
 | [ROADMAP.md](ROADMAP.md) | Planned work, constraints, and exit criteria; completed work moves to the changelog |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, engineering invariants, review expectations, and changelog policy |
 | [ACCESSIBILITY.md](ACCESSIBILITY.md) | Current automated accessibility evidence, keyboard contract, support boundary, and manual certification matrix |
 | [design-qa.md](design-qa.md) | Current accepted visual baseline and verification evidence |
 | [docs/releases/](docs/releases/) | Immutable operator-facing summaries and installation notes for each published tag |
 
-For usage help, see [SUPPORT.md](SUPPORT.md). Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md), and review [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating in project spaces.
+For step-by-step operation, use the [user guide](USER_GUIDE.md). For problem reporting, see [SUPPORT.md](SUPPORT.md). Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md), and review [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating in project spaces.
 
 ## License
 
