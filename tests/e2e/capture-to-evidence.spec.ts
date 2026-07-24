@@ -271,10 +271,7 @@ test("records UDP, replays and investigates it, then exports independently verif
   await replayPosition.fill(String(replaySeekOffsetUs));
   await expect(replayPosition).toHaveValue(String(replaySeekOffsetUs));
   await page.getByRole("button", { name: "Play replay" }).click();
-  const pauseReplay = page.getByRole("button", { name: "Pause replay" });
-  await expect(pauseReplay).toBeVisible();
-  await pauseReplay.click();
-  await expect(page.getByRole("button", { name: "Play replay" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Replay again" })).toBeVisible();
 
   await page.getByRole("button", { name: "New range" }).click();
   const rangeDialog = page.getByRole("dialog", { name: "Define an incident range" });

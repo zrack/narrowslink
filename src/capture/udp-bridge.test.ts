@@ -295,6 +295,39 @@ describe("UDP bridge browser protocol", () => {
     client.disconnect();
   });
 
+  it("uses the same-origin proxy without exposing a token in URLs, headers, or credentials", async () => {
+    const source = new FakeEventSource();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+      expect(init?.credentials).toBe("same-origin");
+      expect(new URL(String(input)).pathname).toBe("/v1/status");
+      return new Response(JSON.stringify(statusPayload()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    let eventUrl = "";
+    let eventSourceInit: EventSourceInit | undefined;
+    const client = new UdpBridgeClient({
+      authentication: { mode: "same-origin-proxy" },
+      baseUrl: "http://127.0.0.1:49123",
+      fetchImpl,
+      eventSourceFactory: (url, init) => {
+        eventUrl = url;
+        eventSourceInit = init;
+        return source;
+      },
+    });
+
+    const connectPromise = client.connect();
+    source.emit("hello", statusPayload());
+    await expect(connectPromise).resolves.toMatchObject({ state: "idle" });
+    expect(eventUrl).toBe("http://127.0.0.1:49123/v1/events");
+    expect(eventSourceInit).toBeUndefined();
+    await expect(client.getStatus()).resolves.toMatchObject({ state: "idle" });
+    client.disconnect();
+  });
+
   it("validates multicast groups, interfaces, and IP-family consistency", async () => {
     const makeClient = () => {
       const source = new FakeEventSource();

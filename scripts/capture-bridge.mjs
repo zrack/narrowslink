@@ -4,7 +4,8 @@ import { createSocket } from "node:dgram";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
-import { pathToFileURL } from "node:url";
+import { basename } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PROTOCOL_VERSION = 1;
 const CONTROL_HOST = "127.0.0.1";
@@ -157,7 +158,7 @@ function validateMulticast(bindHost, group, interfaceAddress) {
   };
 }
 
-function allowedOrigin(origin) {
+function allowedLoopbackOrigin(origin) {
   if (origin === undefined) return true;
   let url;
   try {
@@ -187,7 +188,7 @@ function bearerToken(request) {
 
 function corsHeaders(request) {
   const origin = request.headers.origin;
-  return origin
+  return origin && allowedLoopbackOrigin(origin)
     ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" }
     : {};
 }
@@ -260,6 +261,7 @@ export function createCaptureBridge(options) {
   let activeStartNonce = null;
   let activeStartKey = null;
   let shuttingDown = false;
+  let closePromise = null;
 
   function captureDurationUs() {
     if (!capture) return 0;
@@ -553,6 +555,9 @@ export function createCaptureBridge(options) {
   }
 
   async function startCapture(input) {
+    if (shuttingDown) {
+      throw new BridgeRequestError(503, "bridge-shutting-down", "The local capture bridge is shutting down.");
+    }
     const request = validateStartRequest(input);
     if (state === "starting") {
       if (startPromise && sameStartRequest(request.nonce, request.key, activeStartNonce, activeStartKey)) {
@@ -692,7 +697,7 @@ export function createCaptureBridge(options) {
     }
   }
 
-  async function stopCapture(ownership, enforceOwnership = true) {
+  async function stopCapture(ownership, enforceOwnership = true, terminalOptions) {
     const validatedOwnership = enforceOwnership ? validateCaptureOwnership(ownership) : null;
     if (startPromise) {
       try {
@@ -720,7 +725,7 @@ export function createCaptureBridge(options) {
       capture.durationUs = captureDurationUs();
       capture.endedAt = new Date().toISOString();
     }
-    finishCaptureJournal();
+    finishCaptureJournal(terminalOptions);
     captureStartMonotonicNs = null;
     state = "stopped";
     broadcastStatus();
@@ -729,7 +734,10 @@ export function createCaptureBridge(options) {
 
   const server = createServer(async (request, response) => {
     try {
-      if (!allowedOrigin(request.headers.origin)) {
+      if (shuttingDown) {
+        throw new BridgeRequestError(503, "bridge-shutting-down", "The local capture bridge is shutting down.");
+      }
+      if (!allowedLoopbackOrigin(request.headers.origin)) {
         throw new BridgeRequestError(403, "origin-not-allowed", "This browser origin is not allowed to access the local bridge.");
       }
       if (request.method === "OPTIONS") {
@@ -767,7 +775,7 @@ export function createCaptureBridge(options) {
           ...corsHeaders(request),
           "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-cache, no-store",
-          Connection: "keep-alive",
+          Connection: "close",
           "X-Accel-Buffering": "no",
           "X-Content-Type-Options": "nosniff",
         });
@@ -793,7 +801,12 @@ export function createCaptureBridge(options) {
         ? error
         : new BridgeRequestError(500, "bridge-internal-error", error instanceof Error ? error.message : "Unexpected bridge error.");
       if (!response.headersSent) {
-        jsonResponse(request, response, requestError.status, { code: requestError.code, message: requestError.message });
+        jsonResponse(
+          request,
+          response,
+          requestError.status,
+          { code: requestError.code, message: requestError.message },
+        );
       } else if (!response.destroyed) {
         response.end();
       }
@@ -820,14 +833,31 @@ export function createCaptureBridge(options) {
     return statusDocument();
   }
 
-  async function close() {
-    if (shuttingDown) return;
+  function close(options = {}) {
+    if (closePromise) return closePromise;
     shuttingDown = true;
-    await stopCapture(null, false).catch(() => undefined);
-    for (const subscriber of [...subscribers]) closeSubscriber(subscriber);
-    if (server.listening) {
-      await new Promise((resolve) => server.close(resolve));
-    }
+    const serverClose = server.listening
+      ? new Promise((resolve) => server.close(resolve))
+      : Promise.resolve();
+    closePromise = (async () => {
+      const active = state === "starting" || state === "capturing" || state === "stopping";
+      await stopCapture(
+        null,
+        false,
+        active
+          ? {
+              clean: false,
+              code: options.code ?? "bridge-shutdown",
+              message: options.message ?? "The local capture bridge shut down before the operator completed the capture.",
+            }
+          : undefined,
+      ).catch(() => undefined);
+      const terminalPayload = formatSse("status", statusDocument());
+      for (const subscriber of [...subscribers]) closeSubscriber(subscriber, terminalPayload);
+      server.closeIdleConnections?.();
+      await serverClose;
+    })();
+    return closePromise;
   }
 
   return { listen, close, status: statusDocument, startCapture, stopCapture };
@@ -881,6 +911,10 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1]
+  && basename(fileURLToPath(import.meta.url)) === "capture-bridge.mjs"
+  && import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   await main();
 }

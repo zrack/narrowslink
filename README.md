@@ -4,11 +4,11 @@ NarrowsLink records live UDP or serial telemetry, turns the capture into an immu
 
 ![NarrowsLink mission-timeline session review workspace](docs/assets/narrowslink-dashboard.png)
 
-The application is local-first. UDP ingest uses a local Node.js bridge whose token-protected control plane listens only on loopback; its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, replay, annotations, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
+The application is local-first. The v0.1 distribution starts the production workspace and authenticated UDP bridge together on loopback; the browser uses a same-origin application relay, while the bridge credential remains internal to the managed process and never requires operator copying. Its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, replay, annotations, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
 ## Current capabilities
 
-- Capture unicast or multicast UDP datagrams through the token-protected local bridge, or record NSL-01 serial input directly through Web Serial. Stopping a source downloads a versioned `.nlsession`, opens the validated finalized capture for replay, and attempts to retain it in the local session library.
+- Capture unicast or multicast UDP datagrams through the managed authenticated local bridge, or record NSL-01 serial input directly through Web Serial. Stopping a source downloads a versioned `.nlsession`, opens the validated finalized capture for replay, and attempts to retain it in the local session library.
 - Load the bundled demonstration, reopen a saved session, or choose a local version 1 or 2 session. Every source travels through the same validation, decoding, diagnostics, incident, and export pipeline; a validated local file is also retained in the library when browser storage succeeds. Legacy v1 evidence remains unchanged and carries an explicit unknown capture-integrity assessment.
 - Keep multiple validated sessions in an IndexedDB-backed local library. The Sessions rail lists real title, time, duration, and integrity metadata; exact duplicate content remains one entry, and every reopen rechecks the stored SHA-256 identity, canonical session bytes, validation, and decoding before replacing the active replay. Removing an entry also clears its separately stored markers, note, and authored ranges when browser storage permits; an active replay stays open until it is replaced.
 - Decode the NSL-01 envelope, CRC-16/CCITT-FALSE integrity, and Heartbeat, Power, Attitude, Position, and Thermal families while retaining malformed, partial, checksum-failed, and unknown frames as inspectable diagnostics.
@@ -42,60 +42,95 @@ See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, 
 7. Select **Create incident bundle** to download the verifiable `.nlb` archive for that exact operator-authored range.
 8. Have the receiving engineer run the local verifier and compare its bundle SHA-256 with a value exchanged through a separately trusted channel when authenticity matters.
 
-## Run it locally
+## Install and start v0.1
 
-NarrowsLink requires Node.js 20.19 or newer and npm.
+NarrowsLink v0.1 is distributed as one dependency-free package containing the production UI, managed UDP bridge, deterministic Harbor relay fixture, and receiver verifier. It requires Node.js 20.19 or newer at runtime, but it does not require a repository checkout, Vite, or project dependencies.
+
+Download these four assets from the [v0.1.0 GitHub Release](https://github.com/zrack/narrowslink/releases/tag/v0.1.0):
+
+- `narrowslink-0.1.0.tgz`
+- `narrowslink-0.1.0.release.json`
+- `narrowslink-0.1.0.cdx.json`
+- `SHA256SUMS`
+
+Verify the downloaded release bytes, install the local package without running lifecycle scripts, and start NarrowsLink:
+
+```bash
+shasum -a 256 -c SHA256SUMS
+npm install --global ./narrowslink-0.1.0.tgz --ignore-scripts
+narrowslink version --json
+narrowslink serve
+```
+
+`narrowslink serve` opens the production application at `http://127.0.0.1:47890/` and starts its authenticated bridge in the same managed process. The UI discovers the bridge and UDP defaults automatically; no token, manual URL, second terminal, source tree, or external network service is required. Use `narrowslink serve --help` for bind and browser-launch controls.
+
+The external release manifest identifies the exact version, commit, source tree, build epoch, toolchain, lockfile, and packaged-file hashes. The CycloneDX SBOM describes the shipped application, and `SHA256SUMS` covers the other three published release assets.
+
+These checks establish the internal consistency of bytes obtained from the release channel; they do not independently authenticate the publisher or build environment. The v0.1 tag, release assets, and checksum file are unsigned. When source-channel authenticity matters, confirm the expected tag and commit through a separately trusted channel before accepting the checksums.
+
+### Upgrade without losing saved sessions
+
+1. Download and verify the newer release assets.
+2. Stop the running `narrowslink serve` process cleanly.
+3. Install the new local package with `npm install --global ./narrowslink-<version>.tgz --ignore-scripts`.
+4. Start `narrowslink serve` on the same default host and port using the same browser profile.
+
+The session library and its separately persisted markers, notes, and authored ranges belong to the browser origin `http://127.0.0.1:47890`, not to the installed package directory. Replacing release bytes leaves them intact. Changing the application host, port, or browser profile selects a different browser storage origin and will make the prior library appear absent; it does not migrate or delete that data.
+
+### Remove NarrowsLink
+
+Stop the running process, then remove the executable:
+
+```bash
+npm uninstall --global narrowslink
+```
+
+Uninstalling the package does not delete the local session library, operator workspace, downloaded `.nlsession` files, or exported `.nlb` bundles. To intentionally purge browser-held sessions and workspace data, clear site data for `http://127.0.0.1:47890` in the browser after preserving any needed captures. Exported files remain untouched.
+
+## Development setup
+
+Contributors working from a source checkout use Node.js 20.19 or newer:
 
 ```bash
 npm ci
 npm run dev
 ```
 
-Vite prints the local URL when the server is ready. For the full verification suite:
+Vite prints the development URL when it is ready. For the full source verification suite:
 
 ```bash
 npx playwright install chromium firefox webkit
 npm run check
 ```
 
-`npm run check` runs TypeScript validation, the Vitest suite, a production build, and the Playwright release suite against Chromium, Firefox, and WebKit. CI installs the matching browser runtimes and retains traces, screenshots, and video when a browser check fails.
+`npm run check` runs TypeScript validation, the Vitest suite, a production build, the source Playwright browser suite, two independent release compilations with byte-for-byte comparison, and the unpacked-distribution capture-to-verification gate against Chromium, Firefox, and WebKit. CI retains traces, screenshots, and video when a browser check fails.
 
 ## Record live UDP
 
 ![NarrowsLink live UDP capture setup](docs/design/live-capture-setup.jpg)
 
-Start the Vite app, then launch the local bridge in another terminal:
+Start the installed release with `narrowslink serve`, choose **Live capture → UDP bridge**, select the UDP bind host and port, and start recording. The managed runtime shows its authenticated status in the dialog; the browser reaches the loopback-only control API through the application origin, while the managed process supplies the bridge credential internally.
 
-```bash
-npm run dev
-```
-
-```bash
-npm run capture:bridge
-```
-
-The bridge prints one JSON line containing its loopback `controlUrl` and a newly generated `token`. In NarrowsLink, choose **Live capture → UDP bridge**, paste those values, select the UDP bind host and port, and start recording. The control API listens only on `127.0.0.1`; the token prevents another local page from controlling the socket.
-
-To exercise the complete flow without hardware, start a capture on `127.0.0.1:9104` and run:
+Source contributors can exercise the complete flow without hardware by starting a capture on `127.0.0.1:9104` and, from a repository checkout, running:
 
 ```bash
 npm run capture:demo
 ```
 
-The demo sends 480 exact datagrams from the checked-in fixture. Stop the capture with **Stop, save & replay**; NarrowsLink downloads the `.nlsession`, reopens it, attempts to save it in the local session library, and selects its full captured interval for investigation and evidence export.
+The development-only demo sends 480 exact datagrams from the checked-in fixture. Stop the capture with **Stop, save & replay**; NarrowsLink downloads the `.nlsession`, reopens it, attempts to save it in the local session library, and selects its full captured interval for investigation and evidence export.
 
 ![NarrowsLink replaying and investigating a captured UDP burst](docs/design/live-capture-replay.jpg)
 
-For multicast, bind an address in the same IP family and provide the group in the dialog. Bridge defaults can be supplied on the command line, but the dialog's bind host and port are explicit per-capture values; mirror `0.0.0.0` and `9104` there when using this example. `0.0.0.0` listens on every local IPv4 interface, so use a narrower interface address when appropriate.
+For multicast, bind an address in the same IP family and provide the group in the dialog. Managed bridge defaults can be supplied to `narrowslink serve`, but the dialog's bind host and port are explicit per-capture values; mirror `0.0.0.0` and `9104` there when using this example. `0.0.0.0` listens on every local IPv4 interface, so use a narrower interface address when appropriate.
 
 ```bash
-npm run capture:bridge -- \
+narrowslink serve \
   --udp-host 0.0.0.0 \
   --udp-port 9104 \
   --multicast-group 239.42.91.4
 ```
 
-Use `npm run capture:bridge -- --help` and `npm run capture:demo -- --help` for all options.
+Use `narrowslink serve --help` for all managed-runtime options. Source contributors can still run `npm run capture:bridge` to exercise the manual bearer-token development mode and `npm run capture:demo -- --help` to send fixture datagrams.
 
 ## Record live serial
 
@@ -194,22 +229,22 @@ notes/notes.json
 schema/schema.json
 ```
 
-Every time-bearing artifact is filtered to the selected half-open range. Point transport events at `startUs` are included and events at `endUs` are excluded; overlapping intervals and session-scoped integrity events are included. `transport/integrity-receipt.json`, `transport/provenance.json`, and `transport/journal.json` always describe whole-session evidence, including explicit unavailable states for legacy or pre-provenance input. All four transport artifacts are mandatory even when every optional evidence group is excluded.
+Range-scoped events, records, decoded packets, diagnostics, markers, and notes are filtered to the selected half-open interval. Point transport events at `startUs` are included and events at `endUs` are excluded; overlapping intervals and session-scoped integrity events are included. The mandatory `transport/integrity-receipt.json`, `transport/provenance.json`, and `transport/journal.json` instead preserve whole-session evidence, including explicit unavailable states for legacy or pre-provenance input. All four transport artifacts are mandatory even when every optional evidence group is excluded.
 
 `manifest.json` records the session and decoder identity, declared session duration, capture-integrity receipt, provenance availability and summary, exact selection, actual inclusions, media types, byte sizes, record counts, and artifact hashes. Those values describe the generated bytes, unlike the selected-group and size estimates shown before generation. `decoded/packets.csv` retains complete integrity JSON for forensic failures, and `schema/schema.json` includes the reproducible byte-level decoder definition. `SHA256SUMS` covers the manifest and each included evidence artifact.
 
 ### Verify a bundle independently
 
-After installing dependencies, a receiving engineer can verify a version 3 bundle locally without opening the NarrowsLink browser workspace:
+After installing the v0.1 release package, a receiving engineer can verify a version 3 bundle locally without a repository checkout, application server, browser workspace, or network access:
 
 ```bash
-npm run verify:bundle -- path/to/incident.nlb
+narrowslink verify path/to/incident.nlb
 ```
 
-The command builds and runs the production receiver CLI without network access. A passing report includes the bundle SHA-256, exact half-open selection, artifact count, internal-integrity verdict, aggregate evidence verdict, capture-integrity status, provenance status, warnings, and authenticity status. Use the stable machine-readable report for automation:
+The shipped receiver CLI is the same production verifier exercised against the unpacked release artifact. A passing report includes the bundle SHA-256, exact half-open selection, artifact count, internal-integrity verdict, aggregate evidence verdict, capture-integrity status, provenance status, warnings, and authenticity status. Use the stable machine-readable report for automation:
 
 ```bash
-npm run verify:bundle -- path/to/incident.nlb --json
+narrowslink verify path/to/incident.nlb --json
 ```
 
 Exit status `0` means the version 3 archive is internally consistent with its declared contract. Exit `1` means the archive is invalid, tampered, unsafe, or unsupported; exit `2` means command usage or local file I/O failed. A consistent bundle can still report `incomplete` or `unknown` evidence when the capture receipt or provenance truthfully lacks observations. The verifier always reports authenticity as `not-established` because version 3 bundles are unsigned.
@@ -250,30 +285,33 @@ Checksums establish internal integrity only. Version 3 bundles are unsigned: the
 | `src/domain/evidence-contract.ts` | Strict version 3 evidence manifest, artifact, transport-document, path, media-type, and resource-limit contract |
 | `src/domain/bundle.ts` | Range-filtered, checksummed `.nlb` evidence generation and browser download |
 | `verifier/` | Bounded ZIP intake and production receiver verification of archive structure, artifact content, and cross-document semantics |
-| `scripts/narrowslink.ts` | Human-readable and JSON `narrowslink verify` command with stable exit behavior |
+| `scripts/narrowslink.ts` | Managed `serve`, receiver `verify`, and exact build-identity commands with stable exit behavior |
+| `scripts/operator-runtime.ts` | Secure static application server and coordinated bridge lifecycle for the installed release |
 | `src/lib/telemetry.ts` | Timeline sampling, value lookup, and source-aligned incident view ranges |
 | `src/lib/time.ts` | Time-zone-aware presentation and byte-size helpers |
-| `scripts/capture-bridge.mjs` | Token-protected loopback control plane, UDP socket, multicast membership, and SSE delivery |
+| `scripts/capture-bridge.mjs` | Authenticated loopback control plane, UDP socket, multicast membership, and SSE delivery |
+| `scripts/release/` | Whitelist-only deterministic package, manifest, SBOM, checksum, and reproducibility tooling |
 | `scripts/send-demo-udp.mjs` | Replays checked-in fixture records as real UDP datagrams for acceptance testing |
 | `scripts/generate-demo-session.mjs` | Deterministic synthetic fixture generator |
 | `tests/e2e/` | Cross-browser capture-to-evidence, archive-verification, persistence, failure-recovery, accessibility, and responsive release gates |
+| `tests/release/` | Unpacked-distribution UDP capture-to-evidence, artifact-local verification, and upgrade persistence gate |
 
 Raw source records remain immutable. Frames, fields, metrics, diagnostics, incidents, and bundle artifacts are derived from those records, and the same path is used for the bundled fixture and imported files.
 
 ## Privacy and data handling
 
-Serial capture, session-library persistence, replay parsing, marker and note persistence, and evidence generation happen locally in the browser. Validated canonical session documents and their identifying metadata are stored in IndexedDB; markers, authored ranges, and notes use separate per-session local storage. Removing a saved replay attempts to clear both stores, leaves any active in-memory replay open, and does not affect previously exported files. If the replay document is removed but workspace cleanup fails, NarrowsLink keeps a visible warning that residual operator context may remain in browser storage. UDP payloads move only from the local socket bridge to the local page. The bridge control plane is loopback-only and token-authenticated; the UDP listener itself binds exactly the interface selected by the operator. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
+Serial capture, session-library persistence, replay parsing, marker and note persistence, and evidence generation happen locally in the browser. Validated canonical session documents and their identifying metadata are stored in IndexedDB; markers, authored ranges, and notes use separate per-session local storage. Removing a saved replay attempts to clear both stores, leaves any active in-memory replay open, and does not affect previously exported files. If the replay document is removed but workspace cleanup fails, NarrowsLink keeps a visible warning that residual operator context may remain in browser storage. UDP payloads move only from the local socket bridge to the local page. In the installed release, the browser uses a same-origin relay and the managed process authenticates to the loopback-only bridge with an internal short-lived credential that is not returned in runtime metadata, URLs, cookies, readiness output, or logs. The UDP listener itself binds exactly the interface selected by the operator. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
 
 Local does not automatically mean safe to share. A saved replay or evidence bundle can contain raw bytes, device identifiers, coordinates, signal observations, and operator notes. Review and sanitize captures before committing them or sending them to someone else. Browser IndexedDB and local storage are convenient persistence mechanisms, not encrypted secrets stores.
 
 ## Current limits
 
 - Live capture supports UDP and Web Serial; TCP and other transports are not implemented.
+- The v0.1 package requires a compatible local Node.js runtime and browser. It bundles all NarrowsLink application code and runtime dependencies, but it is not a native installer or embedded-browser distribution.
 - The serial adapter is bound to the bundled NSL-01 decoder schema, and decoder families are compiled into the application; external schemas and protocol plug-ins are not supported.
 - The active session is parsed, decoded, indexed, and bundled in browser memory. The local library stores bounded whole session documents rather than streaming or indexing large captures; every entry remains subject to the 32 MiB replay limit and the browser's available storage quota, while captures also retain the 100,000-record and 24-hour schema limits.
 - IndexedDB or Web Crypto can be unavailable or reject a save. NarrowsLink surfaces the failure and keeps the validated replay usable in memory instead of claiming it was saved.
-- New live captures use version 2 durable transport events, explicit UDP or serial provenance, bridge journals where applicable, and integrity receipts; legacy v1 and earlier pre-provenance v2 replays remain supported with explicit unknown or unavailable assessments.
-- Version 2 does not persist each UDP sender endpoint or the bridge's internal capture ID in every source record. It does preserve browser-observed bridge errors, event-stream gaps, stop-time counter reconciliation, recorder limits, serial failures, and shutdown disposition.
+- New live captures use version 2 durable transport events, per-record UDP endpoint or serial-device provenance, bridge journals where applicable, and integrity receipts. Legacy v1 and earlier pre-provenance v2 replays remain supported with explicit unknown or unavailable assessments; those earlier v2 documents may lack endpoint attribution, a bridge journal, or the internal capture identity and are not rewritten.
 - The receiver CLI verifies version 3 `.nlb` bundles. It establishes internal consistency and reports the evidence NarrowsLink could observe; because bundles are unsigned, it does not establish author, source-channel, or originating-build authenticity.
 - Automated coverage exercises the complete real-loopback UDP and simulated Web Serial capture-to-evidence loops in Playwright Chromium, Firefox, and WebKit and gates axe rules tagged WCAG A/AA, critical keyboard focus, responsive reflow, failure recovery, and independent archive verification. Physical Web Serial devices and manual screen-reader/browser combinations remain outside the automated release gate.
 
@@ -287,6 +325,7 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, engineering invariants, review expectations, and changelog policy |
 | [ACCESSIBILITY.md](ACCESSIBILITY.md) | Current automated accessibility evidence, keyboard contract, support boundary, and manual certification matrix |
 | [design-qa.md](design-qa.md) | Current accepted visual baseline and verification evidence |
+| [docs/releases/](docs/releases/) | Immutable operator-facing summaries and installation notes for each published tag |
 
 For usage help, see [SUPPORT.md](SUPPORT.md). Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md), and review [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating in project spaces.
 

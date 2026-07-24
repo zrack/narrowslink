@@ -157,11 +157,16 @@ interface BridgeEventSource {
   close(): void;
 }
 
+export type UdpBridgeAuthentication =
+  | { readonly mode: "bearer"; readonly token: string }
+  | { readonly mode: "same-origin-proxy" };
+
 export interface UdpBridgeClientOptions {
-  token: string;
+  token?: string;
+  authentication?: UdpBridgeAuthentication;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
-  eventSourceFactory?: (url: string) => BridgeEventSource;
+  eventSourceFactory?: (url: string, init?: EventSourceInit) => BridgeEventSource;
   connectTimeoutMs?: number;
   onStatus?: (status: UdpBridgeStatus) => void;
   onDatagram?: (datagram: UdpBridgeDatagram) => void;
@@ -730,9 +735,9 @@ function parseMessageData(event: MessageEvent<string> | Event): unknown {
 
 export class UdpBridgeClient {
   private readonly baseUrl: string;
-  private readonly token: string;
+  private readonly authentication: UdpBridgeAuthentication;
   private readonly fetchImpl: typeof fetch;
-  private readonly eventSourceFactory: (url: string) => BridgeEventSource;
+  private readonly eventSourceFactory: (url: string, init?: EventSourceInit) => BridgeEventSource;
   private readonly connectTimeoutMs: number;
   private readonly onStatus?: (status: UdpBridgeStatus) => void;
   private readonly onDatagram?: (datagram: UdpBridgeDatagram) => void;
@@ -746,10 +751,21 @@ export class UdpBridgeClient {
 
   constructor(options: UdpBridgeClientOptions) {
     this.baseUrl = normalizeUdpBridgeUrl(options.baseUrl ?? DEFAULT_UDP_BRIDGE_URL);
-    this.token = validateToken(options.token);
-    this.startRecoveryStorageKey = recoveryStorageKey(this.baseUrl, this.token);
+    this.authentication = options.authentication?.mode === "same-origin-proxy"
+      ? options.authentication
+      : {
+          mode: "bearer",
+          token: validateToken(options.authentication?.mode === "bearer"
+            ? options.authentication.token
+            : options.token ?? ""),
+        };
+    const recoveryIdentity = this.authentication.mode === "bearer"
+      ? `bearer\u0000${this.authentication.token}`
+      : "same-origin-proxy";
+    this.startRecoveryStorageKey = recoveryStorageKey(this.baseUrl, recoveryIdentity);
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
-    this.eventSourceFactory = options.eventSourceFactory ?? ((url) => new EventSource(url) as BridgeEventSource);
+    this.eventSourceFactory = options.eventSourceFactory
+      ?? ((url, init) => new EventSource(url, init) as BridgeEventSource);
     const connectTimeoutMs = options.connectTimeoutMs ?? 5_000;
     if (!Number.isFinite(connectTimeoutMs) || connectTimeoutMs < 100 || connectTimeoutMs > 60_000) {
       throw new UdpBridgeProtocolError("The bridge connection timeout must be between 100 and 60000 milliseconds.", "invalid-timeout");
@@ -770,8 +786,13 @@ export class UdpBridgeClient {
 
     this.connectPromise = new Promise<UdpBridgeStatus>((resolve, reject) => {
       const url = new URL("/v1/events", this.baseUrl);
-      url.searchParams.set("token", this.token);
-      const source = this.eventSourceFactory(url.toString());
+      if (this.authentication.mode === "bearer") {
+        url.searchParams.set("token", this.authentication.token);
+      }
+      const source = this.eventSourceFactory(
+        url.toString(),
+        undefined,
+      );
       this.eventSource = source;
       let settled = false;
       const timeout = globalThis.setTimeout(() => {
@@ -969,8 +990,14 @@ export class UdpBridgeClient {
     let response: Response;
     try {
       const headers = new Headers(init.headers);
-      headers.set("Authorization", `Bearer ${this.token}`);
-      response = await this.fetchImpl(new URL(path, this.baseUrl), { ...init, headers });
+      if (this.authentication.mode === "bearer") {
+        headers.set("Authorization", `Bearer ${this.authentication.token}`);
+      }
+      response = await this.fetchImpl(new URL(path, this.baseUrl), {
+        ...init,
+        headers,
+        ...(this.authentication.mode === "same-origin-proxy" ? { credentials: "same-origin" } : {}),
+      });
     } catch (error) {
       throw new UdpBridgeProtocolError(
         error instanceof Error ? `Could not reach the local capture bridge: ${error.message}` : "Could not reach the local capture bridge.",

@@ -13,3 +13,4 @@ prototype/.npm-cache/
 .tmp/
 .playwright-cli/
 output/playwright/
+output/release/

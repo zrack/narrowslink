@@ -22,16 +22,28 @@ try {
 
   for (const invokedPath of [cliPath, symlinkPath]) {
     const result = spawnSync(process.execPath, [invokedPath, "--help"], { encoding: "utf8" });
-    if (result.status !== 0 || !result.stdout.includes("Usage: narrowslink verify")) {
+    if (
+      result.status !== 0
+      || !result.stdout.includes("Usage: narrowslink <command>")
+      || !result.stdout.includes("serve")
+      || !result.stdout.includes("verify")
+    ) {
       throw new Error(`CLI entry smoke failed for ${invokedPath}: ${result.stderr || result.stdout}`);
     }
   }
 
-  const usage = spawnSync(process.execPath, [symlinkPath, "--json"], { encoding: "utf8" });
+  const usage = spawnSync(process.execPath, [symlinkPath, "verify", "--json"], { encoding: "utf8" });
   if (usage.status !== 2) throw new Error(`CLI JSON usage exit was ${usage.status}; expected 2.`);
   const report = JSON.parse(usage.stdout);
   if (report.integrity !== "failed" || report.error?.code !== "USAGE_ERROR") {
     throw new Error("CLI JSON usage report is not stable.");
+  }
+
+  const version = spawnSync(process.execPath, [symlinkPath, "version", "--json"], { encoding: "utf8" });
+  if (version.status !== 0) throw new Error(`CLI version exit was ${version.status}; expected 0.`);
+  const identity = JSON.parse(version.stdout);
+  if (identity.name !== "narrowslink" || identity.version !== "0.1.0" || typeof identity.commit !== "string") {
+    throw new Error("CLI release identity is not stable.");
   }
 } finally {
   rmSync(directory, { recursive: true, force: true });

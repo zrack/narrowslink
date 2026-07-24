@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+import { config as configureZod } from "zod";
+import { loadOperatorRuntime } from "./runtime/operator-runtime";
 import "@fontsource/inter/latin-400.css";
 import "@fontsource/inter/latin-500.css";
 import "@fontsource/inter/latin-600.css";
@@ -15,8 +16,15 @@ if (!rootElement) {
   throw new Error("NarrowsLink could not find its root element.");
 }
 
-createRoot(rootElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+configureZod({ jitless: true });
+
+void Promise.all([
+  import("./App"),
+  loadOperatorRuntime(),
+]).then(([{ App }, operatorRuntime]) => {
+  createRoot(rootElement).render(
+    <React.StrictMode>
+      <App operatorRuntime={operatorRuntime} />
+    </React.StrictMode>,
+  );
+});

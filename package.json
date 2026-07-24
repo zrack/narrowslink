@@ -24,10 +24,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cli": "node scripts/cli-smoke.mjs",
-    "test:e2e": "npm run build && playwright test",
-    "test:e2e:run": "playwright test",
-    "test:e2e:headed": "npm run build && playwright test --headed",
-    "check": "npm run typecheck && npm run test && npm run build && npm run test:cli && npm run test:e2e:run"
+    "test:e2e": "npm run build && npm run test:e2e:run",
+    "test:e2e:run": "node scripts/run-source-e2e.mjs",
+    "test:e2e:headed": "npm run build && node scripts/run-source-e2e.mjs --headed",
+    "release:build": "node scripts/release/build-release.mjs",
+    "test:release": "playwright test --config playwright.release.config.ts",
+    "release:check": "node scripts/release/check-release.mjs",
+    "check": "npm run typecheck && npm run test && npm run build && npm run test:cli && npm run test:e2e:run && npm run release:check"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",

@@ -1,6 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const appOutDir = process.env.NARROWSLINK_APP_OUT_DIR?.trim() || "dist";
+
 export default defineConfig({
   optimizeDeps: {
     include: ["react", "react-dom/client"],
@@ -13,6 +15,8 @@ export default defineConfig({
     },
   },
   build: {
+    emptyOutDir: true,
+    outDir: appOutDir,
     rollupOptions: {
       output: {
         manualChunks(id) {
