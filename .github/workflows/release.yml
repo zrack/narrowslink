@@ -25,6 +25,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Restore and verify annotated release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "${GITHUB_REF_TYPE}" = "tag"
+          git fetch --force --no-tags origin \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" = "tag"
+          test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{}")" = "${GITHUB_SHA}"
+
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
