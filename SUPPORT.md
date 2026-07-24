@@ -5,8 +5,8 @@ NarrowsLink is an early-stage local application. Community support is provided t
 ## Start here
 
 1. Read the setup and workflow guidance in [README.md](README.md).
-2. Reproduce the behavior with the bundled synthetic fixture on the latest `main` branch.
-3. Run `npm run check` and record the failing command or test name.
+2. For an installed release, run `narrowslink version --json`, record the version and commit, and reproduce the behavior with the bundled synthetic fixture. Capture the exact `narrowslink serve` or `narrowslink verify` output without including telemetry or credentials.
+3. For a source checkout, reproduce on the latest `main` branch, run `npm run check`, and record the failing command or test name.
 4. Search existing issues before filing a new report.
 
 Use the structured bug form for a reproducible product defect and the feature form for a proposed operator outcome. Include the NarrowsLink commit, operating system, browser version, workflow path, telemetry source type, and minimal reproduction steps.

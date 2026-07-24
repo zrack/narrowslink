@@ -14,6 +14,10 @@ import { DownloadSimple, SpinnerGap, WarningCircle, X } from "@phosphor-icons/re
 import type { CaptureIntegrityIssueCode, CaptureIntegrityReceipt, SessionDocument, UdpBridgeJournal } from "../domain/types";
 import { serializeSessionDocument } from "../data/session-file";
 import { formatBytes, formatDurationUs } from "../lib/time";
+import {
+  MANUAL_OPERATOR_RUNTIME,
+  type OperatorRuntime,
+} from "../runtime/operator-runtime";
 import { Nsl01SerialFrameAssembler } from "./nsl01-serial-assembler";
 import {
   CaptureRecorder,
@@ -69,6 +73,7 @@ export interface CaptureDialogProps {
   onClose: () => void;
   onComplete: (session: SessionDocument) => void | Promise<void>;
   displayTimeZone?: string;
+  operatorRuntime?: OperatorRuntime;
 }
 
 const EMPTY_TOTALS: CaptureTotals = Object.freeze({
@@ -538,7 +543,12 @@ function capturePhaseLabel(phase: CapturePhase, transport: CaptureTransport, iss
   return "Ready";
 }
 
-export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureDialogProps) {
+export function CaptureDialog({
+  onClose,
+  onComplete,
+  displayTimeZone,
+  operatorRuntime = MANUAL_OPERATOR_RUNTIME,
+}: CaptureDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const udpTabRef = useRef<HTMLButtonElement>(null);
   const serialTabRef = useRef<HTMLButtonElement>(null);
@@ -604,12 +614,13 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
   const previousPhaseRef = useRef<CapturePhase>(phase);
   const [sessionTitle, setSessionTitle] = useState("Live telemetry capture");
   const [timeZone, setTimeZone] = useState(displayTimeZone ?? browserTimeZone());
-  const [bridgeUrl, setBridgeUrl] = useState(DEFAULT_UDP_BRIDGE_URL);
+  const managedRuntime = operatorRuntime.mode === "managed" ? operatorRuntime : null;
+  const [bridgeUrl, setBridgeUrl] = useState(managedRuntime?.controlUrl ?? DEFAULT_UDP_BRIDGE_URL);
   const [bridgeToken, setBridgeToken] = useState("");
-  const [udpHost, setUdpHost] = useState("127.0.0.1");
-  const [udpPort, setUdpPort] = useState("9104");
-  const [multicastGroup, setMulticastGroup] = useState("");
-  const [multicastInterface, setMulticastInterface] = useState("");
+  const [udpHost, setUdpHost] = useState(managedRuntime?.defaults.host ?? "127.0.0.1");
+  const [udpPort, setUdpPort] = useState(String(managedRuntime?.defaults.port ?? 9_104));
+  const [multicastGroup, setMulticastGroup] = useState(managedRuntime?.defaults.multicastGroup ?? "");
+  const [multicastInterface, setMulticastInterface] = useState(managedRuntime?.defaults.multicastInterface ?? "");
   const [baudRate, setBaudRate] = useState("115200");
   const [dataBits, setDataBits] = useState<"7" | "8">("8");
   const [stopBits, setStopBits] = useState<"1" | "2">("1");
@@ -1014,6 +1025,10 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
 
   const startUdpCapture = async (): Promise<void> => {
     if (captureLocked || transportRef.current) return;
+    if (operatorRuntime.mode === "invalid") {
+      setIssue(operatorRuntime.message);
+      return;
+    }
     let port: number;
     let resolvedTimeZone: string;
     const title = sessionTitle.trim();
@@ -1037,7 +1052,9 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
     try {
       client = new UdpBridgeClient({
         baseUrl: bridgeUrl.trim(),
-        token: bridgeToken,
+        ...(operatorRuntime.mode === "managed"
+          ? { authentication: { mode: "same-origin-proxy" as const } }
+          : { token: bridgeToken }),
         onStatus: acceptUdpStatus,
         onDatagram: (datagram) => {
           if (transportRef.current !== "udp") return;
@@ -1777,32 +1794,45 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
             hidden={transport !== "udp"}
           >
             <div className="dialog-fields capture-transport-fields">
-              <label className="capture-field-wide">
-                <span>Bridge URL</span>
-                <input
-                  type="url"
-                  required={transport === "udp"}
-                  value={bridgeUrl}
-                  disabled={captureLocked}
-                  onChange={(event) => setBridgeUrl(event.target.value)}
-                  spellCheck={false}
-                />
-                <small className="field-help">Loopback HTTP origin only; telemetry is not sent to a remote service.</small>
-              </label>
-              <label className="capture-field-wide">
-                <span>Bridge token</span>
-                <input
-                  type="password"
-                  required={transport === "udp"}
-                  minLength={16}
-                  maxLength={256}
-                  autoComplete="off"
-                  value={bridgeToken}
-                  disabled={captureLocked}
-                  onChange={(event) => setBridgeToken(event.target.value)}
-                  spellCheck={false}
-                />
-              </label>
+              {operatorRuntime.mode === "managed" ? (
+                <div className="capture-managed-bridge capture-field-wide" role="status">
+                  <strong>Managed local bridge · authenticated</strong>
+                  <span>NarrowsLink {operatorRuntime.version} · build {operatorRuntime.commit.slice(0, 12)}</span>
+                </div>
+              ) : operatorRuntime.mode === "invalid" ? (
+                <p className="capture-capability-warning capture-field-wide" role="alert">
+                  {operatorRuntime.message} UDP capture is unavailable; serial capture and replay remain local and usable.
+                </p>
+              ) : (
+                <>
+                  <label className="capture-field-wide">
+                    <span>Bridge URL</span>
+                    <input
+                      type="url"
+                      required={transport === "udp"}
+                      value={bridgeUrl}
+                      disabled={captureLocked}
+                      onChange={(event) => setBridgeUrl(event.target.value)}
+                      spellCheck={false}
+                    />
+                    <small className="field-help">Loopback HTTP origin only; telemetry is not sent to a remote service.</small>
+                  </label>
+                  <label className="capture-field-wide">
+                    <span>Bridge token</span>
+                    <input
+                      type="password"
+                      required={transport === "udp"}
+                      minLength={16}
+                      maxLength={256}
+                      autoComplete="off"
+                      value={bridgeToken}
+                      disabled={captureLocked}
+                      onChange={(event) => setBridgeToken(event.target.value)}
+                      spellCheck={false}
+                    />
+                  </label>
+                </>
+              )}
               <label>
                 <span>UDP bind host</span>
                 <input
@@ -1953,7 +1983,14 @@ export function CaptureDialog({ onClose, onComplete, displayTimeZone }: CaptureD
               <>
                 <button className="secondary-action" type="button" onClick={onClose}>Cancel</button>
                 {transport === "udp" ? (
-                  <button className="primary-action" type="submit" data-capture-phase-focus="ready">Start UDP capture</button>
+                  <button
+                    className="primary-action"
+                    type="submit"
+                    disabled={operatorRuntime.mode === "invalid"}
+                    data-capture-phase-focus="ready"
+                  >
+                    Start UDP capture
+                  </button>
                 ) : (
                   <button
                     className="primary-action"

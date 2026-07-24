@@ -46,6 +46,10 @@ import {
   type EvidenceBundleInclusions,
 } from "./domain/bundle";
 import { CaptureDialog } from "./capture/CaptureDialog";
+import {
+  MANUAL_OPERATOR_RUNTIME,
+  type OperatorRuntime,
+} from "./runtime/operator-runtime";
 import { SUPPORTED_DECODER } from "./domain/decoder";
 import { parseSession, projectIncident, rowsInRange, validateIncidentPreset } from "./domain/session";
 import { MAX_INCIDENT_TITLE_LENGTH, type AuthoredIncidentRange, type DiagnosticEvent, type IncidentProjection, type Marker, type ParsedSession, type SessionDocument, type TransportEvent, type TransportProvenance, type UdpRemoteEndpoint } from "./domain/types";
@@ -1463,7 +1467,7 @@ function ErrorScreen({ error, onRetry, onOpenReplay }: { error: SessionLoadError
   return <main className="load-screen error-screen" role="alert"><img src="/narrowslink-mark.svg" alt="" /><WarningCircle size={28} /><h1 data-load-focus tabIndex={-1}>Replay could not be opened</h1><p>{error.message}</p>{error.details.length > 0 && <ul>{error.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}<div><button className="secondary-action" type="button" onClick={onOpenReplay}>Choose another file</button><button className="primary-action" type="button" onClick={onRetry}>Load bundled replay</button></div></main>;
 }
 
-export function App() {
+export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRuntime?: OperatorRuntime }) {
   const [state, setState] = useState<LoadState>({ status: "loading", message: "Validating bundled telemetry…" });
   const [captureDialogOpen, setCaptureDialogOpen] = useState(false);
   const sessionLibrary = useMemo<SessionLibrary>(() => createSessionLibrary(), []);
@@ -1731,7 +1735,7 @@ export function App() {
       {state.status === "loading" && <LoadingScreen message={state.message} />}
       {state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} />}
       {state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} onOpenCapture={() => setCaptureDialogOpen(true)} library={libraryController} workspacePersistenceCommand={workspacePersistenceCommand} />}
-      {captureDialogOpen && <CaptureDialog displayTimeZone={state.status === "ready" ? state.session.document.displayTimeZone : undefined} onClose={() => setCaptureDialogOpen(false)} onComplete={completeCapture} />}
+      {captureDialogOpen && <CaptureDialog operatorRuntime={operatorRuntime} displayTimeZone={state.status === "ready" ? state.session.document.displayTimeZone : undefined} onClose={() => setCaptureDialogOpen(false)} onComplete={completeCapture} />}
     </>
   );
 }

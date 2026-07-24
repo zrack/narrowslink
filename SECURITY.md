@@ -2,21 +2,22 @@
 
 ## Supported versions
 
-NarrowsLink is a pre-1.0 project under active development. No tagged release has been published. Security fixes are made on the current `main` branch; older commits and forks do not receive guaranteed backports.
+NarrowsLink is a pre-1.0 project under active development. Security fixes are made on the current `main` branch and, when warranted, in the latest patch release. Superseded patches, older commits, and forks do not receive guaranteed backports.
 
 | Version | Supported |
 | --- | --- |
 | Current `main` | Yes |
-| Tagged releases | None published |
-| Older commits and forks | No |
+| Latest `0.1.x` patch | Yes |
+| Superseded `0.1.x` patches | No guaranteed backports |
+| `< 0.1.0`, older commits, and forks | No |
 
 ## Report a vulnerability privately
 
 Do not open a public issue for a suspected vulnerability.
 
-While this repository is private, authorized collaborators should open a draft in the repository's [Security advisories](https://github.com/zrack/narrowslink/security/advisories) area and coordinate with the owner there. Describe the affected version or commit, the impact, and the minimum steps needed to reproduce the issue.
+Use the repository's [private Security advisories](https://github.com/zrack/narrowslink/security/advisories) area to report the issue and coordinate with the maintainer. Describe the affected version or commit, the impact, and the minimum steps needed to reproduce the issue.
 
-If you cannot access the repository or its advisory area, contact the repository owner through their [GitHub profile](https://github.com/zrack) and ask for a private reporting channel without including sensitive technical details. Before this repository accepts reports from the public, the owner must enable GitHub private vulnerability reporting or publish another verified private contact method.
+If GitHub does not offer the private report form for your account, contact the repository owner through their [GitHub profile](https://github.com/zrack) and ask for a private reporting channel without including sensitive technical details.
 
 The maintainer will acknowledge reports as soon as practical, assess their severity and reproducibility, and coordinate remediation and disclosure through the private advisory. Response and fix timing depends on the issue's impact, complexity, and maintainer availability; this project does not currently offer a response-time SLA.
 

@@ -12,6 +12,7 @@ NarrowsLink is a local-first telemetry capture, replay, incident-analysis, and e
 | [ROADMAP.md](ROADMAP.md) | Planned work and exit criteria only |
 | [design-qa.md](design-qa.md) | The current accepted visual baseline and verification evidence |
 | [ACCESSIBILITY.md](ACCESSIBILITY.md) | Current automated accessibility evidence, keyboard contract, support limits, and manual certification matrix |
+| [docs/releases/](docs/releases/) | Immutable operator-facing summary and installation guidance for each published tag; the changelog remains the canonical full chronology |
 | [AGENTS.md](AGENTS.md) | Durable product direction and project constraints for coding agents |
 | [CONTRIBUTING.md](CONTRIBUTING.md) and the pull-request template | Current contributor and review policy |
 
@@ -59,17 +60,33 @@ Available commands:
 | `npm test` | Run the Vitest suite once |
 | `npm run test:watch` | Run Vitest in watch mode |
 | `npm run build` | Typecheck and create the production browser application and receiver CLI |
-| `npm run build:cli` | Build the local `narrowslink verify` receiver CLI |
+| `npm run build:cli` | Build the bundled `narrowslink serve`, `verify`, and `version` CLI |
 | `npm run test:cli` | Smoke-test the built receiver entry directly and through a package-style symlink |
 | `npm run preview` | Serve the production bundle locally |
 | `npm run test:e2e` | Build and run the Playwright release suite in Chromium, Firefox, and WebKit |
-| `npm run test:e2e:run` | Run Playwright against an existing production build |
+| `npm run test:e2e:run` | Serve the current production build on an isolated loopback port and run Playwright |
 | `npm run test:e2e:headed` | Build and run the browser suite with visible browser windows |
-| `npm run check` | Run typecheck, Vitest, production build, and the complete Playwright browser matrix |
-| `npm run capture:bridge` | Start the token-protected local UDP capture bridge |
+| `npm run release:build` | Independently compile and package the release twice, requiring byte-identical assets |
+| `npm run test:release` | Test the archive named by `NARROWSLINK_RELEASE_ARCHIVE` outside the repository in all three browser engines |
+| `npm run release:check` | Build the reproducible preview distribution and run its complete unpacked acceptance gate |
+| `npm run check` | Run typecheck, Vitest, production build, source browser matrix, and unpacked release gate |
+| `npm run capture:bridge` | Start the manual bearer-token UDP bridge used for source development |
 | `npm run capture:demo` | Send checked-in fixture frames as real UDP datagrams |
 | `npm run fixture:generate` | Regenerate the deterministic bundled replay |
 | `npm run verify:bundle -- incident.nlb` | Build the receiver CLI and verify a local version 3 evidence bundle; add `--json` for machine-readable output |
+
+## Maintainer release process
+
+Only a maintainer may publish a NarrowsLink release. Release publication is tag-driven, but the tag is created only after the candidate bytes pass locally and the release change has merged through the protected `main` branch.
+
+1. On a release branch, update `package.json` and `package-lock.json` to the intended semantic version, convert the accumulated changelog entries into the matching dated section, and add the operator-facing release notes. Update any version-specific workflow trigger, asset names, release-acceptance constants, and tag checks for that version.
+2. Run `npm run check`. Inspect `output/release/SHA256SUMS`, the external release manifest, the CycloneDX SBOM, and the tarball listing. The gate must prove two independent compilations are byte-identical and exercise the extracted package through real UDP capture, replay, authored evidence, `.nlb` export, artifact-local receiver verification, and same-origin library persistence after package replacement.
+3. Merge the reviewed branch through the required GitHub checks. On a clean, up-to-date `main`, run `npm run check` again.
+4. Create the annotated `v<package-version>` tag only at that verified `main` commit and push the tag to `origin`.
+5. The release workflow rechecks the clean tag, pinned Node and npm toolchain, complete source suite, strict double build, unpacked artifact, and published checksums before its write-enabled job creates the GitHub Release.
+6. Confirm the GitHub Release points to the intended commit, contains only the `.tgz`, external manifest, SBOM, and `SHA256SUMS`, and that the downloaded assets pass the published checksum set.
+
+Do not publish ad hoc local archives or create the tag before the candidate gate passes. Re-running the workflow must not substitute different bytes under an existing release. The release assets, tag, and same-channel checksum file are unsigned; checksum verification establishes byte consistency, not publisher or build-environment authenticity.
 
 ## Regenerating the fixture
 

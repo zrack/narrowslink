@@ -6,10 +6,31 @@ import {
   verifyEvidenceBundleFile,
   type EvidenceVerificationReport,
 } from "../verifier/evidence-verifier";
+import {
+  openOperatorUrl,
+  parseServeArguments,
+  ServeArgumentError,
+  startOperatorRuntime,
+  type OperatorRuntime,
+  type ReleaseIdentity,
+} from "./operator-runtime";
+
+declare const __NARROWSLINK_VERSION__: string;
+declare const __NARROWSLINK_COMMIT__: string;
+
+export const NARROWSLINK_RELEASE: ReleaseIdentity = Object.freeze({
+  version: typeof __NARROWSLINK_VERSION__ === "string" ? __NARROWSLINK_VERSION__ : "0.1.0",
+  commit: typeof __NARROWSLINK_COMMIT__ === "string" ? __NARROWSLINK_COMMIT__ : "unknown",
+});
 
 interface CliIo {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
+}
+
+interface ShutdownController {
+  once(event: string, listener: (...arguments_: unknown[]) => void): unknown;
+  off(event: string, listener: (...arguments_: unknown[]) => void): unknown;
 }
 
 interface FailedVerificationReport {
@@ -77,7 +98,21 @@ function failureReport(error: EvidenceVerificationError): FailedVerificationRepo
   };
 }
 
-function usage(): string {
+function rootUsage(): string {
+  return [
+    "Usage: narrowslink <command> [options]",
+    "",
+    "Commands:",
+    "  serve                 Start the self-contained local operator application",
+    "  verify <bundle.nlb>   Verify a NarrowsLink evidence bundle",
+    "  version               Print the release identity",
+    "",
+    "Run `narrowslink <command> --help` for command-specific options.",
+    "",
+  ].join("\n");
+}
+
+function verifyUsage(): string {
   return [
     "Usage: narrowslink verify <bundle.nlb> [--json]",
     "",
@@ -87,14 +122,158 @@ function usage(): string {
   ].join("\n");
 }
 
-export async function runCli(argv: readonly string[], io: CliIo = DEFAULT_IO): Promise<number> {
+function serveUsage(): string {
+  return [
+    "Usage: narrowslink serve [options]",
+    "",
+    "Starts the production NarrowsLink UI and authenticated UDP bridge locally.",
+    "",
+    "Options:",
+    "  --app-port <port>            Stable UI port (default 47890; 0 selects a free port)",
+    "  --bridge-port <port>         Loopback bridge port (default 0 selects a free port)",
+    "  --udp-host <host>            Default UDP bind host (default 127.0.0.1)",
+    "  --udp-port <port>            Default UDP bind port (default 9104; 0 selects a free port)",
+    "  --multicast-group <ip>       Default IPv4 or IPv6 multicast group",
+    "  --multicast-interface <ip>   Default local multicast interface address",
+    "  --no-open                    Do not open the operator UI in a browser",
+    "  --json-ready                 Emit one machine-readable readiness line",
+    "  --help                       Show this message",
+    "",
+  ].join("\n");
+}
+
+function versionText(json: boolean): string {
+  return json
+    ? `${safeJson({ name: "narrowslink", ...NARROWSLINK_RELEASE })}\n`
+    : `NarrowsLink ${NARROWSLINK_RELEASE.version} (${NARROWSLINK_RELEASE.commit})\n`;
+}
+
+function readyDocument(runtime: OperatorRuntime): object {
+  return {
+    type: "narrowslink-serve-ready",
+    formatVersion: 1,
+    version: runtime.release.version,
+    commit: runtime.release.commit,
+    appUrl: runtime.appUrl,
+    bridgeUrl: runtime.bridgeUrl,
+    udpDefaults: runtime.udpDefaults,
+  };
+}
+
+async function closeWithin(runtime: OperatorRuntime, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([
+      runtime.close().then(() => true, () => false),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export async function waitForShutdown(
+  runtime: OperatorRuntime,
+  io: CliIo = DEFAULT_IO,
+  controller: ShutdownController = process,
+  timeoutMs = 5_000,
+  forceExit: (code: number) => void = (code) => process.exit(code),
+): Promise<number> {
+  return await new Promise<number>((resolve) => {
+    let stopping = false;
+    let fatal = false;
+    let exitCode = 0;
+
+    const cleanup = () => {
+      controller.off("SIGINT", onSigint);
+      controller.off("SIGTERM", onSigterm);
+      controller.off("SIGHUP", onSighup);
+      controller.off("uncaughtException", onUncaughtException);
+      controller.off("unhandledRejection", onUnhandledRejection);
+    };
+    const shutdown = (code: number, error?: unknown) => {
+      exitCode = Math.max(exitCode, code);
+      if (error !== undefined) {
+        fatal = true;
+        const message = error instanceof Error ? error.stack ?? error.message : String(error);
+        io.stderr(`NarrowsLink encountered a fatal runtime error: ${cleanTerminalText(message)}\n`);
+      }
+      if (stopping) return;
+      stopping = true;
+      void closeWithin(runtime, timeoutMs).then((closed) => {
+        if (!closed) {
+          exitCode = 1;
+          io.stderr(`NarrowsLink could not complete local evidence shutdown within ${timeoutMs} ms.\n`);
+        }
+        cleanup();
+        if (!closed || fatal) {
+          forceExit(Math.max(1, exitCode));
+        }
+        resolve(exitCode);
+      });
+    };
+    const onSigint = () => shutdown(0);
+    const onSigterm = () => shutdown(0);
+    const onSighup = () => shutdown(0);
+    const onUncaughtException = (error: unknown) => shutdown(1, error);
+    const onUnhandledRejection = (reason: unknown) => shutdown(1, reason);
+    controller.once("SIGINT", onSigint);
+    controller.once("SIGTERM", onSigterm);
+    controller.once("SIGHUP", onSighup);
+    controller.once("uncaughtException", onUncaughtException);
+    controller.once("unhandledRejection", onUnhandledRejection);
+  });
+}
+
+async function runServe(argv: readonly string[], io: CliIo): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
-    io.stdout(usage());
+    io.stdout(serveUsage());
+    return 0;
+  }
+  let options;
+  try {
+    options = parseServeArguments(argv);
+  } catch (error) {
+    const message = error instanceof ServeArgumentError ? error.message : "The serve options are invalid.";
+    io.stderr(`${message}\n\n${serveUsage()}`);
+    return 2;
+  }
+
+  let runtime: OperatorRuntime;
+  try {
+    runtime = await startOperatorRuntime({
+      options,
+      release: NARROWSLINK_RELEASE,
+      moduleUrl: import.meta.url,
+    });
+  } catch (error) {
+    io.stderr(`NarrowsLink could not start: ${cleanTerminalText(error instanceof Error ? error.message : String(error))}\n`);
+    return 1;
+  }
+
+  if (options.jsonReady) {
+    io.stdout(`${safeJson(readyDocument(runtime)).replace(/\n/g, "")}\n`);
+  } else {
+    io.stdout(`NarrowsLink ${runtime.release.version} is ready at ${runtime.appUrl}\n`);
+  }
+  if (options.openBrowser && !openOperatorUrl(runtime.appUrl)) {
+    io.stderr(`Could not open a browser automatically. Open ${runtime.appUrl}\n`);
+  }
+  return await waitForShutdown(runtime, io);
+}
+
+async function runVerify(argv: readonly string[], io: CliIo): Promise<number> {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    io.stdout(verifyUsage());
     return 0;
   }
   const json = argv.includes("--json");
   const positional = argv.filter((argument) => argument !== "--json");
-  if (positional.length !== 2 || positional[0] !== "verify" || positional[1] === "") {
+  if (positional.length !== 1 || positional[0] === "") {
     if (json) {
       io.stdout(`${safeJson({
         format: "narrowslink/bundle-verification-report",
@@ -104,13 +283,13 @@ export async function runCli(argv: readonly string[], io: CliIo = DEFAULT_IO): P
         error: { code: "USAGE_ERROR", message: "Expected: narrowslink verify <bundle.nlb> [--json]" },
       } satisfies FailedVerificationReport)}\n`);
     } else {
-      io.stderr(usage());
+      io.stderr(verifyUsage());
     }
     return 2;
   }
 
   try {
-    const verified = await verifyEvidenceBundleFile(positional[1] ?? "");
+    const verified = await verifyEvidenceBundleFile(positional[0] ?? "");
     io.stdout(json ? `${safeJson(verified.report)}\n` : renderVerificationReport(verified.report));
     return 0;
   } catch (error) {
@@ -122,6 +301,43 @@ export async function runCli(argv: readonly string[], io: CliIo = DEFAULT_IO): P
     else io.stderr(`NarrowsLink evidence verification: FAIL\n${verificationError.code}: ${cleanTerminalText(verificationError.message)}${verificationError.path ? `\nPath: ${cleanTerminalText(verificationError.path)}` : ""}\n`);
     return exitCode;
   }
+}
+
+export async function runCli(argv: readonly string[], io: CliIo = DEFAULT_IO): Promise<number> {
+  if (argv.length === 1 && argv[0] === "--json") {
+    io.stdout(`${safeJson({
+      format: "narrowslink/bundle-verification-report",
+      formatVersion: 1,
+      integrity: "failed",
+      authenticity: "not-established",
+      error: { code: "USAGE_ERROR", message: "Expected a NarrowsLink command." },
+    } satisfies FailedVerificationReport)}\n`);
+    return 2;
+  }
+  if (argv.length === 1 && argv[0] === "--version") {
+    io.stdout(`${NARROWSLINK_RELEASE.version}\n`);
+    return 0;
+  }
+  if (argv[0] === "version") {
+    if (argv.length === 1) {
+      io.stdout(versionText(false));
+      return 0;
+    }
+    if (argv.length === 2 && argv[1] === "--json") {
+      io.stdout(versionText(true));
+      return 0;
+    }
+    io.stderr(rootUsage());
+    return 2;
+  }
+  if (argv[0] === "serve") return runServe(argv.slice(1), io);
+  if (argv[0] === "verify") return runVerify(argv.slice(1), io);
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
+    io.stdout(rootUsage());
+    return 0;
+  }
+  io.stderr(rootUsage());
+  return 2;
 }
 
 export function isCliEntry(moduleUrl: string, entryPath: string): boolean {

@@ -247,9 +247,7 @@ test("records fragmented serial input and carries it through durable verified ev
   await replayPosition.fill(String(replaySeekOffsetUs));
   await expect(replayPosition).toHaveValue(String(replaySeekOffsetUs));
   await page.getByRole("button", { name: "Play replay" }).click();
-  const pauseReplay = page.getByRole("button", { name: "Pause replay" });
-  await expect(pauseReplay).toBeVisible();
-  await pauseReplay.click();
+  await expect(page.getByRole("button", { name: "Replay again" })).toBeVisible();
 
   const startRecord = document.records[0]!;
   const endRecord = document.records[2]!;

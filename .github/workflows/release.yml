@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v0.1.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "20.19.5"
+          cache: npm
+
+      - name: Pin npm
+        run: npm install --global npm@11.12.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install browser runtimes
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Check source release
+        run: npm run check
+
+      - name: Build reproducible operator distribution
+        run: npm run release:build -- --strict --output build/release
+
+      - name: Test unpacked release bytes
+        env:
+          NARROWSLINK_RELEASE_ARCHIVE: build/release/narrowslink-0.1.0.tgz
+        run: npm run test:release
+
+      - name: Verify published checksum set
+        working-directory: build/release
+        run: sha256sum --check SHA256SUMS
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: narrowslink-release-${{ github.ref_name }}
+          path: |
+            build/release/narrowslink-0.1.0.tgz
+            build/release/narrowslink-0.1.0.release.json
+            build/release/narrowslink-0.1.0.cdx.json
+            build/release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Download verified release assets
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: narrowslink-release-${{ github.ref_name }}
+          path: build/release
+
+      - name: Recheck release assets
+        working-directory: build/release
+        run: sha256sum --check SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "${GITHUB_REF_NAME}" = "v0.1.0"
+          test -f "docs/releases/v0.1.0.md"
+          gh release create "${GITHUB_REF_NAME}" \
+            build/release/narrowslink-0.1.0.tgz \
+            build/release/narrowslink-0.1.0.release.json \
+            build/release/narrowslink-0.1.0.cdx.json \
+            build/release/SHA256SUMS \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "NarrowsLink v0.1.0" \
+            --notes-file "docs/releases/v0.1.0.md"
