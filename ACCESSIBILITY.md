@@ -10,11 +10,12 @@ The Playwright suite runs against Chromium, Firefox, and WebKit in `npm run chec
 | --- | --- | --- | --- | --- |
 | Bundled and local replay | Pass | Pass | Pass | Invalid import recovery, playback, seeking, rate changes, and active-replay preservation |
 | Local session library | Pass | Pass | Pass | Save, exact-content deduplication, reload, validated reopen, workspace restoration, guarded removal, and unavailable/quota/corruption/cleanup failures |
-| UDP capture-to-evidence loop | Pass | Pass | Pass | Real loopback UDP capture, reconciled v2 receipt, `.nlsession` download and reimport, replay, exact authored range, marker/note, `.nlb` generation, independent archive verification, reopen, and removal |
+| UDP capture-to-evidence loop | Pass | Pass | Pass | Real loopback NSL-01 and NMEA capture, reconciled v2 receipt, `.nlsession` download and reimport, replay, exact incident export, independent archive verification, in-application receipt, reload, and failure recovery |
 | Simulated Web Serial capture-to-evidence loop | Pass | Pass | Pass | Injected browser API, fragmented reads, complete and partial NSL-01 assembly, reconciled v2 receipt, durable reopen, replay, exact authored range, `.nlb` generation, and independent archive verification |
-| axe rules tagged WCAG A/AA | Pass | Pass | Pass | Automated scans of the workspace and live-capture, range, marker, and bundle dialogs |
+| Received evidence workspace | Pass | Pass | Pass | Exact bounded incident, separate verification claims, explicit unavailable groups, decoded and raw evidence, provenance, source annotations, separate receiver finding, rejected-archive recovery, reload, and unpacked-release replacement |
+| axe rules tagged WCAG A/AA | Pass | Pass | Pass | Automated scans of the replay and receiver workspaces plus live-capture, range, marker, and bundle dialogs |
 | Keyboard and focus handoff | Pass | Pass | Pass | Dialog entry/return, incident tabs, range deletion, incident clear/select, capture start-to-recording, and captured-session replacement |
-| Reflow and horizontal evidence access | Pass | Pass | Pass | `960 × 900`, `640 × 900`, and `390 × 844`; no page-level horizontal overflow, wrapped command actions, and explicit keyboard panning for timeline/table scrollers |
+| Reflow and horizontal evidence access | Pass | Pass | Pass | Replay and receiver workspaces at `960 × 900`, `640 × 900`, and `390 × 844`; no page-level horizontal overflow, wrapped command actions, and explicit keyboard panning for table or timeline scrollers |
 | Forced-color and non-color cues | Pass | Pass | Pass | Selected incidents expose pressed state; diagnostics retain visible severity words or `C`/`W`/`I` tokens in addition to color |
 
 The `640` CSS-pixel case is the automated reflow proxy for a `1280`-pixel-wide layout viewed at `200%`. Native browser zoom remains part of manual compatibility review because zoom behavior also depends on browser chrome, operating-system scaling, and assistive settings.
@@ -30,6 +31,8 @@ Playwright's WebKit project provides browser-engine coverage. It does not by its
 - Delete and discard confirmations focus the safe action first and return focus to the initiating control when cancelled.
 - The telemetry timeline and evidence table are named, focusable horizontal scroll regions at narrow widths and include screen-reader instructions for arrow-key access.
 - Overview incident targets expose selected state, severity, and exact clock range in their accessible names.
+- The received timeline exposes one full-lane range control instead of hundreds of overlapping tiny packet targets. Exact packet seeking remains available through the keyboard-accessible evidence table.
+- Receiver information uses tabs for evidence, provenance, and notes; receiver-owned text is labeled and remains separate from read-only source notes.
 
 ## Manual certification boundary
 

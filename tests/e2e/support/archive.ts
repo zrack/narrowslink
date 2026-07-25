@@ -5,6 +5,6 @@
  * the same bounded archive and semantic verification path shipped to operators.
  */
 export {
-  verifyEvidenceBundleFile as verifyEvidenceBundle,
   type VerifiedEvidenceBundle,
 } from "../../../verifier/evidence-verifier";
+export { verifyEvidenceBundleFile as verifyEvidenceBundle } from "../../../verifier/evidence-verifier-file";

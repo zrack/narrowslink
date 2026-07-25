@@ -13,9 +13,9 @@ import {
 } from "../src/domain/decoder-pack";
 import {
   EvidenceVerificationError,
-  verifyEvidenceBundleFile,
   type EvidenceVerificationReport,
 } from "../verifier/evidence-verifier";
+import { verifyEvidenceBundleFile } from "../verifier/evidence-verifier-file";
 import {
   openOperatorUrl,
   parseServeArguments,

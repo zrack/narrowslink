@@ -38,32 +38,32 @@ The product can move in five useful directions:
 
 The near-term roadmap should keep serving those directions. Work that does not improve replayability, decoder portability, incident evidence, local trust, or operator review should be treated as secondary.
 
-## Next milestone: Receiver workspace proof
+## Next milestone: Comparative replay and regression proof
 
-Let a receiving engineer open a verified `.nlb` directly in NarrowsLink and continue the investigation without the original `.nlsession`, source device, capture laptop, or command line.
+Let a team compare two captures without turning unlike evidence, decoder revisions, or unsynchronized clocks into a false before-and-after claim.
 
 Planned work:
 
-- Treat `.nlb` input as untrusted and run the production verifier before exposing any archive content to the workspace.
-- Build a bounded receiver data model from only the selected raw records, decoded packets, diagnostics, annotations, transport evidence, decoder pack, and manifest carried by the bundle.
-- Reconstruct the exact half-open incident range without fabricating whole-session context, missing packets, or evidence outside the archive.
-- Reuse the mission-timeline investigation vocabulary where the included evidence supports it, while visibly marking unavailable lanes and whole-session context.
-- Keep internal consistency, evidence completeness, and unsigned authenticity as separate claims throughout the receiver UI.
-- Allow receiver-owned notes or findings to be stored separately without mutating the original bundle or presenting them as source evidence.
-- Exercise an independently produced NSL-01 and NMEA bundle through verification, receiver opening, evidence inspection, reload, and failure recovery in the packaged browser matrix.
+- Accept two validated `.nlsession` files or verified `.nlb` bundles while preserving each input's immutable content identity, decoder identity, capture-integrity assessment, provenance, and evidence availability.
+- Require an explicit comparison basis: exact incident ranges, operator-selected anchors, or a declared shared event. Do not imply absolute clock synchronization or equivalent coverage when it is not established.
+- Define comparability rules for decoded fields, packet families, diagnostics, transport counters, and derived metrics. Values with different schemas, units, decoder revisions, or evidence bases must remain separate or be marked non-comparable.
+- Align the two bounded ranges on one comparison view and expose changes in packet delivery, malformed or partial data, diagnostic rates, link observations, and selected decoded signals without hiding excluded or unavailable evidence.
+- Let an engineer drill from every reported difference back to the exact source range and bundle or session identity that supports it.
+- Export a local comparison finding that cites both immutable inputs, ranges, decoder identities, alignment choice, computed differences, limitations, and receiver-authored conclusions without modifying either source.
+- Prove the workflow with repeatable real captures before and after one controlled radio, firmware, transport, or decoder change.
 
-Exit criteria: a person who did not attend the test can receive one `.nlb`, verify and open it on another NarrowsLink installation, inspect the same included evidence and limitations, and continue the investigation without requesting the original session.
+Exit criteria: an engineer can answer whether one controlled change improved, regressed, or left a constrained-telemetry behavior unresolved, and another engineer can reproduce that conclusion from the same two identified inputs.
 
 ## Immediate next moves
 
-- Define the receiver workspace's bounded in-memory document and its explicit unavailable states before building UI.
-- Map each existing mission-timeline lane to the evidence artifacts required to render it honestly.
-- Add sanitized full and minimal receiver fixtures, including a bundle whose schema or raw records were intentionally excluded.
-- Design the smallest open-and-verify flow that keeps verification failure, incomplete evidence, and unsigned authenticity visible.
-- Decide how separately persisted receiver notes are identified, exported, and cleared without modifying the received bytes.
-- Keep the current 32 MiB session limit, unsigned bundle boundary, and physical Web Serial certification boundary visible as tracked constraints.
+- Write the comparison contract before the comparison UI: input identity, acceptable alignment modes, evidence-availability states, comparable metric rules, and result provenance.
+- Choose one repeatable real test pair with a controlled impairment and record the expected differences before implementation.
+- Decide whether the first proof compares whole sessions, exact incident ranges, or both; prefer exact ranges unless whole-session coverage is demonstrably equivalent.
+- Specify field identity across decoder revisions, including unit changes, renamed fields, and schema-incompatible values.
+- Define the smallest portable comparison-finding format and how it cites, but never embeds or mutates, the two source artifacts.
+- Set latency and memory budgets that remain honest under the current 32 MiB session and 64 MiB evidence-archive limits.
 
-Exit criteria: the receiver model, artifact requirements, failure states, and end-to-end acceptance fixture are reviewable before workspace implementation begins.
+Exit criteria: the comparison semantics, controlled test pair, non-comparable states, and reproducible acceptance case are settled before implementation begins.
 
 ## Large-session processing
 
@@ -106,11 +106,11 @@ Exit criteria: a new telemetry community can bring a protocol, fixtures, and exp
 
 ## Moonshot: Incident evidence exchange
 
-- Define a receiver workflow where `.nlb` bundles can be compared, annotated, verified, and cited across organizations without exposing unrelated session data.
+- Extend the local receiver from one bundle to a multi-bundle case file with immutable citations, separately owned findings, and an explicit chain of verification.
 - Add optional signed manifests, public-key identity, or transparency-log integration for teams that need stronger provenance than local checksums.
-- Build a focused receiver mode for non-operators: open bundle, verify integrity, inspect exact incident range, review provenance, and export a concise finding.
 - Explore redaction and minimization tools that preserve verification while stripping sensitive coordinates, identifiers, or operator notes.
-- Let a receiving engineer attach their own verification notes without mutating the original evidence bundle.
+- Export concise receiver findings that cite exact bundle identities and ranges while keeping the received archives unchanged.
+- Define interoperable machine-readable citations so issue trackers, test reports, vendors, and research records can point to the same verified evidence.
 
 Exit criteria: NarrowsLink becomes a practical handoff format for telemetry incidents, not only a local review tool.
 

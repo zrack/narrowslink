@@ -275,8 +275,19 @@ Every bundle includes range-filtered transport events and whole-session provenan
 
 Treat received `.nlb` bytes as untrusted.
 
-1. Install a verified NarrowsLink release package on the receiving machine.
-2. Run the production verifier before opening or extracting the archive:
+The current repository build can verify and open the incident directly:
+
+1. Start NarrowsLink on the receiving machine.
+2. Select **Open evidence** in the Sessions rail or top bar.
+3. Choose the received `.nlb` and wait while NarrowsLink preflights ZIP structure, bounds decompression, validates every artifact, checks identities and checksums, and reconciles the exact incident.
+4. Confirm the three claims separately: **Internal consistency**, **Evidence completeness**, and **Source authenticity**. A green internal-consistency result does not turn incomplete capture evidence or unsigned authenticity into a verified claim.
+5. Review **Artifact groups** before interpreting the timeline. **Not included** means the archive did not carry that evidence; the receiver does not infer or reconstruct it from other artifacts.
+6. Inspect the exact half-open range through the received timeline, packet or raw-record table, and **Evidence** and **Provenance** tabs.
+7. Use the **Notes** tab for a receiver-owned finding. NarrowsLink stores it separately under the exact whole-bundle SHA-256; it never changes the `.nlb` or presents the finding as source evidence.
+
+If verification fails, NarrowsLink keeps the previously open replay or receiver workspace unchanged and identifies the failure class and artifact. Do not extract or inspect the rejected archive manually.
+
+The CLI uses the same production verifier and remains the path for terminal-only use or a stable machine-readable report. Install a verified NarrowsLink package, then run:
 
 ```bash
 narrowslink verify path/to/incident.nlb
@@ -311,6 +322,8 @@ Exit statuses are:
 Do not extract a bundle that exits `1`. Correct path, permissions, or command usage before retrying an exit `2`.
 
 A valid bundle can truthfully report `incomplete` or `unknown` capture or provenance evidence. Version 3 bundles are unsigned, so the verifier reports authenticity as `not-established`. Exchange the reported bundle SHA-256 or expected manifest identity through a separately trusted channel when authorship or source-channel authenticity matters.
+
+The tagged v0.1.0 package includes the CLI verifier but predates the in-application receiver. Use the current repository build until the receiver workspace is included in a later tagged release.
 
 ## Use the local session library
 

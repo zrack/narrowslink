@@ -66,13 +66,25 @@ import {
 } from "./storage/session-library";
 import { createOperationGate, resolveCommittedSave } from "./storage/session-library-workflow";
 import { clearSessionWorkspace, loadSessionWorkspace, saveSessionWorkspace } from "./storage/session-storage";
+import { ReceiverWorkspace } from "./receiver/ReceiverWorkspace";
+import {
+  EvidenceBundleLoadError,
+  loadEvidenceBundleFile,
+} from "./receiver/load-evidence-bundle";
+import type { ReceiverDocument } from "./receiver/receiver-document";
 
 type ActiveTab = "narrative" | "details" | "provenance" | "stats";
 const INCIDENT_TABS: ActiveTab[] = ["narrative", "details", "provenance", "stats"];
 type LoadState =
   | { status: "loading"; message: string }
   | { status: "ready"; session: ParsedSession }
+  | { status: "receiver"; document: ReceiverDocument; fileName: string }
   | { status: "error"; error: SessionLoadError };
+
+type EvidenceOpenState =
+  | { status: "idle" }
+  | { status: "verifying"; fileName: string }
+  | { status: "error"; fileName: string; error: EvidenceBundleLoadError };
 
 type SessionLibraryStatus = "loading" | "ready" | "unavailable" | "error";
 type SessionLibraryAction =
@@ -530,11 +542,12 @@ interface LeftRailProps {
   session: ParsedSession;
   replayOffsetUs: number;
   onOpenReplay: () => void;
+  onOpenBundle: () => void;
   onOpenCapture: () => void;
   library: SessionLibraryController;
 }
 
-function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, library }: LeftRailProps) {
+function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenBundle, onOpenCapture, library }: LeftRailProps) {
   const { document } = session;
   const current = valueAtOffset(session.buckets, replayOffsetUs);
   const replaySummary = useMemo(() => {
@@ -568,6 +581,10 @@ function LeftRail({ session, replayOffsetUs, onOpenReplay, onOpenCapture, librar
           <button className="capture-entry" type="button" onClick={onOpenCapture}>
             <Broadcast size={16} />
             <span><strong>Live capture</strong><small>UDP or serial · local only</small></span>
+          </button>
+          <button className="capture-entry receiver-entry" type="button" onClick={onOpenBundle}>
+            <Package size={16} />
+            <span><strong>Open evidence</strong><small>Verify a received .nlb</small></span>
           </button>
         </section>
         <section className="rail-section active-links">
@@ -621,6 +638,7 @@ interface TopBarProps {
   onAddMarker: () => void;
   onCreateBundle: () => void;
   onOpenReplay: () => void;
+  onOpenBundle: () => void;
   onOpenCapture: () => void;
   onOpenLibrary: () => void;
   savedSessionCount: number;
@@ -643,6 +661,7 @@ function TopBar(props: TopBarProps) {
         <button className="secondary-action library-mobile" type="button" aria-haspopup="dialog" onClick={props.onOpenLibrary}><Database size={15} /> Saved ({props.savedSessionCount})</button>
         <button className="secondary-action capture-mobile" type="button" onClick={props.onOpenCapture}><Broadcast size={15} /> Capture</button>
         <button className="secondary-action open-replay-mobile" type="button" onClick={props.onOpenReplay}><UploadSimple size={15} /> Open replay</button>
+        <button className="secondary-action open-bundle-action" type="button" onClick={props.onOpenBundle}><Package size={15} /> Open evidence</button>
         <div className="replay-action-group">
           <button className={`secondary-action replay-toggle ${props.replayStatus === "playing" ? "active" : ""}`} type="button" onClick={props.onTogglePlayback}>
             {props.replayStatus === "playing" ? <Pause size={15} weight="fill" /> : <Play size={15} weight="fill" />}
@@ -1310,7 +1329,7 @@ function Toast({ message }: { message: string }) {
   return message ? <div className="toast" role="status"><Check size={15} weight="bold" /> {message}</div> : null;
 }
 
-function Workspace({ session, onOpenReplay, onOpenCapture, library, workspacePersistenceCommand }: { session: ParsedSession; onOpenReplay: () => void; onOpenCapture: () => void; library: SessionLibraryController; workspacePersistenceCommand: WorkspacePersistenceCommand | null }) {
+function Workspace({ session, onOpenReplay, onOpenBundle, onOpenCapture, library, workspacePersistenceCommand }: { session: ParsedSession; onOpenReplay: () => void; onOpenBundle: () => void; onOpenCapture: () => void; library: SessionLibraryController; workspacePersistenceCommand: WorkspacePersistenceCommand | null }) {
   const firstIncident = session.incidents.find((candidate) => candidate.id === "fade") ?? session.incidents[0] ?? null;
   const initialReplayOffsetUs = firstIncident ? incidentViewRange(session, firstIncident).startUs : 0;
   const replay = useReplay({ durationUs: session.document.durationUs, initialOffsetUs: initialReplayOffsetUs, initialRate: 1 });
@@ -1445,8 +1464,8 @@ function Workspace({ session, onOpenReplay, onOpenCapture, library, workspacePer
 
   return (
     <main className="app-shell" aria-label="Telemetry review workspace">
-      <LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} library={library} />
-      <TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenCapture={onOpenCapture} onOpenLibrary={() => setLibraryDialogOpen(true)} savedSessionCount={library.entries.length} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} />
+      <LeftRail session={session} replayOffsetUs={replay.snapshot.offsetUs} onOpenReplay={onOpenReplay} onOpenBundle={onOpenBundle} onOpenCapture={onOpenCapture} library={library} />
+      <TopBar session={session} replayOffsetUs={replay.snapshot.offsetUs} replayStatus={replay.snapshot.status} replayRate={replay.snapshot.rate} onTogglePlayback={togglePlayback} onReset={replay.reset} onRateChange={replay.setRate} onAddMarker={() => setMarkerDialogOpen(true)} onCreateBundle={() => setBundleDialogOpen(true)} onOpenReplay={onOpenReplay} onOpenBundle={onOpenBundle} onOpenCapture={onOpenCapture} onOpenLibrary={() => setLibraryDialogOpen(true)} savedSessionCount={library.entries.length} bundleDisabled={!selectedIncident || !bundleItems.some((item) => item.selected)} />
       <SessionOverview session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onSelectIncident={(incident) => selectIncident(incident.id)} onCreateRange={openNewRange} onRangeChange={resizeSelectedRange} />
       {selectedIncident ? <MissionTimeline session={session} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} markers={markers} replayOffsetUs={replay.snapshot.offsetUs} onSeek={replay.seek} onRangeChange={resizeSelectedRange} /> : <section className="timeline-panel"><div className="empty-state"><BookmarkSimple size={24} /><h2>Select an incident</h2><p>The full replay remains available in the session overview.</p></div></section>}
       <IncidentPanel session={session} incidents={incidents} incident={selectedIncident} incidentEditable={selectedAuthoredRange != null} activeTab={activeTab} note={note} workspacePersistence={workspacePersistence} onTabChange={setActiveTab} onNoteChange={setNote} onSelectIncident={selectIncident} onEditRange={openRangeEditor} onClear={clearIncident} />
@@ -1465,8 +1484,58 @@ function LoadingScreen({ message }: { message: string }) {
   return <main className="load-screen" role="status" aria-live="polite" aria-busy="true"><img src="/narrowslink-mark.svg" alt="" /><SpinnerGap className="spin" size={24} /><h1 data-load-focus tabIndex={-1}>NarrowsLink</h1><p>{message}</p></main>;
 }
 
-function ErrorScreen({ error, onRetry, onOpenReplay }: { error: SessionLoadError; onRetry: () => void; onOpenReplay: () => void }) {
-  return <main className="load-screen error-screen" role="alert"><img src="/narrowslink-mark.svg" alt="" /><WarningCircle size={28} /><h1 data-load-focus tabIndex={-1}>Replay could not be opened</h1><p>{error.message}</p>{error.details.length > 0 && <ul>{error.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}<div><button className="secondary-action" type="button" onClick={onOpenReplay}>Choose another file</button><button className="primary-action" type="button" onClick={onRetry}>Load bundled replay</button></div></main>;
+function ErrorScreen({ error, onRetry, onOpenReplay, onOpenBundle }: { error: SessionLoadError; onRetry: () => void; onOpenReplay: () => void; onOpenBundle: () => void }) {
+  return <main className="load-screen error-screen" role="alert"><img src="/narrowslink-mark.svg" alt="" /><WarningCircle size={28} /><h1 data-load-focus tabIndex={-1}>Replay could not be opened</h1><p>{error.message}</p>{error.details.length > 0 && <ul>{error.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}<div><button className="secondary-action" type="button" onClick={onOpenReplay}>Choose another replay</button><button className="secondary-action" type="button" onClick={onOpenBundle}>Open evidence bundle</button><button className="primary-action" type="button" onClick={onRetry}>Load bundled replay</button></div></main>;
+}
+
+function EvidenceOpenDialog({
+  state,
+  onClose,
+}: {
+  state: Exclude<EvidenceOpenState, { status: "idle" }>;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalFocus(dialogRef, onClose, state.status === "error");
+  const descriptionId = state.status === "error" ? "evidence-open-error-description" : "evidence-open-progress-description";
+  return createPortal(
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && state.status === "error" && onClose()}>
+      <section
+        ref={dialogRef}
+        className="bundle-dialog evidence-open-dialog"
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-labelledby="evidence-open-dialog-title"
+        aria-describedby={descriptionId}
+        aria-busy={state.status === "verifying"}
+      >
+        <button className="dialog-close" type="button" aria-label="Close evidence verification" disabled={state.status === "verifying"} onClick={onClose}><X size={17} /></button>
+        <div className={`dialog-icon${state.status === "error" ? " error-icon" : ""}`}>
+          {state.status === "verifying" ? <SpinnerGap className="spin" size={24} /> : <WarningCircle size={26} />}
+        </div>
+        <span className="dialog-kicker">{state.status === "verifying" ? "Untrusted evidence input" : "Evidence bundle rejected"}</span>
+        <h2 id="evidence-open-dialog-title" data-dialog-focus tabIndex={-1}>
+          {state.status === "verifying" ? `Verifying ${state.fileName}` : `${state.fileName} was not opened`}
+        </h2>
+        {state.status === "verifying" ? (
+          <p id={descriptionId}>NarrowsLink is preflighting ZIP structure, bounding decompression, checking every artifact, and reconciling the incident before showing any evidence.</p>
+        ) : (
+          <>
+            <p id={descriptionId}>{state.error.message}</p>
+            <dl className="dialog-summary evidence-error-summary">
+              <div><dt>Failure</dt><dd>{state.error.code}</dd></div>
+              <div><dt>Artifact</dt><dd>{state.error.path ?? "Archive"}</dd></div>
+            </dl>
+            {state.error.details.length > 0 && <ul className="dialog-error-details">{state.error.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}
+            <p className="evidence-recovery-note">The previously open workspace remains unchanged.</p>
+            <div className="dialog-actions"><button className="primary-action" type="button" onClick={onClose}>Return to workspace</button></div>
+          </>
+        )}
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRuntime?: OperatorRuntime }) {
@@ -1483,9 +1552,11 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
   const libraryOperationGate = useMemo(() => createOperationGate(), []);
   const sessionOperationGate = useMemo(() => createOperationGate(), []);
   const [workspacePersistenceCommand, setWorkspacePersistenceCommand] = useState<WorkspacePersistenceCommand | null>(null);
+  const [evidenceOpenState, setEvidenceOpenState] = useState<EvidenceOpenState>({ status: "idle" });
   const workspacePersistenceCommandRevisionRef = useRef(0);
   const libraryNoticeTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const evidenceInputRef = useRef<HTMLInputElement>(null);
 
   const announceLibrary = useCallback((message: string) => {
     if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
@@ -1571,6 +1642,7 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
 
   const loadDefault = useCallback(async () => {
     const operation = sessionOperationGate.begin();
+    setEvidenceOpenState({ status: "idle" });
     setState({ status: "loading", message: "Validating bundled telemetry…" });
     try {
       const session = await loadBundledSession();
@@ -1597,14 +1669,23 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
     return () => { cancelled = true; };
   }, [libraryEntries, state]);
 
-  const stateFocusKey = state.status === "ready" ? sessionWorkspaceKey(state.session) : state.status;
+  const stateFocusKey = state.status === "ready"
+    ? sessionWorkspaceKey(state.session)
+    : state.status === "receiver"
+      ? state.document.bundle.sha256
+      : state.status;
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(state.status === "ready" ? ".workspace-heading" : "[data-load-focus]")?.focus({ preventScroll: true });
+      document.querySelector<HTMLElement>(
+        state.status === "ready" || state.status === "receiver"
+          ? ".workspace-heading"
+          : "[data-load-focus]",
+      )?.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(frame);
   }, [state.status, stateFocusKey]);
   const openReplay = () => fileInputRef.current?.click();
+  const openEvidence = () => evidenceInputRef.current?.click();
   const completeCapture = useCallback(async (document: SessionDocument) => {
     sessionOperationGate.begin();
     try {
@@ -1632,6 +1713,34 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
     }
     catch (cause) {
       if (sessionOperationGate.isCurrent(operation)) setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The selected replay could not be loaded.") });
+    }
+  };
+
+  const handleEvidenceFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const operation = sessionOperationGate.begin();
+    setEvidenceOpenState({ status: "verifying", fileName: file.name });
+    try {
+      const receiverDocument = await loadEvidenceBundleFile(file);
+      if (!sessionOperationGate.isCurrent(operation)) return;
+      setState({ status: "receiver", document: receiverDocument, fileName: file.name });
+      setEvidenceOpenState({ status: "idle" });
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(".workspace-heading")?.focus({ preventScroll: true });
+      }));
+    } catch (cause) {
+      if (!sessionOperationGate.isCurrent(operation)) return;
+      const error = cause instanceof EvidenceBundleLoadError
+        ? cause
+        : new EvidenceBundleLoadError(
+            "WORKER_FAILURE",
+            "NarrowsLink could not verify the selected evidence bundle.",
+            file.name,
+            [cause instanceof Error ? cause.message : "Unknown evidence verification error."],
+          );
+      setEvidenceOpenState({ status: "error", fileName: file.name, error });
     }
   };
 
@@ -1734,10 +1843,13 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
   return (
     <>
       <input ref={fileInputRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="Choose a local NarrowsLink replay" accept=".json,.nlsession,application/json" onChange={(event) => void handleFile(event)} />
+      <input ref={evidenceInputRef} className="visually-hidden" type="file" tabIndex={-1} aria-label="Choose a NarrowsLink evidence bundle" accept=".nlb,application/zip" onChange={(event) => void handleEvidenceFile(event)} />
       {state.status === "loading" && <LoadingScreen message={state.message} />}
-      {state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} />}
-      {state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} onOpenCapture={() => setCaptureDialogOpen(true)} library={libraryController} workspacePersistenceCommand={workspacePersistenceCommand} />}
+      {state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} onOpenBundle={openEvidence} />}
+      {state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} onOpenBundle={openEvidence} onOpenCapture={() => setCaptureDialogOpen(true)} library={libraryController} workspacePersistenceCommand={workspacePersistenceCommand} />}
+      {state.status === "receiver" && <ReceiverWorkspace key={state.document.bundle.sha256} document={state.document} fileName={state.fileName} onOpenBundle={openEvidence} onOpenReplay={openReplay} onLoadBundledReplay={() => void loadDefault()} />}
       {captureDialogOpen && <CaptureDialog operatorRuntime={operatorRuntime} displayTimeZone={state.status === "ready" ? state.session.document.displayTimeZone : undefined} onClose={() => setCaptureDialogOpen(false)} onComplete={completeCapture} />}
+      {evidenceOpenState.status !== "idle" && <EvidenceOpenDialog state={evidenceOpenState} onClose={() => setEvidenceOpenState({ status: "idle" })} />}
     </>
   );
 }

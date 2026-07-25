@@ -105,6 +105,7 @@ export const evidenceMarkersDocumentSchema = z.object({
   range: evidenceRangeSchema,
   markers: z.array(evidenceMarkerSchema).max(100_000),
 }).strict();
+export type EvidenceMarker = z.infer<typeof evidenceMarkerSchema>;
 
 export const evidenceNoteSchema = z.object({
   id: boundedText(128),
@@ -118,6 +119,7 @@ export const evidenceNotesDocumentSchema = z.object({
   range: evidenceRangeSchema,
   notes: z.array(evidenceNoteSchema).max(100_000),
 }).strict();
+export type EvidenceNote = z.infer<typeof evidenceNoteSchema>;
 
 export const evidenceDiagnosticSchema = z.object({
   id: boundedText(EVIDENCE_DIAGNOSTIC_ID_CHARACTERS),
@@ -145,6 +147,7 @@ export const evidenceDiagnosticsDocumentSchema = z.object({
   range: evidenceRangeSchema,
   diagnostics: z.array(evidenceDiagnosticSchema).max(100_000),
 }).strict();
+export type EvidenceDiagnostic = z.infer<typeof evidenceDiagnosticSchema>;
 
 export const evidenceBundleInclusionsSchema = z.object({
   rawRecords: z.boolean(),

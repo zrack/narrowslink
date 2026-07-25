@@ -19,7 +19,8 @@ import { decoderDescriptorForPack } from "../src/domain/decoder-pack";
 import { EVIDENCE_ARCHIVE_LIMITS } from "../src/domain/evidence-contract";
 import { parseSession } from "../src/domain/session";
 import type { SessionDocumentV1, SessionDocumentV2, SourceRecord } from "../src/domain/types";
-import { EvidenceVerificationError, verifyEvidenceBundleBytes, verifyEvidenceBundleFile } from "./evidence-verifier";
+import { EvidenceVerificationError, verifyEvidenceBundleBytes } from "./evidence-verifier";
+import { verifyEvidenceBundleFile } from "./evidence-verifier-file";
 
 const generatedAt = "2026-07-18T18:00:00.000Z";
 

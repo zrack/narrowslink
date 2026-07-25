@@ -126,6 +126,20 @@ function jsonArchiveEntry<T>(entries: Record<string, Uint8Array>, path: string):
   return JSON.parse(strFromU8(bytes)) as T;
 }
 
+async function openEvidenceBundle(
+  page: Page,
+  bundlePath: string,
+  expectedTitle: string,
+): Promise<ReturnType<Page["getByRole"]>> {
+  await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(bundlePath);
+  const workspace = page.getByRole("main", { name: "Received incident evidence workspace" });
+  await expect(workspace).toBeVisible({ timeout: 30_000 });
+  await expect(workspace.getByRole("heading", { name: expectedTitle, level: 1 })).toBeVisible();
+  await expect(workspace.getByRole("region", { name: "Evidence verification claims" }))
+    .toContainText("Internally Consistent");
+  return workspace;
+}
+
 let bridge: LoopbackBridge | undefined;
 
 test.afterEach(async () => {
@@ -253,6 +267,47 @@ test("captures real NMEA UDP traffic and hands off the exact decoder interpretat
       integrity: { canonicalSha256: portablePack.integrity.canonicalSha256 },
     },
   });
+
+  await page.getByRole("dialog", { name: "Handoff archive is ready" })
+    .getByRole("button", { name: "Return to session" })
+    .click();
+  const receiverTitle = verified.manifest.selection.title ?? title;
+  const receiver = await openEvidenceBundle(page, bundlePath, receiverTitle);
+  const claims = receiver.getByRole("region", { name: "Evidence verification claims" });
+  await expect(claims).toContainText("Evidence completeness");
+  await expect(claims).toContainText("Verified");
+  await expect(claims).toContainText("Source authenticity");
+  await expect(claims).toContainText("Not Established");
+  await expect(receiver.getByText("NMEA GGA · Global Positioning System Fix Data", { exact: true }).first())
+    .toBeVisible();
+  await receiver.getByRole("tab", { name: "provenance" }).click();
+  await expect(receiver.getByRole("tabpanel", { name: "provenance" }))
+    .toContainText("NMEA-0183-GIG-HARBOR");
+
+  const receiverFinding = "Receiver independently reproduced the NMEA interpretation.";
+  await receiver.getByRole("tab", { name: "notes" }).click();
+  await receiver.getByLabel("Receiver finding for this evidence bundle").fill(receiverFinding);
+  await expect(receiver.getByText("Stored separately", { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Harbor relay downlink", level: 1 })).toBeVisible();
+  const reopenedReceiver = await openEvidenceBundle(page, bundlePath, receiverTitle);
+  await reopenedReceiver.getByRole("tab", { name: "notes" }).click();
+  await expect(reopenedReceiver.getByLabel("Receiver finding for this evidence bundle"))
+    .toHaveValue(receiverFinding);
+
+  const malformedBundlePath = testInfo.outputPath("malformed-evidence.nlb");
+  await writeFile(malformedBundlePath, "This is not a NarrowsLink evidence archive.");
+  await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(malformedBundlePath);
+  const rejectedDialog = page.getByRole("dialog", { name: "malformed-evidence.nlb was not opened" });
+  await expect(rejectedDialog).toBeVisible();
+  await expect(rejectedDialog).toContainText("Evidence bundle rejected");
+  await expect(rejectedDialog).toContainText("The previously open workspace remains unchanged.");
+  await rejectedDialog.getByRole("button", { name: "Return to workspace" }).click();
+  await expect(reopenedReceiver.getByRole("heading", { name: receiverTitle, level: 1 })).toBeVisible();
+  await expect(reopenedReceiver.getByLabel("Receiver finding for this evidence bundle"))
+    .toHaveValue(receiverFinding);
+
   expect(sentBytes).toBeGreaterThan(0);
   expect(browserErrors).toEqual([]);
 });
@@ -588,6 +643,18 @@ test("records UDP, replays and investigates it, then exports independently verif
   expect(artifactCounts.get("transport/journal.json")).toBe(terminalJournal.entries.length);
 
   await readyBundleDialog.getByRole("button", { name: "Return to session" }).click();
+  const receiver = await openEvidenceBundle(page, bundlePath, RANGE_TITLE);
+  await expect(receiver.getByRole("region", { name: "Evidence verification claims" })).toContainText("Verified");
+  await expect(receiver.getByText(`${expectedRangeRecords.length} packet rows`, { exact: true })).toBeVisible();
+  await expect(receiver.locator(`.receiver-mark.annotation[title="${MARKER_TITLE}"]`)).toBeVisible();
+  await receiver.getByRole("tab", { name: "notes" }).click();
+  await expect(receiver.getByRole("tabpanel", { name: "notes" })).toContainText(OPERATOR_NOTE);
+  await receiver.getByRole("tab", { name: "provenance" }).click();
+  await expect(receiver.getByRole("tabpanel", { name: "provenance" }))
+    .toContainText(archive.manifest.session.decoderId);
+  await receiver.getByRole("button", { name: "Return to demo session" }).click();
+  await expect(page.getByRole("heading", { name: "Harbor relay downlink", level: 1 })).toBeVisible();
+
   await page.reload();
   await expect(page.getByRole("heading", { name: "Harbor relay downlink", level: 1 })).toBeVisible();
   const reopenButton = page.getByRole("button", {

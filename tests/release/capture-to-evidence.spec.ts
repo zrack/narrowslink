@@ -52,6 +52,7 @@ const CAPTURE_TITLE = "Artifact release UDP capture";
 const RANGE_TITLE = "Artifact exact UDP evidence range";
 const MARKER_TITLE = "Artifact operator transition";
 const OPERATOR_NOTE = "Artifact release gate retained this exact operator-authored range.";
+const RECEIVER_NOTE = "Receiver reproduced the packaged release evidence after independent verification.";
 const DATAGRAM_COUNT = 12;
 
 function formatOffsetUsInput(offsetUs: number): string {
@@ -251,6 +252,22 @@ test("unpacked release records UDP and preserves verifiable evidence across repl
     expect(report.bundle.bytes).toBeGreaterThan(0);
     expect(report.artifacts.count).toBeGreaterThan(0);
 
+    await page.getByRole("dialog", { name: "Handoff archive is ready" })
+      .getByRole("button", { name: "Return to session" })
+      .click();
+    await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(bundlePath);
+    const receiver = page.getByRole("main", { name: "Received incident evidence workspace" });
+    await expect(receiver).toBeVisible({ timeout: 30_000 });
+    await expect(receiver.getByRole("heading", { name: RANGE_TITLE, level: 1 })).toBeVisible();
+    await expect(receiver.getByRole("region", { name: "Evidence verification claims" }))
+      .toContainText("Internally Consistent");
+    await expect(receiver.getByRole("region", { name: "Evidence verification claims" }))
+      .toContainText("Verified");
+    await receiver.getByRole("tab", { name: "notes" }).click();
+    await expect(receiver.getByRole("tabpanel", { name: "notes" })).toContainText(OPERATOR_NOTE);
+    await receiver.getByLabel("Receiver finding for this evidence bundle").fill(RECEIVER_NOTE);
+    await expect(receiver.getByText("Stored separately", { exact: true })).toBeVisible();
+
     await server.stop();
     server = undefined;
     await installation.remove();
@@ -274,6 +291,13 @@ test("unpacked release records UDP and preserves verifiable evidence across repl
     await expect(page.getByRole("heading", { name: RANGE_TITLE, level: 2 })).toBeVisible();
     await expect(page.getByLabel("Session-wide operator note")).toHaveValue(OPERATOR_NOTE);
     await expect(page.getByRole("region", { name: "Session overview" })).toContainText("1 operator marker");
+
+    await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(bundlePath);
+    const replacementReceiver = page.getByRole("main", { name: "Received incident evidence workspace" });
+    await expect(replacementReceiver).toBeVisible({ timeout: 30_000 });
+    await replacementReceiver.getByRole("tab", { name: "notes" }).click();
+    await expect(replacementReceiver.getByLabel("Receiver finding for this evidence bundle"))
+      .toHaveValue(RECEIVER_NOTE);
     expect(browserErrors).toEqual([]);
   } finally {
     await replacementServer?.stop().catch(() => undefined);

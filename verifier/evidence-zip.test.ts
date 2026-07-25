@@ -163,6 +163,25 @@ describe("readEvidenceZip", () => {
     );
   });
 
+  it("rejects trailing bytes inside a declared DEFLATE payload", () => {
+    const bytes = archive({ "manifest.json": "m".repeat(4_096) }, 6);
+    const layout = inspectZip(bytes);
+    const offsets = entry(layout, "manifest.json");
+    const compressedSize = readU32(bytes, offsets.localOffset + 18);
+    const inserted = insertBytes(
+      bytes,
+      offsets.dataOffset + compressedSize,
+      Uint8Array.of(0xde),
+    );
+    const shiftedCentralOffset = offsets.centralOffset + 1;
+    const shiftedEocdOffset = layout.eocdOffset + 1;
+    writeU32(inserted, offsets.localOffset + 18, compressedSize + 1);
+    writeU32(inserted, shiftedCentralOffset + 20, compressedSize + 1);
+    writeU32(inserted, shiftedEocdOffset + 16, layout.centralDirectoryOffset + 1);
+
+    expectZipError(inserted, "compressed-input-not-consumed");
+  });
+
   it("rejects duplicate canonical paths even when both headers agree", () => {
     const bytes = archive({
       "transport/provenance.json": "first",

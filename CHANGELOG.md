@@ -8,6 +8,8 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 
 - Added bounded, content-addressed decoder packs with an allowlisted parser runtime, canonical pack and schema identities, production-path conformance fixtures, local operator loading, and packaged `decoder seal` and `decoder validate` commands; new captures persist the exact pack and runtime while legacy NSL-01 sessions remain compatible and unchanged.
 - Added the NMEA 0183 reference pack for checksummed GGA, RMC, and HDT sentences over one-sentence-per-datagram UDP or line-delimited serial input, including partial-tail retention, checksum diagnostics, real loopback UDP capture, local-library reopen, evidence export, and production receiver replay verification.
+- Added an in-application receiver workspace for untrusted version 3 `.nlb` bundles: worker-isolated production verification now precedes inspection, the exact bounded incident is reconstructed only from included evidence, excluded context remains explicit, and internal consistency, evidence completeness, and unsigned authenticity remain separate claims.
+- Added receiver-owned findings stored separately under the whole-bundle SHA-256 without modifying source evidence, plus NSL-01 and NMEA capture-to-receiver, rejection recovery, reload, accessibility, responsive-layout, and unpacked-release replacement coverage across Chromium, Firefox, and WebKit.
 
 ### Changed
 
