@@ -38,34 +38,11 @@ The product can move in five useful directions:
 
 The near-term roadmap should keep serving those directions. Work that does not improve replayability, decoder portability, incident evidence, local trust, or operator review should be treated as secondary.
 
-## Next milestone: Comparative replay and regression proof
+## Next milestone: Large-session processing
 
-Let a team compare two captures without turning unlike evidence, decoder revisions, or unsynchronized clocks into a false before-and-after claim.
+Keep capture, replay, incident selection, comparison, and evidence export responsive and deterministic when a session no longer fits the current whole-document, main-thread processing model.
 
 Planned work:
-
-- Accept two validated `.nlsession` files or verified `.nlb` bundles while preserving each input's immutable content identity, decoder identity, capture-integrity assessment, provenance, and evidence availability.
-- Require an explicit comparison basis: exact incident ranges, operator-selected anchors, or a declared shared event. Do not imply absolute clock synchronization or equivalent coverage when it is not established.
-- Define comparability rules for decoded fields, packet families, diagnostics, transport counters, and derived metrics. Values with different schemas, units, decoder revisions, or evidence bases must remain separate or be marked non-comparable.
-- Align the two bounded ranges on one comparison view and expose changes in packet delivery, malformed or partial data, diagnostic rates, link observations, and selected decoded signals without hiding excluded or unavailable evidence.
-- Let an engineer drill from every reported difference back to the exact source range and bundle or session identity that supports it.
-- Export a local comparison finding that cites both immutable inputs, ranges, decoder identities, alignment choice, computed differences, limitations, and receiver-authored conclusions without modifying either source.
-- Prove the workflow with repeatable real captures before and after one controlled radio, firmware, transport, or decoder change.
-
-Exit criteria: an engineer can answer whether one controlled change improved, regressed, or left a constrained-telemetry behavior unresolved, and another engineer can reproduce that conclusion from the same two identified inputs.
-
-## Immediate next moves
-
-- Write the comparison contract before the comparison UI: input identity, acceptable alignment modes, evidence-availability states, comparable metric rules, and result provenance.
-- Choose one repeatable real test pair with a controlled impairment and record the expected differences before implementation.
-- Decide whether the first proof compares whole sessions, exact incident ranges, or both; prefer exact ranges unless whole-session coverage is demonstrably equivalent.
-- Specify field identity across decoder revisions, including unit changes, renamed fields, and schema-incompatible values.
-- Define the smallest portable comparison-finding format and how it cites, but never embeds or mutates, the two source artifacts.
-- Set latency and memory budgets that remain honest under the current 32 MiB session and 64 MiB evidence-archive limits.
-
-Exit criteria: the comparison semantics, controlled test pair, non-comparable states, and reproducible acceptance case are settled before implementation begins.
-
-## Large-session processing
 
 - Move validation, decoding, aggregation, and bundle construction off the main UI thread with Web Workers.
 - Add streaming JSON/NDJSON ingestion or a chunked binary container for captures beyond the current 32 MiB UTF-8 `.nlsession` import limit.
@@ -73,7 +50,16 @@ Exit criteria: the comparison semantics, controlled test pair, non-comparable st
 - Bound timeline downsampling, memory growth, marker lookup, and evidence generation for multi-million-record sessions.
 - Add cancellation and progress reporting for long imports and exports.
 
-Exit criteria: large sessions remain responsive, cancellable, and deterministic under documented memory and latency budgets.
+Immediate next moves:
+
+- Measure import, validation, decode, timeline aggregation, comparison, and bundle-export time and peak memory against a checked-in synthetic corpus before selecting a storage or worker design.
+- Define a processing contract for progress, cancellation, partial failure, immutable source identity, and deterministic output across worker boundaries.
+- Decide whether version 2 `.nlsession` remains the interchange format with streaming ingestion or whether a new chunked container is required; preserve unchanged v1 and v2 compatibility either way.
+- Specify which indexes and aggregate levels are durable evidence, reproducible derivations, or disposable UI acceleration.
+- Prove that cancellation never persists a partial session, emits a misleading clean receipt, or exports an incomplete artifact as complete.
+- Add a real browser acceptance case at the chosen upper support tier and publish measured latency and memory budgets instead of an unqualified "large" claim.
+
+Exit criteria: a capture at the documented upper support tier can be imported or finalized, investigated, compared, and exported without blocking interaction, exceeding the published memory budget, changing deterministic results, or leaving partial persisted state after cancellation.
 
 ## Transport evidence and authenticity
 
@@ -97,7 +83,7 @@ Exit criteria: [ACCESSIBILITY.md](ACCESSIBILITY.md) records reproducible manual 
 ## Moonshot: Community protocol workbench
 
 - Let operators and protocol engineers build, validate, and publish decoder packs with sample captures, expected decoded fields, diagnostics, and evidence-bundle fixtures.
-- Add a local schema authoring and replay comparison workspace so a contributor can see how a decoder revision changes packets, diagnostics, timelines, and bundle output.
+- Add local schema authoring and decoder-revision migration tools that use comparison findings to show how a proposed pack changes packets, diagnostics, timelines, and bundle output.
 - Support a curated registry of community protocol packs without making NarrowsLink dependent on a hosted service.
 - Make protocol packs portable enough for labs, field teams, educators, and hobby communities to exchange reproducible telemetry examples.
 - Publish an example protocol pack that can be used as a teaching fixture, regression suite, and contribution template.
@@ -109,7 +95,7 @@ Exit criteria: a new telemetry community can bring a protocol, fixtures, and exp
 - Extend the local receiver from one bundle to a multi-bundle case file with immutable citations, separately owned findings, and an explicit chain of verification.
 - Add optional signed manifests, public-key identity, or transparency-log integration for teams that need stronger provenance than local checksums.
 - Explore redaction and minimization tools that preserve verification while stripping sensitive coordinates, identifiers, or operator notes.
-- Export concise receiver findings that cite exact bundle identities and ranges while keeping the received archives unchanged.
+- Import and validate portable comparison findings inside the case file while requiring the exact cited source artifacts for reproduction.
 - Define interoperable machine-readable citations so issue trackers, test reports, vendors, and research records can point to the same verified evidence.
 
 Exit criteria: NarrowsLink becomes a practical handoff format for telemetry incidents, not only a local review tool.

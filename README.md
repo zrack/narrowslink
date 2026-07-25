@@ -59,6 +59,7 @@ Continue with the [guided first run](USER_GUIDE.md#first-run-with-the-bundled-re
 - Export the selected range as a local `.nlb` archive with the exact decoder pack and runtime identity, an exact manifest, mandatory transport events, provenance, bridge journal, capture-integrity receipt, and a SHA-256 checksum for every emitted artifact.
 - Open a received version 3 `.nlb` in the application or verify it with the CLI. Both paths use the same production verifier to bound and preflight the ZIP, validate an embedded pack, replay-check decoded rows against selected raw records, and reject unsafe or inconsistent archives before inspection.
 - Continue an investigation in a bounded receiver workspace that shows only the exact included range and evidence, keeps internal consistency, evidence completeness, and unsigned authenticity separate, marks excluded context unavailable, and stores receiver findings separately under the bundle SHA-256 without modifying the archive.
+- Compare one selected session incident or verified evidence-bundle range with a second validated `.nlsession` or verified `.nlb`. The comparison requires an explicit range-start or shared-event alignment, evaluates only the exact aligned overlap, keeps incompatible or incompletely supported evidence unresolved, traces every metric to bounded source IDs and total supporting counts, and exports a checksummed `.nlcompare.json` finding without modifying or embedding either input.
 
 ## Operator use cases
 
@@ -69,7 +70,7 @@ NarrowsLink currently supports five end-to-end operator outcomes:
 | UC-001 | Record live field telemetry | Version 2 `.nlsession` |
 | UC-002 | Investigate a recorded telemetry fault | Exact operator-authored incident range |
 | UC-003 | Audit capture-path integrity | Integrity assessment and transport evidence |
-| UC-004 | Run decoder and session regressions | Repeatable decoded and diagnostic results |
+| UC-004 | Compare captures and prove regressions | Checksummed `.nlcompare.json` finding |
 | UC-005 | Hand off a verifiable incident bundle | `.nlb` archive and verified receiver workspace |
 
 See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, current constraints, and implementation evidence.
@@ -84,6 +85,8 @@ NarrowsLink opens the bundled **Harbor relay downlink** replay automatically. An
 4. Choose optional evidence groups; the transport event log, provenance, bridge journal, and capture-integrity receipt remain mandatory.
 5. Build the `.nlb` archive and send the unchanged file to the receiving engineer.
 6. Have the receiver choose **Open evidence**, inspect the separately reported verification claims and exact included range, and use `narrowslink verify` when a terminal or machine-readable report is also required.
+
+For a controlled before-and-after investigation, select the baseline incident or open the received bundle, choose **Compare**, load the candidate session or bundle, and declare either range-start or shared-event alignment. NarrowsLink compares only the aligned intersection, exposes unmatched tails and non-comparable evidence, and lets the operator export a separate finding that cites both exact inputs, ranges, decoder identities, metric evidence, limitations, and the authored conclusion.
 
 The [user guide](USER_GUIDE.md) provides the full procedure, UI labels, recovery steps, and authenticity boundaries.
 
@@ -121,6 +124,7 @@ This matrix separates automated browser-engine evidence from hardware and assist
 | Live UDP through the local bridge | Automated | Automated | Automated | A real ephemeral loopback bridge records NSL-01 and a non-bundled file-loaded NMEA 0183 pack, stops with reconciled v2 integrity, reimports the `.nlsession`, replays it, and completes production receiver verification |
 | Simulated Web Serial capture-to-evidence | Automated | Automated | Automated | An injected standards-based serial stream exercises device selection, fragmented reads, NSL-01 assembly, partial-byte retention, reconciled v2 integrity, durable reopen, replay, exact-range export, and production receiver verification |
 | Independent `.nlb` receipt and verification | Automated | Automated | Automated | NSL-01 and NMEA browser downloads are passed back through the production verifier, opened as bounded receiver documents, inspected, rejected safely when invalid, and reopened with separate receiver notes; ZIP structure, canonical paths, half-open boundaries, required transport evidence, artifact schemas, record counts, semantics, hashes, and `SHA256SUMS` are verified |
+| Comparative replay and regression finding | Automated | Automated | Automated | Two real loopback UDP captures with one controlled integrity failure are compared as a validated session and independently verified bundle; the gate checks explicit alignment, overlap, comparability, source traceability, bounded assessment, and semantic validation of the downloaded `.nlcompare.json`. The unpacked release also compares a received bundle with its exact source session. |
 | Keyboard, dialogs, and responsive access | Automated | Automated | Automated | axe rules tagged WCAG A/AA cover the replay and receiver workspaces plus critical dialogs; focus handoffs, `960`, `640`, and `390` CSS-pixel reflow, keyboard scrollers, and forced-color cues run in all three engines |
 | Physical Web Serial hardware | Manual boundary | Manual boundary | Manual boundary | The application path is automated with an injected API, but native device choosers, transient activation, USB drivers, operating-system disconnect behavior, and packaged-browser combinations are not certified |
 
@@ -224,6 +228,20 @@ Exit status `0` means the archive is internally consistent. Exit `1` means it is
 
 Follow the [receiver procedure](USER_GUIDE.md#verify-a-received-bundle) to interpret the report and exchange the bundle identity through a separately trusted channel.
 
+## Comparison finding format
+
+The comparison workspace exports a canonical JSON document with the suffix `.nlcompare.json`. It records:
+
+- Both input kinds, immutable content identities, session identities, exact half-open ranges, decoder identities, and capture-evidence bases
+- The explicit alignment mode and anchors, aligned overlap, and unmatched tails
+- Comparability decisions for alignment, packets, capture evidence, diagnostics, decoded fields, and link observations
+- Bounded metric values, direction, assessment, total supporting evidence counts, and up to the first 64 source IDs for each input
+- Overall assessment, known limitations, an operator-authored conclusion, generation time, and a SHA-256 over the canonical finding
+
+The semantic validator rejects altered hashes and internally contradictory ranges, anchors, overlap, comparability rows, metrics, deltas, directions, or assessments. The hash establishes the finding's internal content identity; it does not authenticate the author or either source. A finding cites but does not embed its `.nlsession` or `.nlb` inputs, so another engineer needs the same two identified source files to reproduce the comparison.
+
+![NarrowsLink comparative replay workspace](docs/design/comparison-workspace.png)
+
 ## Architecture
 
 | Area | Responsibility |
@@ -249,6 +267,8 @@ Follow the [receiver procedure](USER_GUIDE.md#verify-a-received-bundle) to inter
 | `src/domain/evidence-contract.ts` | Strict version 3 evidence manifest, artifact, transport-document, path, media-type, and resource-limit contract |
 | `src/domain/bundle.ts` | Range-filtered, checksummed `.nlb` evidence generation and browser download |
 | `src/receiver/` | Worker-isolated bundle loading, immutable bounded receiver document, receiver workspace, and bundle-keyed local findings |
+| `src/domain/comparison.ts` | Immutable comparison inputs, explicit alignment, comparability rules, bounded metrics, assessments, and checksummed finding validation |
+| `src/comparison/` | Comparison setup, aligned evidence workspace, trace inspector, authored conclusion, and local finding export |
 | `verifier/` | Bounded ZIP intake and production receiver verification of archive structure, artifact content, and cross-document semantics |
 | `scripts/narrowslink.ts` | Managed `serve`, bundle `verify`, decoder-pack `seal` and `validate`, and exact build-identity commands |
 | `scripts/operator-runtime.ts` | Secure static application server and coordinated bridge lifecycle for the installed release |
@@ -266,7 +286,7 @@ Raw source records remain immutable. Frames, fields, metrics, diagnostics, incid
 
 ## Privacy and data handling
 
-Serial capture, session-library persistence, replay parsing, marker and note persistence, evidence generation, and received-bundle verification happen locally in the browser. Validated canonical session documents and their identifying metadata are stored in IndexedDB; markers, authored ranges, and notes use separate per-session local storage. Receiver findings use a separate local-storage record keyed by the exact bundle SHA-256 and can be cleared from the receiver **Notes** tab; they never modify the archive or become source evidence. Removing a saved replay attempts to clear its two session stores, leaves any active in-memory replay open, and does not affect previously exported files or receiver findings. If the replay document is removed but workspace cleanup fails, NarrowsLink keeps a visible warning that residual operator context may remain in browser storage. UDP payloads move only from the local socket bridge to the local page. In the installed release, the browser uses a same-origin relay and the managed process authenticates to the loopback-only bridge with an internal short-lived credential that is not returned in runtime metadata, URLs, cookies, readiness output, or logs. The UDP listener itself binds exactly the interface selected by the operator. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
+Serial capture, session-library persistence, replay parsing, marker and note persistence, evidence generation, received-bundle verification, and comparative replay happen locally in the browser. Validated canonical session documents and their identifying metadata are stored in IndexedDB; markers, authored ranges, and notes use separate per-session local storage. Receiver findings use a separate local-storage record keyed by the exact bundle SHA-256 and can be cleared from the receiver **Notes** tab; they never modify the archive or become source evidence. Comparison inputs and authored conclusions remain in memory until the operator downloads a separate `.nlcompare.json`; the finding cites but does not contain either source. Removing a saved replay attempts to clear its two session stores, leaves any active in-memory replay open, and does not affect previously exported files or receiver findings. If the replay document is removed but workspace cleanup fails, NarrowsLink keeps a visible warning that residual operator context may remain in browser storage. UDP payloads move only from the local socket bridge to the local page. In the installed release, the browser uses a same-origin relay and the managed process authenticates to the loopback-only bridge with an internal short-lived credential that is not returned in runtime metadata, URLs, cookies, readiness output, or logs. The UDP listener itself binds exactly the interface selected by the operator. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
 
 Local does not automatically mean safe to share. A saved replay or evidence bundle can contain raw bytes, device identifiers, coordinates, signal observations, and operator notes. Review and sanitize captures before committing them or sending them to someone else. Browser IndexedDB and local storage are convenient persistence mechanisms, not encrypted secrets stores.
 
@@ -280,6 +300,7 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 - IndexedDB or Web Crypto can be unavailable or reject a save. NarrowsLink surfaces the failure and keeps the validated replay usable in memory instead of claiming it was saved.
 - New live captures use version 2 durable transport events, per-record UDP endpoint or serial-device provenance, bridge journals where applicable, and integrity receipts. Legacy v1 and earlier pre-provenance v2 replays remain supported with explicit unknown or unavailable assessments; those earlier v2 documents may lack endpoint attribution, a bridge journal, or the internal capture identity and are not rewritten.
 - The application receiver and CLI accept bounded version 3 `.nlb` bundles up to 64 MiB compressed and 128 MiB total declared uncompressed content. They establish internal consistency and report the evidence NarrowsLink could observe; because bundles are unsigned, neither path establishes author, source-channel, or originating-build authenticity. The receiver reconstructs only the selected evidence in the archive and does not recreate unavailable whole-session context.
+- Comparison accepts one selected range from the current replay or verified receiver and one range from a validated session or verified bundle. It does not infer clock synchronization, discover shared events, compare values across different decoder identities or RSSI evidence bases, establish causality, or embed source files. Packet, diagnostic, and decoded-field deltas require selected raw support in both inputs; a bundle that excludes it remains review-required. Findings are bounded to 1 MiB and unsigned; their canonical SHA-256 establishes internal identity, not authorship or source authenticity.
 - Automated coverage exercises the complete real-loopback UDP and simulated Web Serial capture-to-evidence loops in Playwright Chromium, Firefox, and WebKit and gates axe rules tagged WCAG A/AA, critical keyboard focus, responsive reflow, failure recovery, and independent archive verification. Physical Web Serial devices and manual screen-reader/browser combinations remain outside the automated release gate.
 
 ## Project documentation

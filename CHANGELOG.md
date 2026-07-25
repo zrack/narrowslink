@@ -10,6 +10,8 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 - Added the NMEA 0183 reference pack for checksummed GGA, RMC, and HDT sentences over one-sentence-per-datagram UDP or line-delimited serial input, including partial-tail retention, checksum diagnostics, real loopback UDP capture, local-library reopen, evidence export, and production receiver replay verification.
 - Added an in-application receiver workspace for untrusted version 3 `.nlb` bundles: worker-isolated production verification now precedes inspection, the exact bounded incident is reconstructed only from included evidence, excluded context remains explicit, and internal consistency, evidence completeness, and unsigned authenticity remain separate claims.
 - Added receiver-owned findings stored separately under the whole-bundle SHA-256 without modifying source evidence, plus NSL-01 and NMEA capture-to-receiver, rejection recovery, reload, accessibility, responsive-layout, and unpacked-release replacement coverage across Chromium, Firefox, and WebKit.
+- Added bounded comparative replay for a selected session incident or verified evidence-bundle range against a validated `.nlsession` or verified `.nlb`: explicit range-start or named shared-event alignment, exact overlap and unmatched-tail accounting, conservative evidence comparability, traceable metric deltas, and a checksummed `.nlcompare.json` finding that cites but never modifies or embeds either source.
+- Added a controlled real-UDP regression proof with one induced integrity failure, semantic finding validation, responsive and axe coverage, and unpacked-release receiver-to-session comparison across Chromium, Firefox, and WebKit.
 
 ### Changed
 

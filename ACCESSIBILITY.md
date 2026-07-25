@@ -1,6 +1,6 @@
 # NarrowsLink accessibility
 
-NarrowsLink treats keyboard access, durable focus, non-color evidence cues, and responsive reflow as release requirements for the local capture-to-evidence workflow. This document records the current support evidence and its limits; it is not a certification of complete WCAG conformance or every browser, operating system, device, and assistive-technology combination.
+NarrowsLink treats keyboard access, durable focus, non-color evidence cues, and responsive reflow as release requirements for the local capture-to-evidence and comparative-replay workflows. This document records the current support evidence and its limits; it is not a certification of complete WCAG conformance or every browser, operating system, device, and assistive-technology combination.
 
 ## Automated release matrix
 
@@ -13,9 +13,10 @@ The Playwright suite runs against Chromium, Firefox, and WebKit in `npm run chec
 | UDP capture-to-evidence loop | Pass | Pass | Pass | Real loopback NSL-01 and NMEA capture, reconciled v2 receipt, `.nlsession` download and reimport, replay, exact incident export, independent archive verification, in-application receipt, reload, and failure recovery |
 | Simulated Web Serial capture-to-evidence loop | Pass | Pass | Pass | Injected browser API, fragmented reads, complete and partial NSL-01 assembly, reconciled v2 receipt, durable reopen, replay, exact authored range, `.nlb` generation, and independent archive verification |
 | Received evidence workspace | Pass | Pass | Pass | Exact bounded incident, separate verification claims, explicit unavailable groups, decoded and raw evidence, provenance, source annotations, separate receiver finding, rejected-archive recovery, reload, and unpacked-release replacement |
-| axe rules tagged WCAG A/AA | Pass | Pass | Pass | Automated scans of the replay and receiver workspaces plus live-capture, range, marker, and bundle dialogs |
-| Keyboard and focus handoff | Pass | Pass | Pass | Dialog entry/return, incident tabs, range deletion, incident clear/select, capture start-to-recording, and captured-session replacement |
-| Reflow and horizontal evidence access | Pass | Pass | Pass | Replay and receiver workspaces at `960 × 900`, `640 × 900`, and `390 × 844`; no page-level horizontal overflow, wrapped command actions, and explicit keyboard panning for table or timeline scrollers |
+| Comparative replay workspace | Pass | Pass | Pass | Explicit baseline and candidate setup, validated session and verified-bundle input, aligned range control, eligibility matrix, metric selection, bounded source trace, authored conclusion, finding export, and clean state for a new comparison |
+| axe rules tagged WCAG A/AA | Pass | Pass | Pass | Automated scans of the replay, receiver, and comparison workspaces plus live-capture, range, marker, bundle, and comparison-setup dialogs |
+| Keyboard and focus handoff | Pass | Pass | Pass | Dialog entry/return, incident tabs, range deletion, incident clear/select, capture start-to-recording, captured-session replacement, comparison setup, and authored finding controls |
+| Reflow and horizontal evidence access | Pass | Pass | Pass | Replay, receiver, and comparison workspaces at `960 × 900`, `640 × 900`, and `390 × 844`; no page-level horizontal overflow, wrapped command actions, and explicit keyboard panning for table or timeline scrollers |
 | Forced-color and non-color cues | Pass | Pass | Pass | Selected incidents expose pressed state; diagnostics retain visible severity words or `C`/`W`/`I` tokens in addition to color |
 
 The `640` CSS-pixel case is the automated reflow proxy for a `1280`-pixel-wide layout viewed at `200%`. Native browser zoom remains part of manual compatibility review because zoom behavior also depends on browser chrome, operating-system scaling, and assistive settings.
@@ -30,6 +31,7 @@ Playwright's WebKit project provides browser-engine coverage. It does not by its
 - Clearing an incident focuses the empty selection state; selecting the first incident or deleting an authored range focuses the replacement selector or empty state.
 - Delete and discard confirmations focus the safe action first and return focus to the initiating control when cancelled.
 - The telemetry timeline and evidence table are named, focusable horizontal scroll regions at narrow widths and include screen-reader instructions for arrow-key access.
+- The comparison metric table is a named, focusable horizontal scroll region; the source-ID and limitation inspector is a named vertical region, and visual packet or diagnostic marks are hidden from the accessibility tree in favor of the aligned range control and traceable rows.
 - Overview incident targets expose selected state, severity, and exact clock range in their accessible names.
 - The received timeline exposes one full-lane range control instead of hundreds of overlapping tiny packet targets. Exact packet seeking remains available through the keyboard-accessible evidence table.
 - Receiver information uses tabs for evidence, provenance, and notes; receiver-owned text is labeled and remains separate from read-only source notes.

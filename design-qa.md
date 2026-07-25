@@ -13,10 +13,12 @@ This document records the currently accepted visual baseline and its verificatio
 - Capture-integrity functional evidence: [incomplete UDP capture replay](docs/design/implementation-capture-integrity.png)
 - Decoder-pack capture setup evidence: [NMEA capture setup](docs/design/live-capture-setup.jpg)
 - Received-incident evidence workspace: [verified receiver workspace](docs/design/receiver-workspace.png)
+- Comparative replay evidence workspace: [bounded comparison workspace](docs/design/comparison-workspace.png)
 - Desktop viewport: `1487 × 1058`, matching the source image.
 - Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`, and the open library and live-capture dialogs each measure `358 px` wide.
 - State: bundled Harbor relay replay reopened from the library; replay paused inside the link-fade incident at `23:40`; Narrative tab; all six evidence groups selected; two genuine saved sessions; two local operator markers, one in the visible timeline; and a session-wide note present.
 - Release-gate state: the same bundled incident and operator note with one genuine saved session, visible non-color diagnostic severity tokens, selected-incident semantics, and all six evidence groups selected.
+- Comparison evidence state: the selected link-fade incident is compared with the same validated fixture at `1280 × 720` using explicit range-start alignment. Packet, diagnostic, decoded-field, and link evidence are comparable and unchanged; the overall result remains unresolved because both legacy-v1 capture-integrity assessments are unknown. The controlled real-capture regression is proven separately by the browser gate.
 
 ### Current release result
 
@@ -39,6 +41,10 @@ This document records the currently accepted visual baseline and its verificatio
 ### Accepted receiver result
 
 [![NarrowsLink showing an exact verified incident in the bounded receiver workspace](docs/design/receiver-workspace.png)](docs/design/receiver-workspace.png)
+
+### Accepted comparison result
+
+[![NarrowsLink comparing two explicitly aligned telemetry incidents](docs/design/comparison-workspace.png)](docs/design/comparison-workspace.png)
 
 ## Final findings
 
@@ -66,6 +72,7 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Transport provenance: a verified loopback capture confirms that the source-aligned incident rail can expose capture identity, bound socket, endpoint attribution, bridge totals, explicit unavailable kernel-drop evidence, lifecycle journal entries, and evidence boundaries without disturbing the mission timeline's density or hierarchy.
 - Decoder portability: the current capture setup keeps the decoder decision ahead of transport setup, exposes the selected pack's runtime and shortened immutable identity, and preserves the established square, compact instrument language. At `390 × 844`, the selector and load action stack inside the `358 px` dialog without horizontal overflow.
 - Received evidence: the accepted receiver keeps the same rail, compact command bar, warm-black one-pixel structure, dense instrument typography, shared timeline vocabulary, and inspector geometry while giving verification claims their own fixed band. Artifact counts, exact range, packet integrity, diagnostics, source evidence, and explicit unavailable states all come from the verified archive rather than decorative values.
+- Comparative replay: the accepted comparison retains the same instrument language while replacing the mission timeline with two explicitly aligned source lanes, a comparability strip, bounded metric table, and fixed trace inspector. Input identities, range boundaries, overlap, unmatched tails, evidence IDs, and unresolved states come from the comparison contract rather than visual inference. At `390 × 844`, commands wrap into a stable two-column group, the eligibility matrix becomes two columns, timeline detail remains internally bounded, and document and body widths both remain `390 px`.
 
 ## Required fidelity surfaces
 
@@ -104,11 +111,14 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Loaded a sealed, non-bundled `NMEA-0183-GIG-HARBOR` pack, recorded real GGA, RMC, and HDT UDP datagrams, retained a checksum failure as an inspectable diagnostic, and proved the custom pack, schema, runtime, raw records, decoded rows, and diagnostics survived `.nlsession` persistence and independent `.nlb` verification.
 - Opened independently generated NSL-01 and NMEA `.nlb` files through the worker-isolated production verifier, inspected the exact bounded evidence in the receiver, restored a separately stored receiver finding after reload and re-import, and confirmed a malformed archive left the verified workspace unchanged.
 - Verified the receiver workspace with axe rules tagged WCAG A/AA and without page-level overflow at `960 × 900`, `640 × 900`, and `390 × 844`; dense timeline marks remain visual evidence while the full-lane scrubber and exact packet table provide usable seek targets.
+- Compared a clean real loopback UDP baseline with an independently verified candidate `.nlb` containing one controlled checksum failure; confirmed explicit range-start alignment, a comparable capture basis, regressed integrity-failure rate, bounded source IDs with complete supporting counts, an authored conclusion, and production semantic validation of the downloaded `.nlcompare.json`.
+- Compared a verified receiver bundle with its exact source session in the unpacked release using named shared-event anchors, exported an unchanged finding, returned to the receiver, and continued the existing replacement workflow without losing the separately stored receiver note.
+- Verified the comparison setup and workspace with axe rules tagged WCAG A/AA, keyboard-scrollable evidence regions, and no page-level overflow at `960 × 900`, `640 × 900`, and `390 × 844` in Chromium, Firefox, and WebKit.
 - Recorded a 24-datagram loopback acceptance capture and visually confirmed the verified Provenance tab reconciled all 24 records and 737 retained bytes to one exact remote endpoint and a clean two-entry bridge journal while preserving the unavailable host-drop-counter boundary.
 - Exercised simulated Web Serial device selection through four fragmented reads, retained four complete frames and one terminal partial frame without byte loss, saved and deduplicated the canonical v2 session, reopened and replayed it from IndexedDB, authored an exact half-open range, and verified the downloaded `.nlb` with the production receiver in Chromium, Firefox, and WebKit. Physical device, driver, and native permission behavior remains a manual boundary.
 - Launched the unpacked v0.1 operator package with `narrowslink serve` and visually confirmed the production workspace and capture dialog at the managed origin. The dialog showed the authenticated managed-bridge state and exact version/commit identity without bridge URL or token fields, while preserving the accepted component geometry and producing no browser warnings or errors.
 - Repeated the capture-to-receiver, replay/library, failure-recovery, axe rules tagged WCAG A/AA, focus-handoff, responsive, keyboard-scroller, and forced-color gates in Playwright Chromium, Firefox, and WebKit.
-- Ran the complete `npm run check` command set: TypeScript validation, `261` tests across `31` files, the production application and CLI builds, all `39` source-workspace Playwright checks, two byte-identical release compilations, and all `3` unpacked-release capture-to-receiver checks across Chromium, Firefox, and WebKit passed.
+- Ran the complete `npm run check` command set: TypeScript validation, `272` tests across `32` files, the production application and CLI builds, all `45` source-workspace Playwright checks, two byte-identical release compilations, and all `3` unpacked-release capture-to-receiver and comparison checks across Chromium, Firefox, and WebKit passed.
 
 ## Implementation checklist
 
@@ -118,6 +128,7 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - [x] Preserve malformed and partial frames as inspectable diagnostics.
 - [x] Preserve capture-path anomalies, endpoint or device provenance, bridge journal, and terminal integrity receipt through replay, operator range projection, and checksummed export.
 - [x] Populate the source rail with real durable sessions and preserve validated reopen, explicit removal, and responsive access.
+- [x] Preserve exact source identities, explicit alignment, bounded comparability, evidence traceability, and unresolved states through comparative replay and checksummed finding export.
 - [x] Gate the full capture-to-evidence loop, independent archive verification, storage failures, keyboard focus, and automated accessibility across the supported browser-engine matrix.
 - [x] Verify desktop, responsive, and primary interaction states.
 - [x] Resolve every P0, P1, and P2 visual QA finding.

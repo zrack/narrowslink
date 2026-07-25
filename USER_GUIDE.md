@@ -110,7 +110,7 @@ The main workspace has five working areas:
 | Area | What it does |
 | --- | --- |
 | Sessions rail | Opens local replays, starts live capture, saves or reopens sessions, and shows source and integrity facts |
-| Top controls | Opens capture or replay files, controls playback and rate, adds markers, and starts bundle creation |
+| Top controls | Opens capture or replay files, controls playback and rate, adds markers, starts comparison, and creates bundles |
 | Session overview | Shows the whole recording and its available incident presets or local ranges |
 | Mission telemetry timeline | Aligns link, packet, decoder, diagnostic, marker, and decoded-signal evidence to one replay clock |
 | Incident and bundle panels | Review the selected range, provenance, statistics, annotations, and evidence contents |
@@ -324,6 +324,27 @@ Do not extract a bundle that exits `1`. Correct path, permissions, or command us
 A valid bundle can truthfully report `incomplete` or `unknown` capture or provenance evidence. Version 3 bundles are unsigned, so the verifier reports authenticity as `not-established`. Exchange the reported bundle SHA-256 or expected manifest identity through a separately trusted channel when authorship or source-channel authenticity matters.
 
 The tagged v0.1.0 package includes the CLI verifier but predates the in-application receiver. Use the current repository build until the receiver workspace is included in a later tagged release.
+
+## Compare two bounded inputs
+
+The current repository build can compare an exact incident from the active replay or the fixed range from a verified receiver bundle with one candidate session or bundle.
+
+1. In the replay workspace, select the baseline incident and choose **Compare**. In the receiver workspace, choose **Compare** to use the bundle's exact included range.
+2. Under **Candidate**, choose a `.nlsession`, `.json`, or `.nlb`. NarrowsLink validates a session through the normal decoder pipeline and verifies a bundle through the production receiver before continuing.
+3. If the candidate is a session, choose its **Candidate incident**.
+4. Choose an alignment:
+   - **Align range starts** treats each selected range start as relative zero.
+   - **Shared event anchors** requires a short event label and exact microsecond offsets inside both half-open ranges.
+5. Select **Open comparison**. NarrowsLink computes only the intersection after alignment and reports every unmatched leading or trailing interval.
+6. Review **Comparison eligibility** before interpreting a delta. Packet, diagnostic, and decoded-field comparisons require exact decoder, schema, pack, and runtime identity plus selected raw support in both inputs. RSSI requires one matching observation basis; decoded-packet RSSI also requires the same decoder identity. Capture evidence retains its own basis and may remain review-required or unavailable.
+7. Select a metric row to inspect its reason, baseline and candidate supporting counts, up to the first 64 evidence IDs, and limitations. Higher packet traffic and arbitrary decoded values are directional observations, not automatic improvements.
+8. Enter an **Operator conclusion**, then select **Export finding** to download the `.nlcompare.json`.
+
+The finding includes both immutable input identities, source durations, exact ranges, evidence availability and aligned counts, decoder identities, alignment, overlap, unmatched tails, comparability decisions, metrics, bounded evidence-ID samples, assessment, limitations, and conclusion. Its canonical SHA-256 detects alteration to the finding itself. It does not authenticate the author, establish that clocks were synchronized, prove causality, or contain either source file. Keep the exact cited `.nlsession` or `.nlb` files with the finding so another engineer can reproduce the result.
+
+Invalid or incompatible candidate input leaves the current replay, receiver, and any open comparison unchanged. **Return** goes back to the source workspace; **New comparison** keeps the same baseline and reopens setup.
+
+The tagged v0.1.0 package predates comparative replay. Use the current repository build until the feature is included in a later tagged release.
 
 ## Use the local session library
 

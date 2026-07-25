@@ -4,6 +4,7 @@ import {
   useState,
 } from "react";
 import {
+  ArrowsLeftRight,
   Check,
   Circle,
   Database,
@@ -42,6 +43,7 @@ export interface ReceiverWorkspaceProps {
   onOpenBundle: () => void;
   onOpenReplay: () => void;
   onLoadBundledReplay: () => void;
+  onCompare: (document: ReceiverDocument) => void;
 }
 
 const EVIDENCE_GROUPS: Array<{
@@ -207,7 +209,8 @@ function ReceiverTopBar({
   document,
   onOpenBundle,
   onOpenReplay,
-}: Pick<ReceiverWorkspaceProps, "document" | "onOpenBundle" | "onOpenReplay">) {
+  onCompare,
+}: Pick<ReceiverWorkspaceProps, "document" | "onOpenBundle" | "onOpenReplay" | "onCompare">) {
   const zone = timeZoneAbbreviation(
     document.sourceSession.startedAt,
     document.sourceSession.displayTimeZone,
@@ -232,6 +235,9 @@ function ReceiverTopBar({
         {formatDurationUs(document.incident.endUs - document.incident.startUs, true)}
       </div>
       <div className="header-actions">
+        <button className="secondary-action" type="button" onClick={() => onCompare(document)}>
+          <ArrowsLeftRight size={16} /> Compare
+        </button>
         <button className="secondary-action" type="button" onClick={onOpenReplay}>
           <UploadSimple size={15} /> Open replay
         </button>
@@ -673,6 +679,7 @@ export function ReceiverWorkspace(props: ReceiverWorkspaceProps) {
         document={document}
         onOpenBundle={props.onOpenBundle}
         onOpenReplay={props.onOpenReplay}
+        onCompare={props.onCompare}
       />
       <VerificationStrip document={document} />
       <ReceiverTimeline document={document} playheadUs={playheadUs} onSeek={setPlayheadUs} />

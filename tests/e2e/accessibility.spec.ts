@@ -1,7 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
+import { resolve } from "node:path";
 
 const wcagTags = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+const DEMO_SESSION_PATH = resolve("public/fixtures/harbor-relay-session.json");
 
 async function expectNoAxeViolations(page: Page): Promise<void> {
   const results = await new AxeBuilder({ page }).withTags(wcagTags).analyze();
@@ -184,4 +186,35 @@ test("received evidence passes axe and remains bounded at narrow widths", async 
   const evidenceRows = receiver.getByRole("region", { name: "Scrollable received evidence rows" });
   await expect(evidenceRows).toBeVisible();
   await expectArrowScrolls(evidenceRows);
+});
+
+test("comparison setup and evidence remain accessible across narrow layouts", async ({ page }) => {
+  await page.getByRole("button", { name: "Compare", exact: true }).click();
+  const setup = page.getByRole("dialog", { name: "Define two bounded inputs" });
+  await expect(setup.getByRole("heading", { name: "Define two bounded inputs" })).toBeFocused();
+  await expectNoAxeViolations(page);
+  await setup.locator("input[type='file']").setInputFiles(DEMO_SESSION_PATH);
+  await expect(setup).toContainText("Candidate incident");
+  await expectNoAxeViolations(page);
+  await setup.getByRole("button", { name: "Open comparison" }).click();
+
+  const comparison = page.getByRole("main", { name: "Comparative telemetry evidence workspace" });
+  await expect(comparison).toBeVisible();
+  await expectNoAxeViolations(page);
+  for (const viewport of [
+    { width: 960, height: 900 },
+    { width: 640, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expectPageFitsViewport(page);
+    await expect(comparison.getByRole("region", { name: "Comparison eligibility" })).toBeVisible();
+    await expect(comparison.getByRole("region", { name: "Aligned comparison timeline" })).toBeVisible();
+    await expect(comparison.getByRole("complementary", { name: "Comparison finding inspector" })).toBeVisible();
+    await expect(comparison.getByRole("button", { name: "New comparison", exact: true }).last()).toBeVisible();
+  }
+
+  const metrics = comparison.getByRole("region", { name: "Scrollable comparison measures" });
+  await expect(metrics).toHaveAttribute("aria-describedby", "comparison-table-scroll-instructions");
+  await expectArrowScrolls(metrics);
 });
