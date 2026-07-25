@@ -119,7 +119,7 @@ function nmeaVersion2Session(): SessionDocumentV2 {
 
 function oversizedSession(): SessionDocument {
   const dataHex = "00".repeat(65_500);
-  const records = Array.from({ length: 257 }, (_, index) => ({
+  const records = Array.from({ length: 513 }, (_, index) => ({
     id: `record-${index}`,
     index,
     sourceId: "alpha-udp",
@@ -161,10 +161,36 @@ async function corruptSerializedContent(
     const store = transaction.objectStore(SESSION_LIBRARY_STORE_NAME);
     const value = await waitForRequest(store.get(identity)) as Record<string, unknown> | undefined;
     if (!value) throw new Error("Expected stored session record");
+    const corrupt = value.recordVersion === 3
+      ? { ...value, canonicalBytes: new TextEncoder().encode("{").buffer }
+      : value.recordVersion === 2
+        ? { ...value, canonicalBlob: new Blob(["{"]) }
+        : { ...value, serialized: "{" };
     await Promise.all([
-      waitForRequest(store.put({ ...value, serialized: "{" })),
+      waitForRequest(store.put(corrupt)),
       completed,
     ]);
+  } finally {
+    database.close();
+  }
+}
+
+async function storedRecord(
+  factory: IDBFactory,
+  databaseName: string,
+  identity: string,
+): Promise<Record<string, unknown>> {
+  const database = await waitForRequest(factory.open(databaseName, SESSION_LIBRARY_DB_VERSION));
+  try {
+    const transaction = database.transaction(SESSION_LIBRARY_STORE_NAME, "readonly");
+    const [value] = await Promise.all([
+      waitForRequest(transaction.objectStore(SESSION_LIBRARY_STORE_NAME).get(identity)),
+      waitForTransaction(transaction),
+    ]);
+    if (typeof value !== "object" || value === null) {
+      throw new Error("Expected stored session record");
+    }
+    return value as Record<string, unknown>;
   } finally {
     database.close();
   }
@@ -202,6 +228,10 @@ describe("durable local session library", () => {
     });
     expect(saved.byteLength).toBeGreaterThan(0);
     expect(await library.list()).toEqual([saved]);
+    const persisted = await storedRecord(factory, databaseName, saved.identity);
+    expect(persisted.recordVersion).toBe(3);
+    expect(persisted.canonicalBytes).toBeInstanceOf(ArrayBuffer);
+    expect((persisted.canonicalBytes as ArrayBuffer).byteLength).toBe(saved.byteLength);
 
     const loaded = await library.load(saved.identity);
     expect(loaded.document).toEqual(document);
@@ -232,6 +262,43 @@ describe("durable local session library", () => {
     expect(loaded.document.formatVersion).toBe(2);
     expect(loaded.transportEvents).toEqual([]);
     expect(loaded.captureIntegrity).toEqual(document.captureIntegrity);
+  });
+
+  it("reopens a version 2 Blob-backed library record without rewriting it", async () => {
+    const factory = new IDBFactory();
+    const databaseName = "session-library-blob-record";
+    const library = createSessionLibrary({ indexedDB: factory, databaseName });
+    const saved = await library.save(session());
+    const current = await storedRecord(factory, databaseName, saved.identity);
+    const canonicalBytes = current.canonicalBytes;
+    if (!(canonicalBytes instanceof ArrayBuffer)) {
+      throw new Error("Expected version 3 canonical bytes");
+    }
+
+    const database = await waitForRequest(factory.open(databaseName, SESSION_LIBRARY_DB_VERSION));
+    try {
+      const transaction = database.transaction(SESSION_LIBRARY_STORE_NAME, "readwrite");
+      const completed = waitForTransaction(transaction);
+      const {
+        canonicalBytes: _canonicalBytes,
+        recordVersion: _recordVersion,
+        ...metadata
+      } = current;
+      await Promise.all([
+        waitForRequest(transaction.objectStore(SESSION_LIBRARY_STORE_NAME).put({
+          ...metadata,
+          recordVersion: 2,
+          canonicalBlob: new Blob([canonicalBytes], { type: "application/json" }),
+        })),
+        completed,
+      ]);
+    } finally {
+      database.close();
+    }
+
+    const loaded = await library.load(saved.identity);
+    expect(loaded.document).toEqual(session());
+    expect((await storedRecord(factory, databaseName, saved.identity)).recordVersion).toBe(2);
   });
 
   it("persists and reopens the exact embedded decoder pack", async () => {
@@ -285,7 +352,7 @@ describe("durable local session library", () => {
     await expect(library.save(oversizedSession())).rejects.toMatchObject({
       name: "SessionLibraryError",
       code: "too-large",
-      message: "The session exceeds the 32 MiB local-library safety limit and was not saved.",
+      message: "The session exceeds the 64 MiB local-library safety limit and was not saved.",
     });
     expect(openCalls).toBe(0);
   });

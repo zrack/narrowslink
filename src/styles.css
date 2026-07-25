@@ -3008,6 +3008,52 @@ select:focus-visible {
   margin-top: 20px;
 }
 
+.processing-meter {
+  display: grid !important;
+  width: min(420px, calc(100vw - 64px));
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 10px !important;
+  align-items: center;
+  margin-top: 18px !important;
+}
+
+.processing-meter progress {
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface-2);
+  appearance: none;
+}
+
+.processing-meter progress::-webkit-progress-bar {
+  background: var(--surface-2);
+}
+
+.processing-meter progress::-webkit-progress-value {
+  background: var(--green);
+}
+
+.processing-meter progress::-moz-progress-bar {
+  background: var(--green);
+}
+
+.processing-meter > span {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  text-align: right;
+}
+
+.processing-meter-dialog {
+  width: 100%;
+}
+
+.replay-processing-dialog {
+  width: min(560px, calc(100vw - 28px));
+}
+
 .spin {
   animation: spin 900ms linear infinite;
 }
@@ -4017,6 +4063,27 @@ select:focus-visible {
 .comparison-input-error > div {
   display: grid;
   gap: 3px;
+}
+
+.comparison-load-progress {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.comparison-load-progress > div {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.comparison-load-progress .processing-meter {
+  width: 100%;
+  margin-top: 0 !important;
+}
+
+.comparison-load-progress .secondary-action {
+  min-height: 30px;
 }
 
 .comparison-input-error span {

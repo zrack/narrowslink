@@ -6,6 +6,7 @@ import {
   type DecoderDescriptor,
   type DecoderPackDocument,
 } from "./decoder-pack";
+import { MAX_SESSION_RECORDS } from "./limits";
 
 export type { DecoderDescriptor, DecoderPackDocument } from "./decoder-pack";
 
@@ -396,6 +397,9 @@ export interface Marker {
 
 export interface ParsedSession {
   document: SessionDocument;
+  /** Canonical identity is attached by the browser processing boundary. */
+  canonicalIdentity?: string;
+  canonicalByteLength?: number;
   decoderPack: DecoderPackDocument;
   transportEvents: readonly TransportEvent[];
   captureIntegrity: CaptureIntegrityReceipt;
@@ -404,7 +408,7 @@ export interface ParsedSession {
   buckets: MetricBucket[];
   diagnostics: DiagnosticEvent[];
   incidents: IncidentProjection[];
-  framesById: Map<string, DecodedFrame>;
+  framesById: ReadonlyMap<string, DecodedFrame>;
 }
 
 function isWellFormedUnicode(value: string): boolean {
@@ -739,14 +743,14 @@ const sessionDocumentBaseShape = {
   durationUs: z.number().int().positive().max(MAX_SESSION_DURATION_US).safe(),
   source: sourceDescriptorSchema,
   decoder: decoderDescriptorSchema,
-  records: z.array(sourceRecordSchema).min(1).max(100_000),
+  records: z.array(sourceRecordSchema).min(1).max(MAX_SESSION_RECORDS),
   incidents: z.array(incidentPresetSchema).max(100),
 };
 
 export const sessionDocumentV1Schema = z.object({
   ...sessionDocumentBaseShape,
   formatVersion: z.literal(1),
-  records: z.array(sourceRecordV1Schema).min(1).max(100_000),
+  records: z.array(sourceRecordV1Schema).min(1).max(MAX_SESSION_RECORDS),
 }).strict();
 
 export const sessionDocumentV2Schema = z.object({

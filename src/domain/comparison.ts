@@ -236,7 +236,7 @@ function assertRange(range: ComparisonRange, durationUs: number): void {
 }
 
 function sessionIdentity(session: ParsedSession): string {
-  return `sha256:${sha256Hex(encodeSessionDocument(session.document))}`;
+  return session.canonicalIdentity ?? `sha256:${sha256Hex(encodeSessionDocument(session.document))}`;
 }
 
 function descriptorIdentity(
@@ -298,6 +298,9 @@ export function createSessionComparisonSource(
     endUs: incident.endUs,
   };
   assertRange(range, session.document.durationUs);
+  const records = rowsInRange(session.document.records, range.startUs, range.endUs);
+  const frames = rowsInRange(session.frames, range.startUs, range.endUs);
+  const diagnostics = diagnosticsInRange(session.diagnostics, range.startUs, range.endUs);
   return deepFreeze({
     kind: "session",
     identity: sessionIdentity(session),
@@ -314,9 +317,9 @@ export function createSessionComparisonSource(
     recordsAvailable: true,
     decodedFramesAvailable: true,
     diagnosticsAvailable: true,
-    records: session.document.records,
-    frames: session.frames.map(frameFromSession),
-    diagnostics: session.diagnostics.map(diagnosticFromSource),
+    records,
+    frames: frames.map(frameFromSession),
+    diagnostics: diagnostics.map(diagnosticFromSource),
     limitations: session.captureIntegrity.status === "verified"
       ? []
       : [`Capture evidence is ${session.captureIntegrity.status} (${session.captureIntegrity.assessmentBasis}).`],
@@ -442,11 +445,11 @@ function rowsInRange<T extends { offsetUs: number }>(
   return rows.filter((row) => row.offsetUs >= startUs && row.offsetUs < endUs);
 }
 
-function diagnosticsInRange(
-  diagnostics: readonly ComparisonDiagnostic[],
+function diagnosticsInRange<T extends { startUs: number; endUs?: number }>(
+  diagnostics: readonly T[],
   startUs: number,
   endUs: number,
-): ComparisonDiagnostic[] {
+): T[] {
   return diagnostics.filter((diagnostic) => diagnostic.endUs == null
     ? diagnostic.startUs >= startUs && diagnostic.startUs < endUs
     : diagnostic.startUs < endUs && diagnostic.endUs > startUs);

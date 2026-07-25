@@ -20,6 +20,7 @@
     "capture:demo": "node scripts/send-demo-udp.mjs",
     "capture:demo:nmea": "node scripts/send-demo-nmea.mjs",
     "fixture:generate": "node scripts/generate-demo-session.mjs",
+    "fixture:large": "node scripts/large-session-corpus.mjs",
     "verify:bundle": "npm run build:cli --silent && node dist-cli/narrowslink.mjs verify",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",

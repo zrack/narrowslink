@@ -41,20 +41,33 @@ import {
 import { Bar, BarChart, Line, LineChart, ResponsiveContainer } from "recharts";
 
 import {
-  buildEvidenceBundle,
   downloadEvidenceBundle,
   suggestEvidenceBundleFilename,
   type EvidenceBundleInclusions,
 } from "./domain/bundle";
+import { serializeSessionDocument } from "./data/session-file";
 import { CaptureDialog } from "./capture/CaptureDialog";
 import {
   MANUAL_OPERATOR_RUNTIME,
   type OperatorRuntime,
 } from "./runtime/operator-runtime";
 import { SUPPORTED_DECODER } from "./domain/decoder";
-import { parseSession, projectIncident, rowsInRange, validateIncidentPreset } from "./domain/session";
+import { projectIncident, rowsInRange, validateIncidentPreset } from "./domain/session";
 import { MAX_INCIDENT_TITLE_LENGTH, type AuthoredIncidentRange, type DiagnosticEvent, type IncidentProjection, type Marker, type ParsedSession, type SessionDocument, type TransportEvent, type TransportProvenance, type UdpRemoteEndpoint } from "./domain/types";
 import { loadBundledSession, loadSessionFile, SessionLoadError } from "./data/load-session";
+import {
+  processingProgress,
+  type SessionProcessingProgress,
+} from "./processing/contracts";
+import {
+  processSessionBlob,
+  SessionProcessingCancelledError,
+} from "./processing/process-session";
+import {
+  buildEvidenceBundleInWorker,
+  EvidenceBundleProcessingCancelledError,
+  type EvidenceBundleProcessingProgress,
+} from "./processing/evidence-bundle-processing";
 import { downsampleBuckets, finiteOrDash, incidentViewRange, percentInRange, valueAtOffset } from "./lib/telemetry";
 import { formatBytes, formatClockOffset, formatDurationUs, formatOffsetUsInput, formatSessionDate, parseOffsetUsInput, timeZoneAbbreviation } from "./lib/time";
 import { useReplay } from "./replay/useReplay";
@@ -87,7 +100,7 @@ import {
 type ActiveTab = "narrative" | "details" | "provenance" | "stats";
 const INCIDENT_TABS: ActiveTab[] = ["narrative", "details", "provenance", "stats"];
 type LoadState =
-  | { status: "loading"; message: string }
+  | { status: "loading"; message: string; progress?: SessionProcessingProgress }
   | { status: "ready"; session: ParsedSession }
   | { status: "receiver"; document: ReceiverDocument; fileName: string }
   | { status: "error"; error: SessionLoadError };
@@ -96,6 +109,33 @@ type EvidenceOpenState =
   | { status: "idle" }
   | { status: "verifying"; fileName: string }
   | { status: "error"; fileName: string; error: EvidenceBundleLoadError };
+
+type ReplayProcessingSource =
+  | {
+      kind: "file";
+      file: File;
+      name: string;
+      size: number;
+    }
+  | {
+      kind: "library";
+      identity: string;
+      name: string;
+      size: number;
+    };
+
+type ReplayProcessingState =
+  | { status: "idle" }
+  | {
+      status: "processing";
+      source: ReplayProcessingSource;
+      progress: SessionProcessingProgress;
+    }
+  | {
+      status: "error";
+      source: ReplayProcessingSource;
+      error: SessionLoadError;
+    };
 
 type SessionLibraryStatus = "loading" | "ready" | "unavailable" | "error";
 type SessionLibraryAction =
@@ -173,6 +213,9 @@ function mixFingerprint(value: string, hashes: [number, number, number, number])
 }
 
 export function sessionContentFingerprint(session: ParsedSession): string {
+  if (session.document.records.length >= 50_000 && session.canonicalIdentity) {
+    return session.canonicalIdentity.replace(/^sha256:/, "").slice(0, 32);
+  }
   const hashes: [number, number, number, number] = [2_166_136_261, 5_381, 2_654_435_769, 2_246_822_507];
   mixFingerprint(JSON.stringify(session.document), hashes);
   return hashes.map((hash) => hash.toString(16).padStart(8, "0")).join("");
@@ -294,7 +337,7 @@ function sessionLibraryErrorMessage(error: unknown): string {
     case "corrupt":
       return "The saved replay failed its content or validation checks and was not opened.";
     case "too-large":
-      return "This session exceeds the 32 MiB local-library limit. The active replay remains usable.";
+      return "This session exceeds the 64 MiB local-library limit. The active replay remains usable.";
     case "open-failed":
       return "The local session library could not be opened. Close other NarrowsLink windows and retry.";
     case "transaction-failed":
@@ -1310,33 +1353,66 @@ interface BundleDialogProps {
 
 function BundleDialog({ session, incident, items, markers, note, onClose }: BundleDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
-  const [status, setStatus] = useState<"confirm" | "building" | "success" | "error">("confirm");
+  const buildControllerRef = useRef<AbortController | null>(null);
+  const [status, setStatus] = useState<"confirm" | "building" | "canceled" | "success" | "error">("confirm");
+  const [progress, setProgress] = useState<EvidenceBundleProcessingProgress | null>(null);
   const [artifact, setArtifact] = useState<{ filename: string; bytes: number } | null>(null);
   const [error, setError] = useState("");
   const selected = items.filter((item) => item.required || item.selected);
   const clock = incidentClock(session, incident);
-  useModalFocus(dialogRef, onClose, status !== "building");
+  const cancelBuild = () => {
+    buildControllerRef.current?.abort();
+    buildControllerRef.current = null;
+    setStatus("canceled");
+  };
+  const requestClose = () => {
+    if (status === "building") cancelBuild();
+    else onClose();
+  };
+  useModalFocus(dialogRef, requestClose);
+  useEffect(() => () => buildControllerRef.current?.abort(), []);
   useEffect(() => {
     if (status === "confirm") return;
     const frame = requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>("[data-status-focus]")?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(frame);
   }, [status]);
   const createBundle = async () => {
+    buildControllerRef.current?.abort();
+    const controller = new AbortController();
+    buildControllerRef.current = controller;
     setStatus("building");
+    setProgress({
+      phase: "loading-session",
+      percent: 0,
+      message: "Preparing immutable session evidence",
+    });
     try {
       const enabled = new Set(selected.map((item) => item.id));
       const include: Partial<EvidenceBundleInclusions> = { rawRecords: enabled.has("rawRecords"), decodedPackets: enabled.has("decodedPackets"), schema: enabled.has("schema"), diagnostics: enabled.has("diagnostics"), markers: enabled.has("notes"), notes: enabled.has("notes") };
-      const bytes = await buildEvidenceBundle({ session, range: incident, markers, notes: note.trim() ? [{ id: "operator-note", body: note.trim(), title: "Operator note" }] : [], include });
+      const bytes = await buildEvidenceBundleInWorker(
+        { session, range: incident, markers, notes: note.trim() ? [{ id: "operator-note", body: note.trim(), title: "Operator note" }] : [], include },
+        {
+          signal: controller.signal,
+          onProgress: setProgress,
+        },
+      );
+      if (controller.signal.aborted) throw new EvidenceBundleProcessingCancelledError();
       const filename = suggestEvidenceBundleFilename(session, incident);
       downloadEvidenceBundle(bytes, filename);
       setArtifact({ filename, bytes: bytes.byteLength });
       setStatus("success");
     } catch (cause) {
+      if (cause instanceof EvidenceBundleProcessingCancelledError) {
+        setStatus("canceled");
+        return;
+      }
       setError(cause instanceof Error ? cause.message : "The evidence archive could not be built.");
       setStatus("error");
+    } finally {
+      if (buildControllerRef.current === controller) buildControllerRef.current = null;
     }
   };
-  return createPortal(<div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && status !== "building" && onClose()}><section ref={dialogRef} className="bundle-dialog" role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="bundle-dialog-title" aria-live="polite"><button className="dialog-close" type="button" aria-label="Close" onClick={onClose} disabled={status === "building"}><X size={17} /></button>{status === "confirm" && <><div className="dialog-icon"><Package size={24} /></div><span className="dialog-kicker">Incident bundle</span><h2 id="bundle-dialog-title">Package this incident for handoff?</h2><p>The archive is built and downloaded locally. The original replay is never modified or uploaded.</p><dl className="dialog-summary"><div><dt>Range</dt><dd>{clock.start} – {clock.end}</dd></div><div><dt>Contents</dt><dd>{selected.length} selected groups</dd></div><div><dt>Checksums</dt><dd>SHA-256 manifest</dd></div></dl><div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Cancel</button><button className="primary-action" data-dialog-focus type="button" onClick={() => void createBundle()}><DownloadSimple size={17} /> Build and download</button></div></>}{status === "building" && <div className="dialog-success"><div className="dialog-icon"><SpinnerGap className="spin" size={24} /></div><span className="dialog-kicker">Building locally</span><h2 id="bundle-dialog-title" data-status-focus tabIndex={-1}>Hashing and compressing evidence</h2><p>Records are being filtered to the exact half-open incident range and packaged with a checksum manifest.</p></div>}{status === "success" && artifact && <div className="dialog-success"><div className="success-mark"><Check size={28} weight="bold" /></div><span className="dialog-kicker">Evidence bundle downloaded</span><h2 id="bundle-dialog-title">Handoff archive is ready</h2><p><strong>{artifact.filename}</strong> contains {formatBytes(artifact.bytes)} of locally generated, verifiable evidence.</p><button className="primary-action" data-status-focus type="button" onClick={onClose}>Return to session</button></div>}{status === "error" && <div className="dialog-success"><div className="dialog-icon error-icon"><WarningCircle size={26} /></div><span className="dialog-kicker">Bundle failed</span><h2 id="bundle-dialog-title" data-status-focus tabIndex={-1}>The archive was not created</h2><p>{error}</p><div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Close</button><button className="primary-action" type="button" onClick={() => void createBundle()}>Try again</button></div></div>}</section></div>, document.body);
+  return createPortal(<div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && status !== "building" && onClose()}><section ref={dialogRef} className="bundle-dialog" role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="bundle-dialog-title" aria-live="polite" aria-busy={status === "building"}><button className="dialog-close" type="button" aria-label={status === "building" ? "Cancel bundle construction" : "Close"} onClick={requestClose}><X size={17} /></button>{status === "confirm" && <><div className="dialog-icon"><Package size={24} /></div><span className="dialog-kicker">Incident bundle</span><h2 id="bundle-dialog-title">Package this incident for handoff?</h2><p>The archive is built and downloaded locally. The original replay is never modified or uploaded.</p><dl className="dialog-summary"><div><dt>Range</dt><dd>{clock.start} – {clock.end}</dd></div><div><dt>Contents</dt><dd>{selected.length} selected groups</dd></div><div><dt>Checksums</dt><dd>SHA-256 manifest</dd></div></dl><div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Cancel</button><button className="primary-action" data-dialog-focus type="button" onClick={() => void createBundle()}><DownloadSimple size={17} /> Build and download</button></div></>}{status === "building" && <div className="dialog-success"><div className="dialog-icon"><SpinnerGap className="spin" size={24} /></div><span className="dialog-kicker">Building locally</span><h2 id="bundle-dialog-title" data-status-focus tabIndex={-1}>{progress?.message ?? "Preparing evidence"}</h2><p>Only a complete, verified archive can reach the download boundary.</p>{progress && <div className="processing-meter processing-meter-dialog"><progress max={100} value={progress.percent} aria-label="Evidence bundle construction progress" /><span>{Math.floor(progress.percent)}%</span></div>}<div className="dialog-actions"><button className="secondary-action" type="button" onClick={cancelBuild}>Cancel construction</button></div></div>}{status === "canceled" && <div className="dialog-success"><div className="dialog-icon"><X size={24} /></div><span className="dialog-kicker">Bundle canceled</span><h2 id="bundle-dialog-title" data-status-focus tabIndex={-1}>No archive was created</h2><p>The source replay and operator workspace were not modified.</p><div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Return to session</button><button className="primary-action" type="button" onClick={() => void createBundle()}>Build again</button></div></div>}{status === "success" && artifact && <div className="dialog-success"><div className="success-mark"><Check size={28} weight="bold" /></div><span className="dialog-kicker">Evidence bundle downloaded</span><h2 id="bundle-dialog-title">Handoff archive is ready</h2><p><strong>{artifact.filename}</strong> contains {formatBytes(artifact.bytes)} of locally generated, verifiable evidence.</p><button className="primary-action" data-status-focus type="button" onClick={onClose}>Return to session</button></div>}{status === "error" && <div className="dialog-success"><div className="dialog-icon error-icon"><WarningCircle size={26} /></div><span className="dialog-kicker">Bundle failed</span><h2 id="bundle-dialog-title" data-status-focus tabIndex={-1}>The archive was not created</h2><p>{error}</p><div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Close</button><button className="primary-action" type="button" onClick={() => void createBundle()}>Try again</button></div></div>}</section></div>, document.body);
 }
 
 function Toast({ message }: { message: string }) {
@@ -1494,12 +1570,73 @@ function Workspace({ session, onOpenReplay, onOpenBundle, onOpenCapture, onCompa
   );
 }
 
-function LoadingScreen({ message }: { message: string }) {
-  return <main className="load-screen" role="status" aria-live="polite" aria-busy="true"><img src="/narrowslink-mark.svg" alt="" /><SpinnerGap className="spin" size={24} /><h1 data-load-focus tabIndex={-1}>NarrowsLink</h1><p>{message}</p></main>;
+function LoadingScreen({ message, progress }: { message: string; progress?: SessionProcessingProgress }) {
+  return <main className="load-screen" role="status" aria-live="polite" aria-busy="true"><img src="/narrowslink-mark.svg" alt="" /><SpinnerGap className="spin" size={24} /><h1 data-load-focus tabIndex={-1}>NarrowsLink</h1><p>{progress?.message ?? message}</p>{progress && <div className="processing-meter"><progress max={100} value={progress.percent} aria-label="Replay processing progress" /><span>{Math.floor(progress.percent)}%</span></div>}</main>;
 }
 
 function ErrorScreen({ error, onRetry, onOpenReplay, onOpenBundle }: { error: SessionLoadError; onRetry: () => void; onOpenReplay: () => void; onOpenBundle: () => void }) {
   return <main className="load-screen error-screen" role="alert"><img src="/narrowslink-mark.svg" alt="" /><WarningCircle size={28} /><h1 data-load-focus tabIndex={-1}>Replay could not be opened</h1><p>{error.message}</p>{error.details.length > 0 && <ul>{error.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}<div><button className="secondary-action" type="button" onClick={onOpenReplay}>Choose another replay</button><button className="secondary-action" type="button" onClick={onOpenBundle}>Open evidence bundle</button><button className="primary-action" type="button" onClick={onRetry}>Load bundled replay</button></div></main>;
+}
+
+function ReplayProcessingDialog({
+  state,
+  onCancel,
+  onRetry,
+  onClose,
+}: {
+  state: Exclude<ReplayProcessingState, { status: "idle" }>;
+  onCancel: () => void;
+  onRetry: (source: ReplayProcessingSource) => void;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalFocus(dialogRef, state.status === "processing" ? onCancel : onClose);
+  const processing = state.status === "processing";
+  return createPortal(
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && (processing ? onCancel() : onClose())}>
+      <section
+        ref={dialogRef}
+        className="bundle-dialog replay-processing-dialog"
+        role="dialog"
+        tabIndex={-1}
+        aria-modal="true"
+        aria-labelledby="replay-processing-title"
+        aria-describedby="replay-processing-description"
+        aria-busy={processing}
+      >
+        <button className="dialog-close" type="button" aria-label={processing ? "Cancel replay processing" : "Close replay processing error"} onClick={processing ? onCancel : onClose}><X size={17} /></button>
+        <div className={`dialog-icon${processing ? "" : " error-icon"}`}>
+          {processing ? <SpinnerGap className="spin" size={24} /> : <WarningCircle size={26} />}
+        </div>
+        <span className="dialog-kicker">{processing ? "Worker-isolated replay" : "Replay unchanged"}</span>
+        <h2 id="replay-processing-title" data-dialog-focus tabIndex={-1}>
+          {processing ? `Processing ${state.source.name}` : `${state.source.name} was not opened`}
+        </h2>
+        {processing ? (
+          <>
+            <p id="replay-processing-description">{state.progress.message}. The currently open workspace remains available if this operation is canceled.</p>
+            <div className="processing-meter processing-meter-dialog">
+              <progress max={100} value={state.progress.percent} aria-label="Replay processing progress" />
+              <span>{Math.floor(state.progress.percent)}%</span>
+            </div>
+            <dl className="dialog-summary">
+              <div><dt>Phase</dt><dd>{state.progress.phase}</dd></div>
+              <div><dt>Source</dt><dd>{formatBytes(state.source.size)}</dd></div>
+            </dl>
+            <div className="dialog-actions"><button className="secondary-action" type="button" onClick={onCancel}>Cancel processing</button></div>
+          </>
+        ) : (
+          <>
+            <p id="replay-processing-description">{state.error.message}</p>
+            {state.error.details.length > 0 && <ul className="dialog-error-details">{state.error.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}
+            <p className="evidence-recovery-note">No partial session was opened or persisted.</p>
+            <div className="dialog-actions"><button className="secondary-action" type="button" onClick={onClose}>Return to workspace</button><button className="primary-action" type="button" onClick={() => onRetry(state.source)}>Try again</button></div>
+          </>
+        )}
+      </section>
+    </div>,
+    document.body,
+  );
 }
 
 function EvidenceOpenDialog({
@@ -1569,8 +1706,12 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
   const sessionOperationGate = useMemo(() => createOperationGate(), []);
   const [workspacePersistenceCommand, setWorkspacePersistenceCommand] = useState<WorkspacePersistenceCommand | null>(null);
   const [evidenceOpenState, setEvidenceOpenState] = useState<EvidenceOpenState>({ status: "idle" });
+  const [replayProcessingState, setReplayProcessingState] = useState<ReplayProcessingState>({ status: "idle" });
   const workspacePersistenceCommandRevisionRef = useRef(0);
   const libraryNoticeTimerRef = useRef<number | null>(null);
+  const replayProcessingControllerRef = useRef<AbortController | null>(null);
+  const libraryProcessingControllerRef = useRef<AbortController | null>(null);
+  const bundledProcessingControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const evidenceInputRef = useRef<HTMLInputElement>(null);
 
@@ -1582,6 +1723,9 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
 
   useEffect(() => () => {
     if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
+    replayProcessingControllerRef.current?.abort();
+    libraryProcessingControllerRef.current?.abort();
+    bundledProcessingControllerRef.current?.abort();
   }, []);
 
   const issueWorkspacePersistenceCommand = useCallback((session: ParsedSession, kind: WorkspacePersistenceCommand["kind"]) => {
@@ -1616,7 +1760,7 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
     setLibraryAction({ kind: "saving" });
     setLibraryError(null);
     try {
-      const entry = await sessionLibrary.save(session.document);
+      const entry = await sessionLibrary.save(session);
       let refreshResult: Parameters<typeof resolveCommittedSave>[2];
       try {
         refreshResult = { ok: true, entries: await sessionLibrary.list() };
@@ -1658,15 +1802,28 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
 
   const loadDefault = useCallback(async () => {
     const operation = sessionOperationGate.begin();
+    bundledProcessingControllerRef.current?.abort();
+    const controller = new AbortController();
+    bundledProcessingControllerRef.current = controller;
     setEvidenceOpenState({ status: "idle" });
     setComparisonModel(null);
     setComparisonBaseline(null);
     setState({ status: "loading", message: "Validating bundled telemetry…" });
     try {
-      const session = await loadBundledSession();
+      const session = await loadBundledSession({
+        signal: controller.signal,
+        onProgress(progress) {
+          if (sessionOperationGate.isCurrent(operation)) {
+            setState({ status: "loading", message: "Validating bundled telemetry…", progress });
+          }
+        },
+      });
       if (sessionOperationGate.isCurrent(operation)) setState({ status: "ready", session });
     } catch (cause) {
+      if (cause instanceof SessionProcessingCancelledError) return;
       if (sessionOperationGate.isCurrent(operation)) setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The bundled replay could not be loaded.", [cause instanceof Error ? cause.message : "Unknown error"]) });
+    } finally {
+      if (bundledProcessingControllerRef.current === controller) bundledProcessingControllerRef.current = null;
     }
   }, [sessionOperationGate]);
   useEffect(() => { void loadDefault(); }, [loadDefault]);
@@ -1677,7 +1834,7 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
       return;
     }
     let cancelled = false;
-    void sessionLibraryIdentity(state.session.document).then((identity) => {
+    void sessionLibraryIdentity(state.session).then((identity) => {
       if (!cancelled) setActiveLibraryIdentity(libraryEntries.some((entry) => entry.identity === identity) ? identity : null);
     }).catch((cause: unknown) => {
       if (cancelled) return;
@@ -1709,7 +1866,12 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
   const completeCapture = useCallback(async (document: SessionDocument) => {
     sessionOperationGate.begin();
     try {
-      const session = parseSession(document);
+      const serialized = serializeSessionDocument(document);
+      const processed = await processSessionBlob(
+        new Blob([serialized], { type: "application/json" }),
+        { sourceLabel: `${document.id}.nlsession` },
+      );
+      const session = processed.session;
       setComparisonModel(null);
       setComparisonBaseline(null);
       setState({ status: "ready", session });
@@ -1721,23 +1883,74 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
       setState({ status: "error", error: new SessionLoadError("The captured session could not be opened.", [cause instanceof Error ? cause.message : "Unknown capture error"]) });
     }
   }, [persistSession, sessionOperationGate]);
-  const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
+  const processReplayFile = useCallback(async (file: File) => {
+    libraryProcessingControllerRef.current?.abort();
+    replayProcessingControllerRef.current?.abort();
+    const controller = new AbortController();
+    replayProcessingControllerRef.current = controller;
     const operation = sessionOperationGate.begin();
-    setComparisonModel(null);
-    setComparisonBaseline(null);
-    setState({ status: "loading", message: `Decoding ${file.name}…` });
+    const source: ReplayProcessingSource = {
+      kind: "file",
+      file,
+      name: file.name,
+      size: file.size,
+    };
+    setReplayProcessingState({
+      status: "processing",
+      source,
+      progress: processingProgress("reading", 0, file.size),
+    });
     try {
-      const session = await loadSessionFile(file);
+      const session = await loadSessionFile(file, {
+        signal: controller.signal,
+        onProgress(progress) {
+          if (sessionOperationGate.isCurrent(operation)) {
+            setReplayProcessingState({ status: "processing", source, progress });
+          }
+        },
+      });
       if (!sessionOperationGate.isCurrent(operation)) return;
+      setComparisonModel(null);
+      setComparisonBaseline(null);
       setState({ status: "ready", session });
+      setReplayProcessingState({ status: "idle" });
       void persistSession(session, `${file.name} saved to the local session library`);
     }
     catch (cause) {
-      if (sessionOperationGate.isCurrent(operation)) setState({ status: "error", error: cause instanceof SessionLoadError ? cause : new SessionLoadError("The selected replay could not be loaded.") });
+      if (!sessionOperationGate.isCurrent(operation)) return;
+      if (cause instanceof SessionProcessingCancelledError) {
+        setReplayProcessingState({ status: "idle" });
+        announceLibrary("Replay processing canceled; the open workspace was not changed");
+        return;
+      }
+      setReplayProcessingState({
+        status: "error",
+        source,
+        error: cause instanceof SessionLoadError
+          ? cause
+          : new SessionLoadError("The selected replay could not be loaded.", [
+              cause instanceof Error ? cause.message : "Unknown replay processing error.",
+            ]),
+      });
+    } finally {
+      if (replayProcessingControllerRef.current === controller) replayProcessingControllerRef.current = null;
     }
+  }, [announceLibrary, persistSession, sessionOperationGate]);
+  const cancelReplayProcessing = useCallback(() => {
+    replayProcessingControllerRef.current?.abort();
+    replayProcessingControllerRef.current = null;
+    libraryProcessingControllerRef.current?.abort();
+    libraryProcessingControllerRef.current = null;
+    sessionOperationGate.begin();
+    libraryOperationGate.begin();
+    setLibraryAction({ kind: "idle" });
+    setReplayProcessingState({ status: "idle" });
+    announceLibrary("Replay processing canceled; the open workspace was not changed");
+  }, [announceLibrary, libraryOperationGate, sessionOperationGate]);
+  const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) void processReplayFile(file);
   };
 
   const handleEvidenceFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -1772,33 +1985,75 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
 
   const openSavedSession = useCallback(async (identity: string) => {
     if (state.status !== "ready") return;
+    replayProcessingControllerRef.current?.abort();
+    libraryProcessingControllerRef.current?.abort();
+    const controller = new AbortController();
+    libraryProcessingControllerRef.current = controller;
     const libraryOperation = libraryOperationGate.begin();
     const sessionOperation = sessionOperationGate.begin();
+    const entry = libraryEntries.find((candidate) => candidate.identity === identity);
+    const source: ReplayProcessingSource = {
+      kind: "library",
+      identity,
+      name: entry?.title ?? "Saved replay",
+      size: entry?.byteLength ?? 0,
+    };
     setPendingDeleteIdentity(null);
     setLibraryAction({ kind: "opening", identity });
     setLibraryError(null);
+    setReplayProcessingState({
+      status: "processing",
+      source,
+      progress: processingProgress("reading", 0, source.size),
+    });
     try {
-      const session = await sessionLibrary.load(identity);
+      const session = await sessionLibrary.load(identity, {
+        signal: controller.signal,
+        onProgress(progress) {
+          if (
+            libraryOperationGate.isCurrent(libraryOperation)
+            && sessionOperationGate.isCurrent(sessionOperation)
+          ) {
+            setReplayProcessingState({ status: "processing", source, progress });
+          }
+        },
+      });
       if (!libraryOperationGate.isCurrent(libraryOperation) || !sessionOperationGate.isCurrent(sessionOperation)) return;
       setComparisonModel(null);
       setComparisonBaseline(null);
       setActiveLibraryIdentity(identity);
       setState({ status: "ready", session });
+      setReplayProcessingState({ status: "idle" });
       announceLibrary(`${session.document.title} reopened from the local library`);
       requestAnimationFrame(() => requestAnimationFrame(() => {
         document.querySelector<HTMLElement>(".workspace-heading")?.focus({ preventScroll: true });
       }));
     } catch (cause) {
       if (!libraryOperationGate.isCurrent(libraryOperation) || !sessionOperationGate.isCurrent(sessionOperation)) return;
+      if (cause instanceof SessionProcessingCancelledError) {
+        setReplayProcessingState({ status: "idle" });
+        announceLibrary("Replay processing canceled; the open workspace was not changed");
+        return;
+      }
       setLibraryError(sessionLibraryErrorMessage(cause));
+      setReplayProcessingState({
+        status: "error",
+        source,
+        error: new SessionLoadError("The saved replay could not be opened.", [
+          sessionLibraryErrorMessage(cause),
+        ]),
+      });
       if (cause instanceof SessionLibraryError && cause.code === "not-found") {
         setLibraryEntries((current) => current.filter((entry) => entry.identity !== identity));
       }
       if (cause instanceof SessionLibraryError && cause.code === "unavailable") setLibraryStatus("unavailable");
     } finally {
+      if (libraryProcessingControllerRef.current === controller) {
+        libraryProcessingControllerRef.current = null;
+      }
       if (libraryOperationGate.isCurrent(libraryOperation)) setLibraryAction({ kind: "idle" });
     }
-  }, [announceLibrary, libraryOperationGate, sessionLibrary, sessionOperationGate, state]);
+  }, [announceLibrary, libraryEntries, libraryOperationGate, sessionLibrary, sessionOperationGate, state]);
 
   const removeSavedSession = useCallback(async (identity: string) => {
     const operation = libraryOperationGate.begin();
@@ -1898,13 +2153,14 @@ export function App({ operatorRuntime = MANUAL_OPERATOR_RUNTIME }: { operatorRun
         />
       ) : (
         <>
-          {state.status === "loading" && <LoadingScreen message={state.message} />}
+          {state.status === "loading" && <LoadingScreen message={state.message} progress={state.progress} />}
           {state.status === "error" && <ErrorScreen error={state.error} onRetry={() => void loadDefault()} onOpenReplay={openReplay} onOpenBundle={openEvidence} />}
           {state.status === "ready" && <Workspace key={sessionWorkspaceKey(state.session)} session={state.session} onOpenReplay={openReplay} onOpenBundle={openEvidence} onOpenCapture={() => setCaptureDialogOpen(true)} onCompare={startSessionComparison} library={libraryController} workspacePersistenceCommand={workspacePersistenceCommand} />}
           {state.status === "receiver" && <ReceiverWorkspace key={state.document.bundle.sha256} document={state.document} fileName={state.fileName} onOpenBundle={openEvidence} onOpenReplay={openReplay} onLoadBundledReplay={() => void loadDefault()} onCompare={startReceiverComparison} />}
         </>
       )}
       {captureDialogOpen && comparisonModel == null && <CaptureDialog operatorRuntime={operatorRuntime} displayTimeZone={state.status === "ready" ? state.session.document.displayTimeZone : undefined} onClose={() => setCaptureDialogOpen(false)} onComplete={completeCapture} />}
+      {replayProcessingState.status !== "idle" && <ReplayProcessingDialog state={replayProcessingState} onCancel={cancelReplayProcessing} onRetry={(source) => source.kind === "file" ? void processReplayFile(source.file) : void openSavedSession(source.identity)} onClose={() => setReplayProcessingState({ status: "idle" })} />}
       {evidenceOpenState.status !== "idle" && <EvidenceOpenDialog state={evidenceOpenState} onClose={() => setEvidenceOpenState({ status: "idle" })} />}
       {comparisonBaseline != null && <ComparisonSetupDialog baseline={comparisonBaseline} onClose={() => setComparisonBaseline(null)} onStart={openComparison} />}
     </>

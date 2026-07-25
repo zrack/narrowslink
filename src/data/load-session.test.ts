@@ -15,6 +15,6 @@ describe("bundled session loading", () => {
     const oversized = new Uint8Array(MAX_SESSION_FILE_BYTES + 1);
     vi.stubGlobal("fetch", vi.fn(async () => new Response(oversized)));
 
-    await expect(loadBundledSession()).rejects.toThrow("exceeds the 32 MB safety limit");
+    await expect(loadBundledSession()).rejects.toThrow("exceeds the 64 MiB safety limit");
   });
 });

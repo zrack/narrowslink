@@ -96,6 +96,26 @@ export class SessionValidationError extends Error {
   }
 }
 
+export type SessionDerivationPhase = "validating" | "decoding" | "aggregating";
+
+export interface SessionDerivationObserver {
+  report(phase: SessionDerivationPhase, completed: number, total: number): void;
+}
+
+function reportDerivationProgress(
+  observer: SessionDerivationObserver | undefined,
+  phase: SessionDerivationPhase,
+  completed: number,
+  total: number,
+): void {
+  if (
+    observer
+    && (completed === 0 || completed === total || completed % 2_048 === 0)
+  ) {
+    observer.report(phase, completed, total);
+  }
+}
+
 function assertIncidentWithinDuration(incident: IncidentPreset, durationUs: OffsetUs): void {
   if (incident.endUs > durationUs) {
     throw new SessionValidationError("An incident falls outside the declared session duration.", [
@@ -655,7 +675,11 @@ function assertV2CaptureEvidence(document: SessionDocumentV2): void {
   assertTransportProvenance(document);
 }
 
-export function validateSessionDocument(input: unknown): SessionDocument {
+export function validateSessionDocument(
+  input: unknown,
+  observer?: SessionDerivationObserver,
+): SessionDocument {
+  reportDerivationProgress(observer, "validating", 0, 1);
   const result = sessionDocumentSchema.safeParse(input);
   if (!result.success) {
     throw new SessionValidationError(
@@ -683,6 +707,7 @@ export function validateSessionDocument(input: unknown): SessionDocument {
   }
   const seenIds = new Set<string>();
   let previousOffset = -1;
+  const recordTotal = document.records.length;
 
   for (const [position, record] of document.records.entries()) {
     if (seenIds.has(record.id)) {
@@ -727,6 +752,7 @@ export function validateSessionDocument(input: unknown): SessionDocument {
       ]);
     }
     previousOffset = record.offsetUs;
+    reportDerivationProgress(observer, "validating", position + 1, recordTotal);
   }
 
   const incidentIds = new Set<string>();
@@ -746,6 +772,7 @@ export function validateSessionDocument(input: unknown): SessionDocument {
     throw new SessionValidationError("The replay declares an invalid IANA time zone.", [document.displayTimeZone]);
   }
 
+  reportDerivationProgress(observer, "validating", recordTotal, recordTotal);
   return document;
 }
 
@@ -1210,16 +1237,26 @@ function normalizedCaptureEvidence(document: SessionDocument): {
   });
 }
 
-export function parseSession(input: unknown): ParsedSession {
-  const document = deepFreeze(validateSessionDocument(input));
+export function parseSession(
+  input: unknown,
+  observer?: SessionDerivationObserver,
+): ParsedSession {
+  const document = deepFreeze(validateSessionDocument(input, observer));
   const decoderPack = deepFreeze(resolveDecoderPack(
     document.decoder,
     document.formatVersion === 2 ? document.decoderPack : undefined,
   ));
   const captureEvidence = normalizedCaptureEvidence(document);
   const transportProvenance = document.formatVersion === 2 ? document.transportProvenance : undefined;
-  const frames = document.records.map((record, ordinal) => decodeRecord(record, ordinal, decoderPack));
+  const frames: DecodedFrame[] = [];
+  reportDerivationProgress(observer, "decoding", 0, document.records.length);
+  for (const [ordinal, record] of document.records.entries()) {
+    frames.push(decodeRecord(record, ordinal, decoderPack));
+    reportDerivationProgress(observer, "decoding", ordinal + 1, document.records.length);
+  }
+  reportDerivationProgress(observer, "aggregating", 0, 4);
   const buckets = createMetricBuckets(document, frames);
+  reportDerivationProgress(observer, "aggregating", 1, 4);
   const provenanceDiagnostic = transportProvenance == null
     ? null
     : transportProvenanceDiagnostic(transportProvenance, document.durationUs);
@@ -1228,10 +1265,14 @@ export function parseSession(input: unknown): ParsedSession {
     ...captureEvidence.transportEvents.map((event) => transportEventDiagnostic(event, document.durationUs)),
     ...(provenanceDiagnostic == null ? [] : [provenanceDiagnostic]),
   ].sort((left, right) => left.startUs - right.startUs || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  reportDerivationProgress(observer, "aggregating", 2, 4);
   const incidentPresets: IncidentPreset[] = document.incidents.length > 0
     ? document.incidents
     : [{ id: "full-session", title: "Full session review", startUs: 0, endUs: document.durationUs, severity: "info" }];
   const incidents = incidentPresets.map((preset) => projectIncident(preset, frames, diagnostics));
+  reportDerivationProgress(observer, "aggregating", 3, 4);
+  const framesById = new Map(frames.map((frame) => [frame.id, frame]));
+  reportDerivationProgress(observer, "aggregating", 4, 4);
   return {
     document,
     decoderPack,
@@ -1242,7 +1283,7 @@ export function parseSession(input: unknown): ParsedSession {
     buckets,
     diagnostics,
     incidents,
-    framesById: new Map(frames.map((frame) => [frame.id, frame])),
+    framesById,
   };
 }
 

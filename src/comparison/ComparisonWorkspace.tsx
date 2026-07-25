@@ -21,7 +21,6 @@ import {
 
 import {
   buildComparisonFinding,
-  compareSources,
   createReceiverComparisonSource,
   createSessionComparisonSource,
   downloadComparisonFinding,
@@ -35,6 +34,13 @@ import {
 } from "../domain/comparison";
 import type { ParsedSession } from "../domain/types";
 import { loadSessionFile, SessionLoadError } from "../data/load-session";
+import type { SessionProcessingProgress } from "../processing/contracts";
+import { SessionProcessingCancelledError } from "../processing/process-session";
+import {
+  compareSourcesInWorker,
+  ComparisonProcessingCancelledError,
+  type ComparisonProcessingProgress,
+} from "../processing/comparison-processing";
 import {
   EvidenceBundleLoadError,
   loadEvidenceBundleFile,
@@ -43,7 +49,7 @@ import { formatDurationUs } from "../lib/time";
 
 type CandidateState =
   | { status: "idle" }
-  | { status: "loading"; fileName: string }
+  | { status: "loading"; fileName: string; progress: SessionProcessingProgress | null }
   | { status: "error"; fileName: string; message: string; details: readonly string[] }
   | {
       status: "session";
@@ -56,6 +62,10 @@ type CandidateState =
       fileName: string;
       source: ComparisonSource;
     };
+
+type ComparisonBuildState =
+  | { status: "idle" }
+  | { status: "building"; progress: ComparisonProcessingProgress };
 
 export interface ComparisonSetupDialogProps {
   baseline: ComparisonSource;
@@ -196,15 +206,24 @@ export function ComparisonSetupDialog({
   onStart,
 }: ComparisonSetupDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
+  const candidateControllerRef = useRef<AbortController | null>(null);
+  const comparisonControllerRef = useRef<AbortController | null>(null);
+  const candidateOperationRef = useRef(0);
   const [candidate, setCandidate] = useState<CandidateState>({ status: "idle" });
+  const [comparisonBuild, setComparisonBuild] = useState<ComparisonBuildState>({ status: "idle" });
   const [alignmentMode, setAlignmentMode] = useState<ComparisonAlignment["mode"]>("range-start");
   const [anchorLabel, setAnchorLabel] = useState("");
   const [baselineAnchorUs, setBaselineAnchorUs] = useState(baseline.range.startUs);
   const [candidateAnchorUs, setCandidateAnchorUs] = useState(0);
   const [contractError, setContractError] = useState("");
   useDialogFocus(dialogRef, onClose);
+  useEffect(() => () => {
+    candidateControllerRef.current?.abort();
+    comparisonControllerRef.current?.abort();
+  }, []);
 
   const loadedCandidate = useMemo(() => candidateSource(candidate), [candidate]);
+  const busy = candidate.status === "loading" || comparisonBuild.status === "building";
   useEffect(() => {
     if (loadedCandidate != null) setCandidateAnchorUs(loadedCandidate.range.startUs);
   }, [loadedCandidate]);
@@ -213,11 +232,17 @@ export function ComparisonSetupDialog({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    candidateControllerRef.current?.abort();
+    const controller = new AbortController();
+    candidateControllerRef.current = controller;
+    candidateOperationRef.current += 1;
+    const operation = candidateOperationRef.current;
     setContractError("");
-    setCandidate({ status: "loading", fileName: file.name });
+    setCandidate({ status: "loading", fileName: file.name, progress: null });
     try {
       if (file.name.toLowerCase().endsWith(".nlb")) {
         const document = await loadEvidenceBundleFile(file);
+        if (controller.signal.aborted || operation !== candidateOperationRef.current) return;
         setCandidate({
           status: "evidence",
           fileName: file.name,
@@ -225,7 +250,15 @@ export function ComparisonSetupDialog({
         });
         return;
       }
-      const session = await loadSessionFile(file);
+      const session = await loadSessionFile(file, {
+        signal: controller.signal,
+        onProgress(progress) {
+          if (!controller.signal.aborted && operation === candidateOperationRef.current) {
+            setCandidate({ status: "loading", fileName: file.name, progress });
+          }
+        },
+      });
+      if (controller.signal.aborted || operation !== candidateOperationRef.current) return;
       const firstIncident = session.incidents[0];
       if (!firstIncident) throw new SessionLoadError("The candidate replay has no comparable range.");
       setCandidate({
@@ -235,6 +268,11 @@ export function ComparisonSetupDialog({
         incidentId: firstIncident.id,
       });
     } catch (cause) {
+      if (cause instanceof SessionProcessingCancelledError || controller.signal.aborted) {
+        if (operation === candidateOperationRef.current) setCandidate({ status: "idle" });
+        return;
+      }
+      if (operation !== candidateOperationRef.current) return;
       const known = cause instanceof SessionLoadError || cause instanceof EvidenceBundleLoadError;
       setCandidate({
         status: "error",
@@ -242,11 +280,29 @@ export function ComparisonSetupDialog({
         message: known ? cause.message : "NarrowsLink could not validate the candidate input.",
         details: known ? cause.details : [cause instanceof Error ? cause.message : "Unknown candidate error."],
       });
+    } finally {
+      if (candidateControllerRef.current === controller) candidateControllerRef.current = null;
     }
   };
 
-  const start = () => {
+  const cancelCandidate = () => {
+    candidateControllerRef.current?.abort();
+    candidateControllerRef.current = null;
+    candidateOperationRef.current += 1;
+    setCandidate({ status: "idle" });
+  };
+
+  const cancelComparison = () => {
+    comparisonControllerRef.current?.abort();
+    comparisonControllerRef.current = null;
+    setComparisonBuild({ status: "idle" });
+  };
+
+  const start = async () => {
     if (loadedCandidate == null) return;
+    comparisonControllerRef.current?.abort();
+    const controller = new AbortController();
+    comparisonControllerRef.current = controller;
     try {
       const alignment: ComparisonAlignment = alignmentMode === "range-start"
         ? { mode: "range-start" }
@@ -256,14 +312,31 @@ export function ComparisonSetupDialog({
             baselineAnchorUs,
             candidateAnchorUs,
           };
-      onStart(compareSources(baseline, loadedCandidate, alignment));
+      setComparisonBuild({
+        status: "building",
+        progress: { percent: 0, message: "Preparing bounded comparison evidence" },
+      });
+      const model = await compareSourcesInWorker(baseline, loadedCandidate, alignment, {
+        signal: controller.signal,
+        onProgress(progress) {
+          if (!controller.signal.aborted) setComparisonBuild({ status: "building", progress });
+        },
+      });
+      if (!controller.signal.aborted) onStart(model);
     } catch (cause) {
+      if (cause instanceof ComparisonProcessingCancelledError || controller.signal.aborted) {
+        setComparisonBuild({ status: "idle" });
+        return;
+      }
       setContractError(cause instanceof Error ? cause.message : "The comparison contract is invalid.");
+      setComparisonBuild({ status: "idle" });
+    } finally {
+      if (comparisonControllerRef.current === controller) comparisonControllerRef.current = null;
     }
   };
 
   return createPortal(
-    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && candidate.status !== "loading" && onClose()}>
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
       <section
         ref={dialogRef}
         className="bundle-dialog comparison-setup-dialog"
@@ -272,9 +345,9 @@ export function ComparisonSetupDialog({
         aria-modal="true"
         aria-labelledby="comparison-setup-title"
         aria-describedby="comparison-setup-description"
-        aria-busy={candidate.status === "loading"}
+        aria-busy={busy}
       >
-        <button className="dialog-close" type="button" aria-label="Close comparison setup" disabled={candidate.status === "loading"} onClick={onClose}><X size={17} /></button>
+        <button className="dialog-close" type="button" aria-label="Close comparison setup" onClick={onClose}><X size={17} /></button>
         <div className="dialog-icon"><ArrowsLeftRight size={24} /></div>
         <span className="dialog-kicker">Comparative replay</span>
         <h2 id="comparison-setup-title" data-dialog-focus tabIndex={-1}>Define two bounded inputs</h2>
@@ -294,15 +367,24 @@ export function ComparisonSetupDialog({
               className="visually-hidden"
               type="file"
               accept=".nlsession,.json,.nlb,application/json,application/zip"
-              disabled={candidate.status === "loading"}
+              disabled={busy}
               onChange={(event) => void loadCandidate(event)}
             />
           </label>
         </section>
 
         {candidate.status === "loading" && (
-          <div className="comparison-load-status" role="status">
-            <SpinnerGap className="spin" size={17} /> Validating {candidate.fileName}
+          <div className="comparison-load-status comparison-load-progress" role="status">
+            <SpinnerGap className="spin" size={17} />
+            <div><strong>{candidate.progress?.message ?? `Validating ${candidate.fileName}`}</strong>{candidate.progress && <div className="processing-meter processing-meter-dialog"><progress max={100} value={candidate.progress.percent} aria-label="Candidate replay processing progress" /><span>{Math.floor(candidate.progress.percent)}%</span></div>}</div>
+            <button className="secondary-action" type="button" onClick={cancelCandidate}>Cancel</button>
+          </div>
+        )}
+        {comparisonBuild.status === "building" && (
+          <div className="comparison-load-status comparison-load-progress" role="status">
+            <SpinnerGap className="spin" size={17} />
+            <div><strong>{comparisonBuild.progress.message}</strong><div className="processing-meter processing-meter-dialog"><progress max={100} value={comparisonBuild.progress.percent} aria-label="Comparison construction progress" /><span>{Math.floor(comparisonBuild.progress.percent)}%</span></div></div>
+            <button className="secondary-action" type="button" onClick={cancelComparison}>Cancel</button>
           </div>
         )}
         {candidate.status === "error" && (
@@ -365,9 +447,9 @@ export function ComparisonSetupDialog({
 
         {contractError && <p className="comparison-contract-error" role="alert">{contractError}</p>}
         <div className="dialog-actions comparison-dialog-actions">
-          <button className="secondary-action" type="button" disabled={candidate.status === "loading"} onClick={onClose}>Cancel</button>
-          <button className="primary-action" type="button" disabled={loadedCandidate == null || candidate.status === "loading"} onClick={start}>
-            <ArrowsLeftRight size={17} /> Open comparison
+          <button className="secondary-action" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="primary-action" type="button" disabled={loadedCandidate == null || busy} onClick={() => void start()}>
+            {comparisonBuild.status === "building" ? <SpinnerGap className="spin" size={17} /> : <ArrowsLeftRight size={17} />} Open comparison
           </button>
         </div>
       </section>

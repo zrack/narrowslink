@@ -74,6 +74,7 @@ Available commands:
 | `npm run capture:demo` | Send checked-in fixture frames as real UDP datagrams |
 | `npm run capture:demo:nmea` | Send repeatable checksummed NMEA 0183 datagrams |
 | `npm run fixture:generate` | Regenerate the deterministic bundled replay |
+| `npm run fixture:large` | Stream the ignored 200,000-record acceptance corpus into `output/large-session/` |
 | `npm run verify:bundle -- incident.nlb` | Build the receiver CLI and verify a local version 3 evidence bundle; add `--json` for machine-readable output |
 
 ## Maintainer release process
@@ -81,7 +82,7 @@ Available commands:
 Only a maintainer may publish a NarrowsLink release. Release publication is tag-driven, but the tag is created only after the candidate bytes pass locally and the release change has merged through the protected `main` branch.
 
 1. On a release branch, update `package.json` and `package-lock.json` to the intended semantic version, convert the accumulated changelog entries into the matching dated section, and add the operator-facing release notes. Update any version-specific workflow trigger, asset names, release-acceptance constants, and tag checks for that version.
-2. Run `npm run check`. Inspect `output/release/SHA256SUMS`, the external release manifest, the CycloneDX SBOM, and the tarball listing. The gate must prove two independent compilations are byte-identical and exercise the extracted package through real UDP capture, replay, authored evidence, `.nlb` export, artifact-local receiver verification, and same-origin library persistence after package replacement.
+2. Run `npm run check`. Inspect `output/release/SHA256SUMS`, the external release manifest, the CycloneDX SBOM, and the tarball listing. The gate must prove two independent compilations are byte-identical and exercise the extracted package through real UDP capture, replay, authored evidence, `.nlb` export, artifact-local receiver verification, same-origin library persistence after package replacement, and the documented maximum-record replay workflow.
 3. Merge the reviewed branch through the required GitHub checks. On a clean, up-to-date `main`, run `npm run check` again.
 4. Create the annotated `v<package-version>` tag only at that verified `main` commit and push the tag to `origin`.
 5. The release workflow rechecks the clean tag, pinned Node and npm toolchain, complete source suite, strict double build, unpacked artifact, and published checksums before its write-enabled job creates the GitHub Release.
@@ -103,6 +104,8 @@ npm run check
 Review both the generator diff and the resulting fixture facts. Keep generation deterministic, preserve all five packet families, and retain representative malformed frames and sequence gaps. If expected counts, incident ranges, decoder identity, or failure scenarios change, update the relevant tests and documentation in the same pull request.
 
 The bundled session also carries visual and diagnostic regression intent. Preserve varied packet cadence and received packet rate, measurable fade shoulders versus the fade center, intentional sequence gaps, and enough valid post-failure traffic to exercise the sustained decoder-relock window. Assert those properties from decoded domain output rather than snapshotting decorative chart coordinates.
+
+`scripts/large-session-corpus.mjs` separately streams the deterministic maximum-record acceptance file. Its output belongs in ignored `output/large-session/`, not the repository. Keep generation bounded at 200,000 records, preserve canonical v1 bytes and the exact 10,000-record incident, and update the source and release browser gates together when the published support tier or measurement contract changes.
 
 ## Decoder pack contributions
 
@@ -132,7 +135,10 @@ Changing a description, schema, fixture, or expected result changes pack identit
 - Use half-open incident and export ranges: `[startUs, endUs)`.
 - Route bundled and user-imported sessions through the same validation and decoding functions.
 - Route finalized live captures through that same validation and decoding path before replay.
-- Store only validated canonical session documents in the IndexedDB library, identify them by SHA-256 over canonical `.nlsession` bytes, and keep exact duplicate saves idempotent without changing their original saved date.
+- Keep replay-file, record-count, duration, responsiveness, and Chromium heap-growth limits centralized in `src/domain/limits.ts`. Live capture retains its lower record and retained-payload ceilings in `src/capture/recorder.ts`; do not imply the larger import tier applies to capture.
+- Run long session validation, decoding, aggregation, canonicalization, bounded comparison construction, and bundle construction through the worker processing contracts. Transfer large record/frame results in ordered chunks, preserve deterministic output and source linkage, and keep progress monotonic.
+- Cancellation must terminate the active worker and leave the prior workspace, saved library entry, and download boundary unchanged. Never persist or export a partial result.
+- Store only validated canonical session documents in the IndexedDB library, identify them by SHA-256 over canonical `.nlsession` bytes, and keep exact duplicate saves idempotent without changing their original saved date. New records store exact canonical bytes; continue to validate and read the documented older text and Blob record versions.
 - Re-hash, parse, and validate every saved-session reopen. Surface corruption and storage failures without replacing the active validated replay or claiming an uncommitted save succeeded.
 - Treat saved-session removal as a two-store operation: delete the IndexedDB replay, clear its per-session local-storage workspace when identifiable, keep any active replay in memory, and warn if residual operator context could not be cleared.
 - Never let a control client stop or adopt a UDP capture it did not start; reconcile bridge sequence, datagram, and byte totals before claiming a capture is complete.
@@ -160,6 +166,7 @@ Changing a description, schema, fixture, or expected result changes pack identit
 | Decoder-pack contract, identity, and conformance | `src/domain/decoder-pack.ts`, `src/domain/decoder-conformance.ts` |
 | Runtime registry, frame integrity, and field decoding | `src/domain/decoder.ts` |
 | Validation, metrics, diagnostics, and incidents | `src/domain/session.ts` |
+| Replay support limits and worker processing contracts | `src/domain/limits.ts`, `src/processing/` |
 | Replay timing | `src/replay/` |
 | Evidence archive contract and generation | `src/domain/evidence-contract.ts`, `src/domain/bundle.ts` |
 | Evidence receiver verification and CLI | `verifier/`, `scripts/narrowslink.ts`, `vite.cli.config.ts` |
@@ -171,7 +178,7 @@ Changing a description, schema, fixture, or expected result changes pack identit
 | Marker, note, and authored-range persistence | `src/storage/session-storage.ts` |
 | Workspace UI and interactions | `src/App.tsx`, `src/styles.css` |
 | Browser release, accessibility, and capture-to-receiver verification | `tests/e2e/`, `playwright.config.ts` |
-| Deterministic demo data | `scripts/generate-demo-session.mjs` |
+| Deterministic demo and maximum-record data | `scripts/generate-demo-session.mjs`, `scripts/large-session-corpus.mjs` |
 
 The approved visual source is `docs/design/narrowslink-mission-timeline-source.png`. Preserve its restrained, square-cornered, instrument-grade hierarchy unless a change intentionally establishes a new documented direction.
 
@@ -195,7 +202,8 @@ Screenshots are evidence, not the review itself. Keep `design-qa.md` focused on 
 - Keep clock tests deterministic by injecting the monotonic time source and frame scheduler.
 - Verify evidence changes through the production receiver as well as direct contract assertions; inspect archive paths, manifest metadata, record counts, half-open ranges, cross-document semantics, and SHA-256 values rather than only checking that a download occurred.
 - Exercise the receiver with full and minimal bundles, legacy-v1 and pre-provenance-v2 evidence, UDP and serial provenance, disclosed incomplete or unknown evidence, and adversarial archives. Cover strict path and ZIP limits, malformed JSON/NDJSON/CSV, recomputed-checksum semantic tampering, human and JSON reports, and exit statuses `0`, `1`, and `2`.
-- For session-library changes, cover valid v1 and v2 saves, the pre-database 32 MiB limit, content identity, exact-duplicate behavior, newest-first listing, validated reopen, corruption, missing entries, replay-and-workspace removal, residual-workspace warnings, unavailable IndexedDB, quota exhaustion, and transaction failures.
+- For session-library changes, cover valid v1 and v2 session documents, version 1 text, version 2 Blob, and version 3 canonical-byte storage records, the pre-database 64 MiB limit, content identity, exact-duplicate behavior, newest-first listing, validated reopen, cancellation, corruption, missing entries, replay-and-workspace removal, residual-workspace warnings, unavailable IndexedDB, quota exhaustion, and transaction failures.
+- For large-session changes, regenerate the 200,000-record corpus and exercise import, progress, cancellation, exact-byte persistence, reload, reopen, selected-range comparison, bundle cancellation, completed export, production verification, heartbeat gaps, and Chromium heap growth in both the source and unpacked-release matrices.
 - For UI changes, exercise the bundled replay, file-import error state, saved-session save/list/reopen/remove and failure states, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
 - Keep critical dialogs and workspace states clean under axe rules tagged WCAG A/AA. Test keyboard focus when an action, dialog phase, incident selection, or responsive layout replaces the focused element; retain visible non-color state and severity cues.
 - For capture changes, exercise both the real loopback UDP path and the browser-injected Web Serial application path from start through stop, re-import, durable reopen, replay, annotation, bundle export, and production receiver verification. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage. Treat the injected serial gate as application-path evidence, not physical hardware certification.

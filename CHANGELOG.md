@@ -12,11 +12,15 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 - Added receiver-owned findings stored separately under the whole-bundle SHA-256 without modifying source evidence, plus NSL-01 and NMEA capture-to-receiver, rejection recovery, reload, accessibility, responsive-layout, and unpacked-release replacement coverage across Chromium, Firefox, and WebKit.
 - Added bounded comparative replay for a selected session incident or verified evidence-bundle range against a validated `.nlsession` or verified `.nlb`: explicit range-start or named shared-event alignment, exact overlap and unmatched-tail accounting, conservative evidence comparability, traceable metric deltas, and a checksummed `.nlcompare.json` finding that cites but never modifies or embeds either source.
 - Added a controlled real-UDP regression proof with one induced integrity failure, semantic finding validation, responsive and axe coverage, and unpacked-release receiver-to-session comparison across Chromium, Firefox, and WebKit.
+- Added worker-isolated session import and saved-session reopen with deterministic chunk transfer, weighted phase progress, and cancellation that preserves the active workspace and never persists partial content; candidate loading, bounded comparison construction, and evidence-bundle construction use the same cancellable processing boundary.
+- Added a streamed deterministic 200,000-record acceptance corpus and source plus unpacked-release browser gates that import, persist, cancel, reopen, compare an exact 10,000-record range, cancel and rebuild a bundle, and verify its contents in Chromium, Firefox, and WebKit against published heartbeat and Chromium heap-growth budgets.
+- Added version 3 IndexedDB session records containing exact canonical bytes, with validated read compatibility for existing version 1 text and version 2 Blob records.
 
 ### Changed
 
 - Defined NarrowsLink's product goal and success criteria around reproducible constrained-telemetry incidents and independently verified handoffs; retained the strategic product directions and moonshot opportunities while keeping delivered capabilities in the changelog and current-state docs.
 - Expanded UC-001 with supported radio transport capture topologies, including USB serial radio, UDP base-station output, forwarded UDP copies, and network multicast observer setup and test paths.
+- Raised the imported and saved replay envelope from 32 MiB and 100,000 records to 64 MiB and 200,000 records while retaining the separate live-capture ceiling of 100,000 records, 32 MiB of retained payload bytes, 24 hours, and a canonical file within the replay limit.
 
 ## [0.1.0] - 2026-07-24
 

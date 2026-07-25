@@ -23,6 +23,7 @@ function savedSessions(page: Page) {
 
 test("recovers from invalid import and preserves a deduplicated investigation workspace", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Harbor relay downlink" })).toBeVisible();
   const fileInput = page.getByLabel("Choose a local NarrowsLink replay");
 
   await fileInput.setInputFiles({
@@ -30,7 +31,11 @@ test("recovers from invalid import and preserves a deduplicated investigation wo
     mimeType: "application/json",
     buffer: Buffer.from("{"),
   });
-  await expect(page.getByRole("heading", { name: "Replay could not be opened" })).toBeVisible();
+  const invalidDialog = page.getByRole("dialog", { name: "broken.nlsession was not opened" });
+  await expect(invalidDialog).toContainText("The selected file is not valid JSON.");
+  await expect(invalidDialog).toContainText("No partial session was opened or persisted.");
+  await invalidDialog.getByRole("button", { name: "Return to workspace" }).click();
+  await expect(page.getByRole("heading", { name: "Harbor relay downlink" })).toBeVisible();
 
   const fixture = await importedFixture();
   await fileInput.setInputFiles(fixture);

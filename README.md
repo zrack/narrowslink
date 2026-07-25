@@ -6,7 +6,7 @@ NarrowsLink records live UDP or serial telemetry through an identified, content-
 
 ![NarrowsLink mission-timeline session review workspace](docs/assets/narrowslink-dashboard.png)
 
-The application is local-first. The v0.1 distribution starts the production workspace and authenticated UDP bridge together on loopback; the browser uses a same-origin application relay, while the bridge credential remains internal to the managed process and never requires operator copying. Its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, replay, annotations, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
+The application is local-first. The v0.1 distribution starts the production workspace and authenticated UDP bridge together on loopback; the browser uses a same-origin application relay, while the bridge credential remains internal to the managed process and never requires operator copying. Its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, worker-isolated replay processing, annotations, comparison, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
 ## Start here
 
@@ -21,7 +21,7 @@ The application is local-first. The v0.1 distribution starts the production work
 
 NarrowsLink v0.1.0 is a self-contained package with zero runtime npm dependencies. It contains the production UI, managed UDP bridge, deterministic Harbor relay fixture, and receiver verifier. It requires Node.js 20.19 or newer, but it does not require a repository checkout, Vite, or project dependencies.
 
-The decoder-pack, NMEA, and in-application receiver capabilities documented below are currently under `[Unreleased]` in this repository and are not present in the tagged v0.1.0 package.
+The decoder-pack, NMEA, in-application receiver, comparative replay, and large-session processing capabilities documented below are currently under `[Unreleased]` in this repository and are not present in the tagged v0.1.0 package.
 
 Download these four assets from the [v0.1.0 GitHub Release](https://github.com/zrack/narrowslink/releases/tag/v0.1.0):
 
@@ -51,15 +51,15 @@ Continue with the [guided first run](USER_GUIDE.md#first-run-with-the-bundled-re
 
 - Capture unicast or multicast UDP datagrams through the managed authenticated local bridge, or assemble serial records directly through Web Serial using the selected decoder pack. Stopping a source downloads a versioned `.nlsession`, opens the validated finalized capture for replay, and attempts to retain it in the local session library.
 - Choose the bundled NSL-01 or NMEA 0183 reference pack, or load a local bounded declarative pack. NarrowsLink checks canonical pack identity, runtime and schema compatibility, and bundled production-path fixtures before capture; it never executes pack-supplied JavaScript.
-- Load the bundled demonstration, reopen a saved session, or choose a local version 1 or 2 session. Every source travels through the same validation, decoding, diagnostics, incident, and export pipeline; a validated local file is also retained in the library when browser storage succeeds. Legacy v1 evidence remains unchanged and carries an explicit unknown capture-integrity assessment.
-- Keep multiple validated sessions in an IndexedDB-backed local library. The Sessions rail lists real title, time, duration, and integrity metadata; exact duplicate content remains one entry, and every reopen rechecks the stored SHA-256 identity, canonical session bytes, validation, and decoding before replacing the active replay. Removing an entry also clears its separately stored markers, note, and authored ranges when browser storage permits; an active replay stays open until it is replaced.
+- Load the bundled demonstration, reopen a saved session, or choose a local version 1 or 2 session. Imported and saved sessions are read, validated, decoded, aggregated, canonicalized, and transferred through a worker-backed processing contract with visible phase progress and cancellation. A failed or cancelled operation leaves the current replay unchanged and never persists partial content. Legacy v1 evidence remains unchanged and carries an explicit unknown capture-integrity assessment.
+- Keep multiple validated sessions in an IndexedDB-backed local library. The Sessions rail lists real title, time, duration, and integrity metadata; exact duplicate content remains one entry, and every reopen rechecks the stored SHA-256 identity, canonical session bytes, validation, and decoding before replacing the active replay. New saves use exact canonical bytes in the version 3 library record while version 1 text and version 2 Blob records remain readable. Removing an entry also clears its separately stored markers, note, and authored ranges when browser storage permits; an active replay stays open until it is replaced.
 - Decode the NSL-01 envelope, CRC-16/CCITT-FALSE integrity, and five built-in families, or checksummed NMEA 0183 GGA, RMC, and HDT sentences, while retaining malformed, partial, checksum-failed, and unknown records as inspectable diagnostics.
 - Correlate connection health, packet cadence, decoder state, diagnostics, markers, and decoded signals on one monotonic microsecond replay clock.
 - Create, rename, classify, resize, and precisely edit operator-owned half-open incident ranges; markers, ranges, and notes persist per session when browser storage is available, without mutating the source replay.
-- Export the selected range as a local `.nlb` archive with the exact decoder pack and runtime identity, an exact manifest, mandatory transport events, provenance, bridge journal, capture-integrity receipt, and a SHA-256 checksum for every emitted artifact.
+- Export the selected range as a local `.nlb` archive with the exact decoder pack and runtime identity, an exact manifest, mandatory transport events, provenance, bridge journal, capture-integrity receipt, and a SHA-256 checksum for every emitted artifact. Bundle construction runs in a worker with phase progress and cancellation; cancellation produces no download.
 - Open a received version 3 `.nlb` in the application or verify it with the CLI. Both paths use the same production verifier to bound and preflight the ZIP, validate an embedded pack, replay-check decoded rows against selected raw records, and reject unsafe or inconsistent archives before inspection.
 - Continue an investigation in a bounded receiver workspace that shows only the exact included range and evidence, keeps internal consistency, evidence completeness, and unsigned authenticity separate, marks excluded context unavailable, and stores receiver findings separately under the bundle SHA-256 without modifying the archive.
-- Compare one selected session incident or verified evidence-bundle range with a second validated `.nlsession` or verified `.nlb`. The comparison requires an explicit range-start or shared-event alignment, evaluates only the exact aligned overlap, keeps incompatible or incompletely supported evidence unresolved, traces every metric to bounded source IDs and total supporting counts, and exports a checksummed `.nlcompare.json` finding without modifying or embedding either input.
+- Compare one selected session incident or verified evidence-bundle range with a second validated `.nlsession` or verified `.nlb`. Candidate loading and bounded comparison construction use cancellable worker processing. The comparison requires an explicit range-start or shared-event alignment, evaluates only the exact aligned overlap, keeps incompatible or incompletely supported evidence unresolved, traces every metric to bounded source IDs and total supporting counts, and exports a checksummed `.nlcompare.json` finding without modifying or embedding either input.
 
 ## Operator use cases
 
@@ -112,7 +112,7 @@ Stopping either source with **Stop, save & replay** downloads a version 2 `.nlse
 
 ## Development
 
-Source development, fixture regeneration, test commands, and the manual bearer-token bridge belong to [CONTRIBUTING.md](CONTRIBUTING.md). The complete `npm run check` gate covers TypeScript, unit and integration tests, production builds, source browser workflows, deterministic release packaging, and the unpacked-distribution capture-to-verification workflow in Chromium, Firefox, and WebKit.
+Source development, fixture regeneration, test commands, and the manual bearer-token bridge belong to [CONTRIBUTING.md](CONTRIBUTING.md). The complete `npm run check` gate covers TypeScript, unit and integration tests, production builds, source browser workflows, the maximum-record replay corpus, deterministic release packaging, and the unpacked-distribution capture-to-verification workflow in Chromium, Firefox, and WebKit.
 
 ## Browser capability and test matrix
 
@@ -121,6 +121,7 @@ This matrix separates automated browser-engine evidence from hardware and assist
 | Workflow | Playwright Chromium | Playwright Firefox | Playwright WebKit | Current verification |
 | --- | --- | --- | --- | --- |
 | Replay, local import, saved-session library, timeline review, markers, notes, and `.nlb` export | Automated | Automated | Automated | Invalid-file recovery, validated import, exact-content deduplication, playback/rate controls, per-session workspace restoration, guarded removal, and storage failure states |
+| Maximum-record replay processing | Automated | Automated | Automated | A deterministic 52,378,445-byte, 200,000-record session is imported with visible progress, saved, cancelled during reopen without state loss, reopened, compared over an exact 10,000-record range, cancelled during bundle construction without a download, rebuilt, and verified through the production receiver; a one-second heartbeat bounds UI stalls, and Chromium records heap growth against the published budget |
 | Live UDP through the local bridge | Automated | Automated | Automated | A real ephemeral loopback bridge records NSL-01 and a non-bundled file-loaded NMEA 0183 pack, stops with reconciled v2 integrity, reimports the `.nlsession`, replays it, and completes production receiver verification |
 | Simulated Web Serial capture-to-evidence | Automated | Automated | Automated | An injected standards-based serial stream exercises device selection, fragmented reads, NSL-01 assembly, partial-byte retention, reconciled v2 integrity, durable reopen, replay, exact-range export, and production receiver verification |
 | Independent `.nlb` receipt and verification | Automated | Automated | Automated | NSL-01 and NMEA browser downloads are passed back through the production verifier, opened as bounded receiver documents, inspected, rejected safely when invalid, and reopened with separate receiver notes; ZIP structure, canonical paths, half-open boundaries, required transport evidence, artifact schemas, record counts, semantics, hashes, and `SHA256SUMS` are verified |
@@ -142,6 +143,10 @@ See [ACCESSIBILITY.md](ACCESSIBILITY.md) for the tested interaction matrix, clai
 - Varied deterministic packet cadence, a sustained fade and recovery, intentional missing-frame episodes, CRC failures, missing sync words, and truncated frames for forensic and error-state testing.
 
 Fixture regeneration and review requirements are documented in [CONTRIBUTING.md](CONTRIBUTING.md#regenerating-the-fixture).
+
+### Scale acceptance corpus
+
+`npm run fixture:large` streams a deterministic session to `output/large-session/scale-acceptance-200k.nlsession` without keeping the generated document in Git. The full corpus is 52,378,445 canonical UTF-8 bytes, contains 200,000 records, and defines a 10-second incident with exactly 10,000 records. Source and unpacked-release Playwright gates use it to prove worker progress and cancellation, exact-byte persistence, deterministic reopen, bounded comparison, bundle cancellation without download, and production verification in Chromium, Firefox, and WebKit.
 
 ## Session file format
 
@@ -254,15 +259,17 @@ The semantic validator rejects altered hashes and internally contradictory range
 | `src/capture/nmea0183-serial-assembler.ts` | Bounded line assembly and partial-tail retention for NMEA 0183 |
 | `src/capture/serial-assembler.ts` | Runtime-selected serial framing |
 | `src/capture/udp-bridge.ts` | Typed, authenticated browser client for the local UDP bridge |
-| `src/data/load-session.ts` | Bundled and user-file loading, size limits, and surfaced load errors |
-| `src/data/session-file.ts` | Canonical compact `.nlsession` serializer and shared 32 MiB import/export budget |
+| `src/data/load-session.ts` | Bundled and user-file worker processing, progress, cancellation, size limits, and surfaced load errors |
+| `src/data/session-file.ts` | Canonical compact `.nlsession` serializer and shared 64 MiB replay-file budget |
+| `src/domain/limits.ts` | Central 64 MiB, 200,000-record, 24-hour replay support envelope and measurable responsiveness budgets |
 | `src/domain/types.ts` | Versioned session schema and core telemetry types |
 | `src/domain/decoder-pack.ts` | Bounded pack contract, canonical identity, sealing, and descriptor binding |
 | `src/domain/decoder-conformance.ts` | Production-path fixture execution and expected-result verification |
 | `src/domain/decoder.ts` | Runtime registry, NSL-01 and NMEA decoding, and malformed-record retention |
 | `src/domain/session.ts` | Validation, metric derivation, diagnostics, incident projection, and range helpers |
 | `src/replay/` | Pure monotonic replay clock and its React subscription hook |
-| `src/storage/session-library.ts` | Content-addressed session-document persistence, metadata, validation, and removal in IndexedDB |
+| `src/processing/` | Worker contracts and implementations for session ingestion, deterministic chunk transfer, comparison construction, bundle generation, progress, and cancellation |
+| `src/storage/session-library.ts` | Versioned canonical-byte session persistence, backward-compatible reopen, metadata, validation, and removal in IndexedDB |
 | `src/storage/session-storage.ts` | Versioned per-session operator-range, marker, and note persistence in local storage |
 | `src/domain/evidence-contract.ts` | Strict version 3 evidence manifest, artifact, transport-document, path, media-type, and resource-limit contract |
 | `src/domain/bundle.ts` | Range-filtered, checksummed `.nlb` evidence generation and browser download |
@@ -279,14 +286,15 @@ The semantic validator rejects altered hashes and internally contradictory range
 | `scripts/send-demo-udp.mjs` | Replays checked-in fixture records as real UDP datagrams for acceptance testing |
 | `scripts/send-demo-nmea.mjs` | Sends repeatable checksummed NMEA 0183 UDP datagrams |
 | `scripts/generate-demo-session.mjs` | Deterministic synthetic fixture generator |
-| `tests/e2e/` | Cross-browser capture-to-evidence, archive-verification, persistence, failure-recovery, accessibility, and responsive release gates |
-| `tests/release/` | Unpacked-distribution UDP capture-to-evidence, artifact-local verification, and upgrade persistence gate |
+| `scripts/large-session-corpus.mjs` | Streamed deterministic 200,000-record acceptance-corpus generator |
+| `tests/e2e/` | Cross-browser capture-to-evidence, maximum-record processing, archive-verification, persistence, failure-recovery, accessibility, and responsive release gates |
+| `tests/release/` | Unpacked-distribution UDP capture-to-evidence, maximum-record processing, artifact-local verification, and upgrade persistence gate |
 
 Raw source records remain immutable. Frames, fields, metrics, diagnostics, incidents, and bundle artifacts are derived from those records, and the same path is used for the bundled fixture and imported files.
 
 ## Privacy and data handling
 
-Serial capture, session-library persistence, replay parsing, marker and note persistence, evidence generation, received-bundle verification, and comparative replay happen locally in the browser. Validated canonical session documents and their identifying metadata are stored in IndexedDB; markers, authored ranges, and notes use separate per-session local storage. Receiver findings use a separate local-storage record keyed by the exact bundle SHA-256 and can be cleared from the receiver **Notes** tab; they never modify the archive or become source evidence. Comparison inputs and authored conclusions remain in memory until the operator downloads a separate `.nlcompare.json`; the finding cites but does not contain either source. Removing a saved replay attempts to clear its two session stores, leaves any active in-memory replay open, and does not affect previously exported files or receiver findings. If the replay document is removed but workspace cleanup fails, NarrowsLink keeps a visible warning that residual operator context may remain in browser storage. UDP payloads move only from the local socket bridge to the local page. In the installed release, the browser uses a same-origin relay and the managed process authenticates to the loopback-only bridge with an internal short-lived credential that is not returned in runtime metadata, URLs, cookies, readiness output, or logs. The UDP listener itself binds exactly the interface selected by the operator. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
+Serial capture, session-library persistence, replay parsing, marker and note persistence, evidence generation, received-bundle verification, and comparative replay happen locally in the browser. Long replay, comparison, and bundle operations use local Web Workers; they do not send session bytes to a service. Validated canonical session documents and their identifying metadata are stored in IndexedDB; markers, authored ranges, and notes use separate per-session local storage. Receiver findings use a separate local-storage record keyed by the exact bundle SHA-256 and can be cleared from the receiver **Notes** tab; they never modify the archive or become source evidence. Comparison inputs and authored conclusions remain in memory until the operator downloads a separate `.nlcompare.json`; the finding cites but does not contain either source. Removing a saved replay attempts to clear its two session stores, leaves any active replay open, and does not affect previously exported files or receiver findings. If the replay document is removed but workspace cleanup fails, NarrowsLink keeps a visible warning that residual operator context may remain in browser storage. UDP payloads move only from the local socket bridge to the local page. In the installed release, the browser uses a same-origin relay and the managed process authenticates to the loopback-only bridge with an internal short-lived credential that is not returned in runtime metadata, URLs, cookies, readiness output, or logs. The UDP listener itself binds exactly the interface selected by the operator. NarrowsLink has no account system, analytics service, telemetry upload, or cloud synchronization.
 
 Local does not automatically mean safe to share. A saved replay or evidence bundle can contain raw bytes, device identifiers, coordinates, signal observations, and operator notes. Review and sanitize captures before committing them or sending them to someone else. Browser IndexedDB and local storage are convenient persistence mechanisms, not encrypted secrets stores.
 
@@ -296,7 +304,10 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 - The v0.1 package requires a compatible local Node.js runtime and browser. It bundles all NarrowsLink application code and runtime dependencies, but it is not a native installer or embedded-browser distribution.
 - Decoder packs are limited to the built-in bounded runtime allowlist. The current declarative external runtime supports checksummed NMEA 0183 sentence schemas; arbitrary JavaScript, automatic protocol detection, competing decoders, and fundamentally new wire protocols without a reviewed runtime are not supported.
 - NMEA UDP capture expects one complete sentence per datagram. NMEA serial capture uses line-feed boundaries and retains overlong or unterminated input as partial evidence.
-- The active session is parsed, decoded, indexed, and bundled in browser memory. The local library stores bounded whole session documents rather than streaming or indexing large captures; every entry remains subject to the 32 MiB replay limit and the browser's available storage quota, while captures also retain the 100,000-record and 24-hour schema limits.
+- Imported and saved replay documents are limited to 64 MiB of canonical UTF-8 JSON, 200,000 records, and 24 hours. The release gate exercises 200,000 records at 52,378,445 bytes in every supported engine; it does not claim that every browser and machine has identical performance near the hard byte limit.
+- Live capture remains separately bounded to 100,000 retained records, 32 MiB of retained payload bytes, 24 hours, and a canonical file that fits the 64 MiB replay limit.
+- Validation, decoding, aggregation, canonicalization, comparison construction, and bundle construction run in local workers with progress and cancellation, but active replay and comparison evidence still occupy browser memory. The published acceptance budgets are a main-thread heartbeat gap no greater than one second and Chromium heap growth no greater than 768 MiB for the tested operation; browser baseline memory, machine capacity, and storage quota still vary.
+- Version 3 bundle artifacts remain bounded to 100,000 NDJSON or CSV rows. For a larger replay, select an incident that keeps each included raw or decoded artifact within that evidence limit; the 200,000-record acceptance path exports and verifies an exact 10,000-record range.
 - IndexedDB or Web Crypto can be unavailable or reject a save. NarrowsLink surfaces the failure and keeps the validated replay usable in memory instead of claiming it was saved.
 - New live captures use version 2 durable transport events, per-record UDP endpoint or serial-device provenance, bridge journals where applicable, and integrity receipts. Legacy v1 and earlier pre-provenance v2 replays remain supported with explicit unknown or unavailable assessments; those earlier v2 documents may lack endpoint attribution, a bridge journal, or the internal capture identity and are not rewritten.
 - The application receiver and CLI accept bounded version 3 `.nlb` bundles up to 64 MiB compressed and 128 MiB total declared uncompressed content. They establish internal consistency and report the evidence NarrowsLink could observe; because bundles are unsigned, neither path establishes author, source-channel, or originating-build authenticity. The receiver reconstructs only the selected evidence in the archive and does not recreate unavailable whole-session context.

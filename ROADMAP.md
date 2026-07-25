@@ -38,35 +38,24 @@ The product can move in five useful directions:
 
 The near-term roadmap should keep serving those directions. Work that does not improve replayability, decoder portability, incident evidence, local trust, or operator review should be treated as secondary.
 
-## Next milestone: Large-session processing
+## Next milestone: Transport evidence and authenticity
 
-Keep capture, replay, incident selection, comparison, and evidence export responsive and deterministic when a session no longer fits the current whole-document, main-thread processing model.
+Strengthen the claims NarrowsLink can make about where loss occurred and who or what produced an evidence artifact without weakening its explicit unknown and unavailable states.
 
 Planned work:
 
-- Move validation, decoding, aggregation, and bundle construction off the main UI thread with Web Workers.
-- Add streaming JSON/NDJSON ingestion or a chunked binary container for captures beyond the current 32 MiB UTF-8 `.nlsession` import limit.
-- Evaluate IndexedDB or an embedded desktop store for indexed frame and metric access.
-- Bound timeline downsampling, memory growth, marker lookup, and evidence generation for multi-million-record sessions.
-- Add cancellation and progress reporting for long imports and exports.
+- Add operating-system UDP drop counters on host and runtime combinations that expose a trustworthy capture-scoped value, with an explicit adapter and observation source for every platform.
+- Distinguish observed payload bytes from measured or estimated IP, UDP, radio, and link-layer wire bytes without presenting an estimate as an observation.
+- Define optional signing or trusted-channel anchoring for bridge journals, session files, release identity, decoder packs, and bundle identities.
+- Preserve the current boundary clearly: checksums prove internal consistency, not author, source channel, capture hardware, or build-environment authenticity.
 
 Immediate next moves:
 
-- Measure import, validation, decode, timeline aggregation, comparison, and bundle-export time and peak memory against a checked-in synthetic corpus before selecting a storage or worker design.
-- Define a processing contract for progress, cancellation, partial failure, immutable source identity, and deterministic output across worker boundaries.
-- Decide whether version 2 `.nlsession` remains the interchange format with streaming ingestion or whether a new chunked container is required; preserve unchanged v1 and v2 compatibility either way.
-- Specify which indexes and aggregate levels are durable evidence, reproducible derivations, or disposable UI acceleration.
-- Prove that cancellation never persists a partial session, emits a misleading clean receipt, or exports an incomplete artifact as complete.
-- Add a real browser acceptance case at the chosen upper support tier and publish measured latency and memory budgets instead of an unqualified "large" claim.
-
-Exit criteria: a capture at the documented upper support tier can be imported or finalized, investigated, compared, and exported without blocking interaction, exceeding the published memory budget, changing deterministic results, or leaving partial persisted state after cancellation.
-
-## Transport evidence and authenticity
-
-- Add operating-system UDP drop counters on host and runtime combinations that expose a trustworthy capture-scoped value, with an explicit adapter and observation source for every platform.
-- Distinguish captured payload bytes from measured or estimated IP, UDP, and link-layer wire bytes without presenting estimates as observations.
-- Evaluate optional signing or trusted-channel anchoring for bridge journals, session files, release identity, and bundle identities.
-- Preserve the current boundary clearly: checksums prove internal consistency, not author, source-channel, or build-environment authenticity.
+- Survey macOS, Linux, and Windows socket-counter APIs and prove which values can be scoped to one NarrowsLink capture instead of a host, interface, or process lifetime.
+- Write the platform-adapter contract before implementation: observation source, scope, units, sampling boundaries, unavailable reason, and reconciliation rules must be explicit.
+- Separate payload, UDP/IP overhead, radio framing, and link-layer estimates in the evidence schema; require a provenance method and confidence class for every non-observed value.
+- Produce a signing threat model and key-lifecycle decision covering local keys, team keys, revocation, clock assumptions, offline receipt, and the separately trusted channel needed to establish identity.
+- Add synthetic counter-mismatch and signature-tampering fixtures plus one real platform adapter acceptance case without changing evidence semantics on unsupported hosts.
 
 Exit criteria: supported host adapters can add independently sourced platform counters and optional authenticity evidence without weakening the explicit unavailable state on other platforms.
 
