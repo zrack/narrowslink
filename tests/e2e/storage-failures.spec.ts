@@ -42,7 +42,7 @@ test("rejects corrupt stored bytes without changing the active replay", async ({
 
   await page.evaluate(async () => {
     await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("narrowslink-session-library", 1);
+      const request = indexedDB.open("narrowslink-session-library");
       request.onerror = () => reject(request.error);
       request.onsuccess = () => {
         const database = request.result;
@@ -56,7 +56,11 @@ test("rejects corrupt stored bytes without changing the active replay", async ({
             reject(new Error("Expected one saved session"));
             return;
           }
-          store.put({ ...record, serialized: "{" });
+          store.put(record.recordVersion === 3
+            ? { ...record, canonicalBytes: new TextEncoder().encode("{").buffer }
+            : record.recordVersion === 2
+              ? { ...record, canonicalBlob: new Blob(["{"]) }
+              : { ...record, serialized: "{" });
         };
         transaction.oncomplete = () => {
           database.close();
@@ -69,7 +73,10 @@ test("rejects corrupt stored bytes without changing the active replay", async ({
   });
 
   await page.getByRole("button", { name: /Reopen current saved session Harbor relay downlink/ }).click();
-  await expect(page.getByText("The saved replay failed its content or validation checks and was not opened.").first()).toBeVisible();
+  const corruptDialog = page.getByRole("dialog", { name: "Harbor relay downlink was not opened" });
+  await expect(corruptDialog).toContainText("The saved replay failed its content or validation checks and was not opened.");
+  await expect(corruptDialog).toContainText("No partial session was opened or persisted.");
+  await corruptDialog.getByRole("button", { name: "Return to workspace" }).click();
   await expectReplayRemainsUsable(page);
 });
 

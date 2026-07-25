@@ -1,4 +1,13 @@
-import { bytesToHex, SUPPORTED_DECODER } from "../domain/decoder";
+import {
+  bytesToHex,
+  NSL01_DECODER_PACK,
+  resolveDecoderPack,
+  validateDecoderPackRuntime,
+} from "../domain/decoder";
+import {
+  decoderDescriptorForPack,
+  validateDecoderPack,
+} from "../domain/decoder-pack";
 import { validateSessionDocument } from "../domain/session";
 import {
   MAX_SESSION_FILE_BYTES,
@@ -16,6 +25,7 @@ import {
   type CaptureIntegrityIssueCode,
   type CaptureIntegrityReceipt,
   type DecoderDescriptor,
+  type DecoderPackDocument,
   type SerialTransportProvenance,
   type SessionDocument,
   type SessionDocumentV2,
@@ -48,6 +58,7 @@ export interface CaptureRecorderOptions {
   displayTimeZone: string;
   source: LiveSourceDescriptor;
   decoder?: DecoderDescriptor;
+  decoderPack?: DecoderPackDocument;
   /** Optional lower operational limits. Hard schema/import limits cannot be raised. */
   limits?: Partial<CaptureLimits>;
 }
@@ -237,7 +248,14 @@ function udpEndpointKey(endpoint: UdpRemoteEndpoint): string {
 export class CaptureRecorder {
   readonly limits: CaptureLimits;
 
-  private readonly options: Omit<CaptureRecorderOptions, "limits" | "startedAt"> & { startedAt: string };
+  private readonly options: Omit<
+    CaptureRecorderOptions,
+    "limits" | "startedAt" | "decoder" | "decoderPack"
+  > & {
+    startedAt: string;
+    decoder: DecoderDescriptor;
+    decoderPack: DecoderPackDocument;
+  };
   private readonly capturedRecords: SourceRecord[] = [];
   private readonly capturedTransportEvents: TransportEvent[] = [];
   private capturedByteCount = 0;
@@ -263,7 +281,30 @@ export class CaptureRecorder {
     } catch {
       throw new CaptureRecorderError("Capture start time must be a valid date with a UTC offset.");
     }
-    const decoder = { ...(options.decoder ?? SUPPORTED_DECODER) };
+    let decoderPack: DecoderPackDocument;
+    try {
+      if (options.decoderPack != null) {
+        decoderPack = validateDecoderPackRuntime(validateDecoderPack(options.decoderPack));
+        if (options.decoder != null) {
+          const generated = decoderDescriptorForPack(decoderPack);
+          const descriptorCanBeUpgraded = options.decoder.id === generated.id
+            && options.decoder.revision === generated.revision
+            && options.decoder.schemaHash.toLowerCase() === generated.schemaHash
+            && options.decoder.packHash == null
+            && options.decoder.runtimeId == null
+            && options.decoder.runtimeRevision == null;
+          if (!descriptorCanBeUpgraded) resolveDecoderPack(options.decoder, decoderPack);
+        }
+      } else if (options.decoder != null) {
+        decoderPack = resolveDecoderPack(options.decoder);
+      } else {
+        decoderPack = NSL01_DECODER_PACK;
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Decoder pack is invalid.";
+      throw new CaptureRecorderError(`Capture decoder configuration is invalid: ${reason}`);
+    }
+    const decoder = decoderDescriptorForPack(decoderPack);
     const source = { ...options.source };
     try {
       validateSessionDocument({
@@ -276,6 +317,7 @@ export class CaptureRecorder {
         durationUs: 1,
         source,
         decoder,
+        decoderPack,
         records: [{
           id: "capture-configuration-probe",
           index: 0,
@@ -301,6 +343,7 @@ export class CaptureRecorder {
       displayTimeZone: options.displayTimeZone,
       source,
       decoder,
+      decoderPack,
     };
     this.limits = resolveLimits(options.limits);
     this.sessionFileEnvelopeBytes = sessionDocumentFileByteLength(
@@ -871,7 +914,8 @@ export class CaptureRecorder {
       displayTimeZone: this.options.displayTimeZone,
       durationUs,
       source: { ...this.options.source },
-      decoder: { ...(this.options.decoder ?? SUPPORTED_DECODER) },
+      decoder: { ...this.options.decoder },
+      decoderPack: this.options.decoderPack,
       records,
       transportEvents,
       captureIntegrity,

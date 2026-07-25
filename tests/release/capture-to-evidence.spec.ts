@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
 import {
+  validateComparisonFinding,
+  type ComparisonFinding,
+} from "../../src/domain/comparison";
+import {
   configuredReleaseArchive,
   startRelease,
   unpackRelease,
@@ -52,6 +56,8 @@ const CAPTURE_TITLE = "Artifact release UDP capture";
 const RANGE_TITLE = "Artifact exact UDP evidence range";
 const MARKER_TITLE = "Artifact operator transition";
 const OPERATOR_NOTE = "Artifact release gate retained this exact operator-authored range.";
+const RECEIVER_NOTE = "Receiver reproduced the packaged release evidence after independent verification.";
+const COMPARISON_CONCLUSION = "The packaged release reproduced the received incident against the original replay using the exact authored-range start as a shared anchor.";
 const DATAGRAM_COUNT = 12;
 
 function formatOffsetUsInput(offsetUs: number): string {
@@ -251,6 +257,66 @@ test("unpacked release records UDP and preserves verifiable evidence across repl
     expect(report.bundle.bytes).toBeGreaterThan(0);
     expect(report.artifacts.count).toBeGreaterThan(0);
 
+    await page.getByRole("dialog", { name: "Handoff archive is ready" })
+      .getByRole("button", { name: "Return to session" })
+      .click();
+    await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(bundlePath);
+    const receiver = page.getByRole("main", { name: "Received incident evidence workspace" });
+    await expect(receiver).toBeVisible({ timeout: 30_000 });
+    await expect(receiver.getByRole("heading", { name: RANGE_TITLE, level: 1 })).toBeVisible();
+    await expect(receiver.getByRole("region", { name: "Evidence verification claims" }))
+      .toContainText("Internally Consistent");
+    await expect(receiver.getByRole("region", { name: "Evidence verification claims" }))
+      .toContainText("Verified");
+    await receiver.getByRole("tab", { name: "notes" }).click();
+    await expect(receiver.getByRole("tabpanel", { name: "notes" })).toContainText(OPERATOR_NOTE);
+    await receiver.getByLabel("Receiver finding for this evidence bundle").fill(RECEIVER_NOTE);
+    await expect(receiver.getByText("Stored separately", { exact: true })).toBeVisible();
+
+    await receiver.getByRole("button", { name: "Compare", exact: true }).click();
+    const comparisonSetup = page.getByRole("dialog", { name: "Define two bounded inputs" });
+    await expect(comparisonSetup).toContainText("Verified evidence bundle");
+    await comparisonSetup.locator("input[type='file']").setInputFiles(sessionPath);
+    await expect(comparisonSetup).toContainText(CAPTURE_TITLE);
+    await comparisonSetup.getByLabel("Shared event anchors").check();
+    await comparisonSetup.getByLabel("Shared event label").fill("Exact authored-range start");
+    await comparisonSetup.getByLabel("Baseline anchor (µs)").fill(String(startRecord.offsetUs));
+    await comparisonSetup.getByLabel("Candidate anchor (µs)").fill(String(startRecord.offsetUs));
+    await comparisonSetup.getByRole("button", { name: "Open comparison" }).click();
+
+    const comparison = page.getByRole("main", { name: "Comparative telemetry evidence workspace" });
+    await expect(comparison).toBeVisible();
+    await expect(comparison.getByRole("region", { name: "Comparison eligibility" }))
+      .toContainText("Bounded finding Unchanged");
+    await expect(comparison.getByRole("region", { name: "Aligned comparison timeline" }))
+      .toContainText("Exact authored-range start");
+    const comparisonInspector = comparison.getByRole("complementary", { name: "Comparison finding inspector" });
+    await comparisonInspector.getByLabel("Operator conclusion").fill(COMPARISON_CONCLUSION);
+    const comparisonDownloadPromise = page.waitForEvent("download");
+    await comparisonInspector.getByRole("button", { name: "Export finding" }).click();
+    const comparisonDownload = await comparisonDownloadPromise;
+    const comparisonPath = testInfo.outputPath("artifact-release-comparison.nlcompare.json");
+    await comparisonDownload.saveAs(comparisonPath);
+    const comparisonFinding = validateComparisonFinding(
+      JSON.parse(await readFile(comparisonPath, "utf8")),
+    ) as ComparisonFinding;
+    expect(comparisonFinding).toMatchObject({
+      assessment: "unchanged",
+      conclusion: COMPARISON_CONCLUSION,
+      inputs: {
+        baseline: { kind: "evidence-bundle", sessionId: document.id },
+        candidate: { kind: "session", sessionId: document.id },
+      },
+      alignment: {
+        mode: "shared-event",
+        label: "Exact authored-range start",
+        baselineAnchorUs: startRecord.offsetUs,
+        candidateAnchorUs: startRecord.offsetUs,
+      },
+    });
+    await comparison.getByRole("button", { name: "Return", exact: true }).click();
+    await expect(receiver).toBeVisible();
+
     await server.stop();
     server = undefined;
     await installation.remove();
@@ -274,6 +340,13 @@ test("unpacked release records UDP and preserves verifiable evidence across repl
     await expect(page.getByRole("heading", { name: RANGE_TITLE, level: 2 })).toBeVisible();
     await expect(page.getByLabel("Session-wide operator note")).toHaveValue(OPERATOR_NOTE);
     await expect(page.getByRole("region", { name: "Session overview" })).toContainText("1 operator marker");
+
+    await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(bundlePath);
+    const replacementReceiver = page.getByRole("main", { name: "Received incident evidence workspace" });
+    await expect(replacementReceiver).toBeVisible({ timeout: 30_000 });
+    await replacementReceiver.getByRole("tab", { name: "notes" }).click();
+    await expect(replacementReceiver.getByLabel("Receiver finding for this evidence bundle"))
+      .toHaveValue(RECEIVER_NOTE);
     expect(browserErrors).toEqual([]);
   } finally {
     await replacementServer?.stop().catch(() => undefined);

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { bytesToHex, encodeFrame, SUPPORTED_DECODER } from "./decoder";
+import {
+  bytesToHex,
+  encodeFrame,
+  NMEA0183_DECODER_PACK,
+  SUPPORTED_DECODER,
+} from "./decoder";
+import { decoderDescriptorForPack } from "./decoder-pack";
 import {
   parseSession,
   projectIncident,
@@ -1118,11 +1124,61 @@ describe("session parsing", () => {
       validateSessionDocument(unsupported);
     } catch (error) {
       expect(error).toBeInstanceOf(SessionValidationError);
-      expect((error as SessionValidationError).details).toEqual([
+      expect((error as SessionValidationError).details).toEqual(expect.arrayContaining([
         expect.stringContaining("Received NSL-01 v1.3.6"),
         expect.stringContaining(`Supported ${SUPPORTED_DECODER.id} ${SUPPORTED_DECODER.revision}`),
-      ]);
+        expect.stringContaining("Supported NMEA-0183 reference-v1"),
+      ]));
     }
+  });
+
+  it("decodes an embedded NMEA pack through the shared session pipeline", () => {
+    const replay = v2FileDocument();
+    const fixture = NMEA0183_DECODER_PACK.fixtures[0];
+    if (!fixture) throw new Error("Expected NMEA fixture");
+    replay.id = "nmea-session";
+    replay.title = "NMEA UDP capture";
+    replay.decoder = decoderDescriptorForPack(NMEA0183_DECODER_PACK);
+    replay.decoderPack = NMEA0183_DECODER_PACK;
+    replay.durationUs = fixture.records[0]!.offsetUs + 1;
+    replay.incidents = [];
+    replay.records = fixture.records.map((source, index) => ({
+      id: `nmea-record-${index + 1}`,
+      index,
+      sourceId: replay.source.id,
+      offsetUs: source.offsetUs,
+      dataHex: source.dataHex,
+      captureBytes: source.dataHex.length / 2,
+      wireBytes: source.dataHex.length / 2,
+      transport: { kind: "file" },
+    }));
+    replay.captureIntegrity.retained = {
+      records: replay.records.length,
+      bytes: replay.records.reduce((total, source) => total + source.captureBytes, 0),
+    };
+
+    const parsed = parseSession(replay);
+
+    expect(parsed.decoderPack.integrity.canonicalSha256).toBe(NMEA0183_DECODER_PACK.integrity.canonicalSha256);
+    expect(parsed.frames[0]).toMatchObject({
+      status: "complete",
+      familyName: "NMEA GGA · Global Positioning System Fix Data",
+      integrity: { status: "valid" },
+    });
+    expect(parsed.frames[0]?.fields.find((field) => field.name === "latitude")?.value).toBeCloseTo(48.1173);
+  });
+
+  it("rejects an altered embedded pack without mutating raw records", () => {
+    const replay = v2FileDocument();
+    const fixture = NMEA0183_DECODER_PACK.fixtures[0];
+    if (!fixture) throw new Error("Expected NMEA fixture");
+    replay.decoder = decoderDescriptorForPack(NMEA0183_DECODER_PACK);
+    replay.decoderPack = JSON.parse(JSON.stringify(NMEA0183_DECODER_PACK)) as typeof NMEA0183_DECODER_PACK;
+    replay.decoderPack.description = "Altered pack";
+    const rawBefore = JSON.stringify(replay.records);
+
+    expect(() => validateSessionDocument(replay)).toThrow("unsupported decoder schema");
+    expect(JSON.stringify(replay.records)).toBe(rawBefore);
   });
 
   it("projects the entire replay as a review range when no incidents are declared", () => {

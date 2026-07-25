@@ -1,6 +1,6 @@
 import type { SessionDocument } from "../domain/types";
 
-export const MAX_SESSION_FILE_BYTES = 32 * 1024 * 1024;
+export { MAX_SESSION_FILE_BYTES } from "../domain/limits";
 
 const utf8Encoder = new TextEncoder();
 

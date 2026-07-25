@@ -4,14 +4,22 @@ import {
   serializeSessionDocument,
   utf8ByteLength,
 } from "../data/session-file";
-import { parseSession, validateSessionDocument } from "../domain/session";
+import { validateSessionDocument } from "../domain/session";
 import type { CaptureIntegrityReceipt, ParsedSession, SessionDocument } from "../domain/types";
+import type { SessionProcessingProgress } from "../processing/contracts";
+import {
+  processSessionBlob,
+  SessionProcessingCancelledError,
+} from "../processing/process-session";
+import { canonicalSessionArtifact } from "../processing/session-artifact";
 
 export const SESSION_LIBRARY_DB_NAME = "narrowslink-session-library";
-export const SESSION_LIBRARY_DB_VERSION = 1;
+export const SESSION_LIBRARY_DB_VERSION = 2;
 export const SESSION_LIBRARY_STORE_NAME = "sessions";
 
-const SESSION_LIBRARY_RECORD_VERSION = 1;
+const SESSION_LIBRARY_RECORD_VERSION = 3;
+const BLOB_SESSION_LIBRARY_RECORD_VERSION = 2;
+const LEGACY_SESSION_LIBRARY_RECORD_VERSION = 1;
 
 export type SessionLibraryErrorCode =
   | "unavailable"
@@ -53,10 +61,15 @@ export interface SessionLibraryEntry {
 }
 
 export interface SessionLibrary {
-  save(document: SessionDocument): Promise<SessionLibraryEntry>;
+  save(source: SessionDocument | ParsedSession): Promise<SessionLibraryEntry>;
   list(): Promise<SessionLibraryEntry[]>;
-  load(identity: string): Promise<ParsedSession>;
+  load(identity: string, options?: SessionLibraryLoadOptions): Promise<ParsedSession>;
   remove(identity: string): Promise<void>;
+}
+
+export interface SessionLibraryLoadOptions {
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: SessionProcessingProgress) => void;
 }
 
 export interface SessionLibraryOptions {
@@ -67,10 +80,25 @@ export interface SessionLibraryOptions {
   now?: () => Date;
 }
 
-interface StoredSessionRecord extends SessionLibraryEntry {
-  readonly recordVersion: typeof SESSION_LIBRARY_RECORD_VERSION;
+interface LegacyStoredSessionRecord extends SessionLibraryEntry {
+  readonly recordVersion: typeof LEGACY_SESSION_LIBRARY_RECORD_VERSION;
   readonly serialized: string;
 }
+
+interface StoredSessionRecordV2 extends SessionLibraryEntry {
+  readonly recordVersion: typeof BLOB_SESSION_LIBRARY_RECORD_VERSION;
+  readonly canonicalBlob: Blob;
+}
+
+interface StoredSessionRecordV3 extends SessionLibraryEntry {
+  readonly recordVersion: typeof SESSION_LIBRARY_RECORD_VERSION;
+  readonly canonicalBytes: ArrayBuffer;
+}
+
+type StoredSessionRecord =
+  | LegacyStoredSessionRecord
+  | StoredSessionRecordV2
+  | StoredSessionRecordV3;
 
 type FailureCode = Extract<SessionLibraryErrorCode, "transaction-failed" | "write-failed">;
 
@@ -128,8 +156,13 @@ async function contentIdentity(bytes: Uint8Array): Promise<string> {
 }
 
 /** Returns the stable content identity used as the durable library key. */
-export function sessionLibraryIdentity(document: SessionDocument): Promise<string> {
-  return contentIdentity(encodeSessionDocument(validateSessionDocument(document)));
+export function sessionLibraryIdentity(source: SessionDocument | ParsedSession): Promise<string> {
+  if ("document" in source) {
+    const artifact = canonicalSessionArtifact(source);
+    if (artifact) return Promise.resolve(artifact.identity);
+    return contentIdentity(encodeSessionDocument(validateSessionDocument(source.document)));
+  }
+  return contentIdentity(encodeSessionDocument(validateSessionDocument(source)));
 }
 
 function openDatabase(factory: IDBFactory, databaseName: string): Promise<IDBDatabase> {
@@ -232,8 +265,18 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isStoredSessionRecord(value: unknown): value is StoredSessionRecord {
   if (typeof value !== "object" || value === null) return false;
-  const record = value as Partial<Record<keyof StoredSessionRecord, unknown>>;
-  return record.recordVersion === SESSION_LIBRARY_RECORD_VERSION
+  const record = value as Record<string, unknown>;
+  const hasStoredContent = (
+    record.recordVersion === LEGACY_SESSION_LIBRARY_RECORD_VERSION
+    && typeof record.serialized === "string"
+  ) || (
+    record.recordVersion === BLOB_SESSION_LIBRARY_RECORD_VERSION
+    && record.canonicalBlob instanceof Blob
+  ) || (
+    record.recordVersion === SESSION_LIBRARY_RECORD_VERSION
+    && record.canonicalBytes instanceof ArrayBuffer
+  );
+  return hasStoredContent
     && typeof record.identity === "string"
     && identityPattern.test(record.identity)
     && typeof record.sessionId === "string"
@@ -253,8 +296,7 @@ function isStoredSessionRecord(value: unknown): value is StoredSessionRecord {
     && isFiniteNumber(record.recordCount)
     && isFiniteNumber(record.byteLength)
     && typeof record.savedAt === "string"
-    && Number.isFinite(Date.parse(record.savedAt))
-    && typeof record.serialized === "string";
+    && Number.isFinite(Date.parse(record.savedAt));
 }
 
 function assertStoredSessionRecord(value: unknown, identity?: string): StoredSessionRecord {
@@ -293,7 +335,7 @@ function freezeEntry(record: SessionLibraryEntry): SessionLibraryEntry {
 function entryFromDocument(
   document: SessionDocument,
   identity: string,
-  serialized: string,
+  byteLength: number,
   savedAt: string,
 ): SessionLibraryEntry {
   return {
@@ -311,7 +353,7 @@ function entryFromDocument(
     decoderSchemaHash: document.decoder.schemaHash,
     captureIntegrityStatus: document.formatVersion === 1 ? "unknown" : document.captureIntegrity.status,
     recordCount: document.records.length,
-    byteLength: utf8ByteLength(serialized),
+    byteLength,
     savedAt,
   };
 }
@@ -339,6 +381,64 @@ function corruptRecord(message: string, cause?: unknown): SessionLibraryError {
   return new SessionLibraryError("corrupt", message, cause);
 }
 
+function sourceDocument(source: SessionDocument | ParsedSession): SessionDocument {
+  return "document" in source ? source.document : source;
+}
+
+interface CanonicalSaveSource {
+  readonly document: SessionDocument;
+  readonly blob: Blob;
+  readonly identity: string;
+  readonly byteLength: number;
+}
+
+async function canonicalSaveSource(source: SessionDocument | ParsedSession): Promise<CanonicalSaveSource> {
+  if ("document" in source) {
+    const artifact = canonicalSessionArtifact(source);
+    if (artifact) {
+      if (artifact.byteLength > MAX_SESSION_FILE_BYTES) {
+        throw new SessionLibraryError(
+          "too-large",
+          "The session exceeds the 64 MiB local-library safety limit and was not saved.",
+        );
+      }
+      return {
+        document: source.document,
+        blob: artifact.blob,
+        identity: artifact.identity,
+        byteLength: artifact.byteLength,
+      };
+    }
+  }
+
+  const document = validateSessionDocument(sourceDocument(source));
+  const serialized = serializeSessionDocument(document);
+  const byteLength = utf8ByteLength(serialized);
+  if (byteLength > MAX_SESSION_FILE_BYTES) {
+    throw new SessionLibraryError(
+      "too-large",
+      "The session exceeds the 64 MiB local-library safety limit and was not saved.",
+    );
+  }
+  const bytes = new TextEncoder().encode(serialized);
+  return {
+    document,
+    blob: new Blob([
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    ], { type: "application/json" }),
+    identity: await contentIdentity(bytes),
+    byteLength,
+  };
+}
+
+function storedBlob(record: StoredSessionRecord): Blob {
+  return record.recordVersion === LEGACY_SESSION_LIBRARY_RECORD_VERSION
+    ? new Blob([record.serialized], { type: "application/json" })
+    : record.recordVersion === BLOB_SESSION_LIBRARY_RECORD_VERSION
+      ? record.canonicalBlob
+      : new Blob([record.canonicalBytes], { type: "application/json" });
+}
+
 export function createSessionLibrary(options: SessionLibraryOptions = {}): SessionLibrary {
   const databaseName = options.databaseName ?? SESSION_LIBRARY_DB_NAME;
   const now = options.now ?? (() => new Date());
@@ -353,23 +453,23 @@ export function createSessionLibrary(options: SessionLibraryOptions = {}): Sessi
   };
 
   return Object.freeze({
-    async save(document: SessionDocument): Promise<SessionLibraryEntry> {
-      // Serialize before the first await so caller mutations cannot change the stored bytes mid-save.
-      const canonicalDocument = validateSessionDocument(document);
-      const serialized = serializeSessionDocument(canonicalDocument);
-      if (utf8ByteLength(serialized) > MAX_SESSION_FILE_BYTES) {
+    async save(source: SessionDocument | ParsedSession): Promise<SessionLibraryEntry> {
+      const canonical = await canonicalSaveSource(source);
+      const canonicalDocument = canonical.document;
+      const identity = canonical.identity;
+      const savedAt = now().toISOString();
+      const newEntry = entryFromDocument(canonicalDocument, identity, canonical.byteLength, savedAt);
+      const canonicalBytes = await canonical.blob.arrayBuffer();
+      if (canonicalBytes.byteLength !== canonical.byteLength) {
         throw new SessionLibraryError(
-          "too-large",
-          "The session exceeds the 32 MiB local-library safety limit and was not saved.",
+          "write-failed",
+          "NarrowsLink could not prepare the complete canonical session bytes for storage.",
         );
       }
-      const identity = await contentIdentity(new TextEncoder().encode(serialized));
-      const savedAt = now().toISOString();
-      const newEntry = entryFromDocument(canonicalDocument, identity, serialized, savedAt);
-      const newRecord: StoredSessionRecord = {
+      const newRecord: StoredSessionRecordV3 = {
         recordVersion: SESSION_LIBRARY_RECORD_VERSION,
         ...newEntry,
-        serialized,
+        canonicalBytes,
       };
 
       return withDatabase(async (database) => {
@@ -401,8 +501,25 @@ export function createSessionLibrary(options: SessionLibraryOptions = {}): Sessi
         if (existingValue !== undefined) {
           await completed;
           const existing = assertStoredSessionRecord(existingValue, identity);
-          const expected = entryFromDocument(canonicalDocument, identity, serialized, existing.savedAt);
-          if (existing.serialized !== serialized || !recordMatchesEntry(existing, expected)) {
+          let processed: Awaited<ReturnType<typeof processSessionBlob>>;
+          try {
+            processed = await processSessionBlob(storedBlob(existing), {
+              sourceLabel: `saved:${identity}`,
+            });
+          } catch (error) {
+            throw corruptRecord("The existing session-library record could not be revalidated.", error);
+          }
+          const expected = entryFromDocument(
+            processed.session.document,
+            identity,
+            processed.report.canonicalBytes,
+            existing.savedAt,
+          );
+          if (
+            processed.session.canonicalIdentity !== identity
+            || !processed.report.sourceWasCanonical
+            || !recordMatchesEntry(existing, expected)
+          ) {
             throw corruptRecord("The existing session-library record does not match its content identity.");
           }
           return freezeEntry(existing);
@@ -450,7 +567,7 @@ export function createSessionLibrary(options: SessionLibraryOptions = {}): Sessi
       });
     },
 
-    async load(identity: string): Promise<ParsedSession> {
+    async load(identity: string, loadOptions: SessionLibraryLoadOptions = {}): Promise<ParsedSession> {
       const stored = await withDatabase(async (database) => {
         let transaction: IDBTransaction;
         try {
@@ -477,31 +594,32 @@ export function createSessionLibrary(options: SessionLibraryOptions = {}): Sessi
         return assertStoredSessionRecord(value, identity);
       });
 
-      const actualIdentity = await contentIdentity(new TextEncoder().encode(stored.serialized));
-      if (actualIdentity !== identity) {
-        throw corruptRecord("The stored session content does not match its SHA-256 identity.");
-      }
-
-      let input: unknown;
+      let processed: Awaited<ReturnType<typeof processSessionBlob>>;
       try {
-        input = JSON.parse(stored.serialized) as unknown;
+        processed = await processSessionBlob(storedBlob(stored), {
+          sourceLabel: `saved:${identity}`,
+          signal: loadOptions.signal,
+          onProgress: loadOptions.onProgress,
+        });
       } catch (error) {
-        throw corruptRecord("The stored session content is not valid JSON.", error);
-      }
-
-      let parsed: ParsedSession;
-      try {
-        parsed = parseSession(input);
-      } catch (error) {
+        if (error instanceof SessionProcessingCancelledError) throw error;
         throw corruptRecord("The stored session no longer passes NarrowsLink validation and decoding.", error);
       }
 
-      const canonical = serializeSessionDocument(parsed.document);
-      const expected = entryFromDocument(parsed.document, identity, canonical, stored.savedAt);
-      if (canonical !== stored.serialized || !recordMatchesEntry(stored, expected)) {
+      const expected = entryFromDocument(
+        processed.session.document,
+        identity,
+        processed.report.canonicalBytes,
+        stored.savedAt,
+      );
+      if (
+        processed.session.canonicalIdentity !== identity
+        || !processed.report.sourceWasCanonical
+        || !recordMatchesEntry(stored, expected)
+      ) {
         throw corruptRecord("The stored session content or metadata is not canonical.");
       }
-      return parsed;
+      return processed.session;
     },
 
     async remove(identity: string): Promise<void> {

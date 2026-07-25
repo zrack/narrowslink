@@ -1,6 +1,11 @@
-import { parseSession, SessionValidationError } from "../domain/session";
 import type { ParsedSession } from "../domain/types";
 import { MAX_SESSION_FILE_BYTES } from "./session-file";
+import {
+  processSessionBlob,
+  SessionProcessingCancelledError,
+  SessionProcessingError,
+} from "../processing/process-session";
+import type { SessionProcessingProgress, SessionProcessingReport } from "../processing/contracts";
 
 export { MAX_SESSION_FILE_BYTES } from "./session-file";
 
@@ -16,31 +21,33 @@ export class SessionLoadError extends Error {
   }
 }
 
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new SessionLoadError("The selected file is not valid JSON.", [
-      error instanceof Error ? error.message : "JSON parsing failed",
-    ]);
-  }
+export interface SessionLoadOptions {
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: SessionProcessingProgress) => void;
+  readonly onComplete?: (report: SessionProcessingReport) => void;
 }
 
-function decodeUtf8(bytes: ArrayBuffer, sourceLabel: string): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new SessionLoadError("The replay is not valid UTF-8 text.", [sourceLabel]);
-  }
+function sessionLimitMessage(): string {
+  return `The replay exceeds the ${MAX_SESSION_FILE_BYTES / (1024 * 1024)} MiB safety limit.`;
 }
 
-function parseValidated(text: string): ParsedSession {
+async function processBlob(
+  blob: Blob,
+  sourceLabel: string,
+  options: SessionLoadOptions,
+): Promise<ParsedSession> {
   try {
-    return parseSession(parseJson(text));
+    const processed = await processSessionBlob(blob, {
+      sourceLabel,
+      signal: options.signal,
+      onProgress: options.onProgress,
+    });
+    options.onComplete?.(processed.report);
+    return processed.session;
   } catch (error) {
-    if (error instanceof SessionLoadError) throw error;
-    if (error instanceof SessionValidationError) {
-      throw new SessionLoadError(error.message, error.details);
+    if (error instanceof SessionProcessingCancelledError) throw error;
+    if (error instanceof SessionProcessingError) {
+      throw new SessionLoadError(error.message, [...error.details]);
     }
     throw new SessionLoadError("NarrowsLink could not decode this replay.", [
       error instanceof Error ? error.message : "Unknown decoder error",
@@ -48,29 +55,33 @@ function parseValidated(text: string): ParsedSession {
   }
 }
 
-export async function loadBundledSession(signal?: AbortSignal): Promise<ParsedSession> {
-  const response = await fetch(DEFAULT_SESSION_URL, { signal });
+export async function loadBundledSession(
+  signalOrOptions?: AbortSignal | SessionLoadOptions,
+): Promise<ParsedSession> {
+  const options: SessionLoadOptions = signalOrOptions instanceof AbortSignal
+    ? { signal: signalOrOptions }
+    : signalOrOptions ?? {};
+  const response = await fetch(DEFAULT_SESSION_URL, { signal: options.signal });
   if (!response.ok) {
     throw new SessionLoadError("The bundled replay is unavailable.", [`HTTP ${response.status} ${response.statusText}`]);
   }
   const contentLength = Number(response.headers.get("content-length") ?? 0);
   if (contentLength > MAX_SESSION_FILE_BYTES) {
-    throw new SessionLoadError("The bundled replay exceeds the 32 MB safety limit.");
+    throw new SessionLoadError(sessionLimitMessage());
   }
-  const bytes = await response.arrayBuffer();
-  if (bytes.byteLength > MAX_SESSION_FILE_BYTES) {
-    throw new SessionLoadError("The bundled replay exceeds the 32 MB safety limit.");
+  const blob = await response.blob();
+  if (blob.size > MAX_SESSION_FILE_BYTES) {
+    throw new SessionLoadError(sessionLimitMessage());
   }
-  return parseValidated(decodeUtf8(bytes, DEFAULT_SESSION_URL));
+  return processBlob(blob, DEFAULT_SESSION_URL, options);
 }
 
-export async function loadSessionFile(file: File): Promise<ParsedSession> {
+export async function loadSessionFile(
+  file: File,
+  options: SessionLoadOptions = {},
+): Promise<ParsedSession> {
   if (file.size > MAX_SESSION_FILE_BYTES) {
-    throw new SessionLoadError("The selected replay exceeds the 32 MB safety limit.", [file.name]);
+    throw new SessionLoadError(sessionLimitMessage(), [file.name]);
   }
-  const bytes = await file.arrayBuffer();
-  if (bytes.byteLength > MAX_SESSION_FILE_BYTES) {
-    throw new SessionLoadError("The selected replay exceeds the 32 MB safety limit.", [file.name]);
-  }
-  return parseValidated(decodeUtf8(bytes, file.name));
+  return processBlob(file, file.name, options);
 }

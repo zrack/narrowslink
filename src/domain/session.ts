@@ -1,4 +1,13 @@
-import { decodeRecord, getNumericField, SUPPORTED_DECODER } from "./decoder";
+import {
+  BUILT_IN_DECODER_PACKS,
+  decodeRecord,
+  getNumericField,
+  resolveDecoderPack,
+} from "./decoder";
+import {
+  DecoderPackValidationError,
+  decoderDescriptorForPack,
+} from "./decoder-pack";
 import {
   incidentPresetSchema,
   MAX_SESSION_DURATION_US,
@@ -84,6 +93,26 @@ export class SessionValidationError extends Error {
     super(message);
     this.name = "SessionValidationError";
     this.details = details;
+  }
+}
+
+export type SessionDerivationPhase = "validating" | "decoding" | "aggregating";
+
+export interface SessionDerivationObserver {
+  report(phase: SessionDerivationPhase, completed: number, total: number): void;
+}
+
+function reportDerivationProgress(
+  observer: SessionDerivationObserver | undefined,
+  phase: SessionDerivationPhase,
+  completed: number,
+  total: number,
+): void {
+  if (
+    observer
+    && (completed === 0 || completed === total || completed % 2_048 === 0)
+  ) {
+    observer.report(phase, completed, total);
   }
 }
 
@@ -646,7 +675,11 @@ function assertV2CaptureEvidence(document: SessionDocumentV2): void {
   assertTransportProvenance(document);
 }
 
-export function validateSessionDocument(input: unknown): SessionDocument {
+export function validateSessionDocument(
+  input: unknown,
+  observer?: SessionDerivationObserver,
+): SessionDocument {
+  reportDerivationProgress(observer, "validating", 0, 1);
   const result = sessionDocumentSchema.safeParse(input);
   if (!result.success) {
     throw new SessionValidationError(
@@ -656,18 +689,25 @@ export function validateSessionDocument(input: unknown): SessionDocument {
   }
 
   const document = result.data;
-  if (
-    document.decoder.id !== SUPPORTED_DECODER.id
-    || document.decoder.revision !== SUPPORTED_DECODER.revision
-    || document.decoder.schemaHash.toLowerCase() !== SUPPORTED_DECODER.schemaHash
-  ) {
-    throw new SessionValidationError("The replay references an unsupported decoder schema.", [
+  try {
+    resolveDecoderPack(
+      document.decoder,
+      document.formatVersion === 2 ? document.decoderPack : undefined,
+    );
+  } catch (error) {
+    const details = error instanceof DecoderPackValidationError ? error.details : [];
+    throw new SessionValidationError("The replay references an unsupported decoder schema or unavailable decoder pack.", [
       `Received ${document.decoder.id} ${document.decoder.revision} (${document.decoder.schemaHash})`,
-      `Supported ${SUPPORTED_DECODER.id} ${SUPPORTED_DECODER.revision} (${SUPPORTED_DECODER.schemaHash})`,
+      ...details,
+      ...BUILT_IN_DECODER_PACKS.map((pack) => {
+        const descriptor = decoderDescriptorForPack(pack);
+        return `Supported ${pack.id} ${pack.revision} (${descriptor.schemaHash})`;
+      }),
     ]);
   }
   const seenIds = new Set<string>();
   let previousOffset = -1;
+  const recordTotal = document.records.length;
 
   for (const [position, record] of document.records.entries()) {
     if (seenIds.has(record.id)) {
@@ -712,6 +752,7 @@ export function validateSessionDocument(input: unknown): SessionDocument {
       ]);
     }
     previousOffset = record.offsetUs;
+    reportDerivationProgress(observer, "validating", position + 1, recordTotal);
   }
 
   const incidentIds = new Set<string>();
@@ -731,6 +772,7 @@ export function validateSessionDocument(input: unknown): SessionDocument {
     throw new SessionValidationError("The replay declares an invalid IANA time zone.", [document.displayTimeZone]);
   }
 
+  reportDerivationProgress(observer, "validating", recordTotal, recordTotal);
   return document;
 }
 
@@ -874,7 +916,7 @@ function makeDiagnostic(
     || type === "loss-burst"
     || type === "recovery"
     ? "link"
-    : type === "crc-failure" || type === "partial-frame"
+    : type === "crc-failure" || type === "checksum-failure" || type === "partial-frame"
       ? "unknown"
       : "decoder";
   return {
@@ -939,7 +981,11 @@ function transportProvenanceDiagnostic(
   };
 }
 
-function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly MetricBucket[]): DiagnosticEvent[] {
+function deriveDiagnostics(
+  frames: readonly DecodedFrame[],
+  buckets: readonly MetricBucket[],
+  decoderId: string,
+): DiagnosticEvent[] {
   const events: DiagnosticEvent[] = [];
   let lowRssiBuckets = 0;
   let recoveryBuckets = 0;
@@ -986,18 +1032,20 @@ function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly Me
       consecutiveInvalid += 1;
       consecutiveValidAfterResync = 0;
       validRecoveryStartedUs = null;
-      const isCrc = frame.integrity.status === "crc-failed";
+      const isCrcFailure = frame.integrity.status === "crc-failed";
+      const isChecksumFailure = frame.integrity.status === "checksum-failed";
+      const isIntegrityFailure = isCrcFailure || isChecksumFailure;
       events.push(makeDiagnostic(
-        isCrc ? "crc-failure" : "partial-frame",
-        isCrc ? "critical" : "warning",
+        isCrcFailure ? "crc-failure" : isChecksumFailure ? "checksum-failure" : "partial-frame",
+        isIntegrityFailure ? "critical" : "warning",
         frame.offsetUs,
-        isCrc ? "Checksum failure" : "Partial frame retained",
-        isCrc ? "The frame checksum did not match the calculated CRC." : "The frame could not be decoded completely and remains available for inspection.",
+        isCrcFailure ? "CRC failure" : isChecksumFailure ? "Checksum failure" : "Partial frame retained",
+        isIntegrityFailure ? "The record checksum did not match the value calculated by the declared decoder pack." : "The frame could not be decoded completely and remains available for inspection.",
         [frame.id],
       ));
       if (!resyncing && consecutiveInvalid === 2) {
         resyncing = true;
-        events.push(makeDiagnostic("decoder-resync", "warning", frame.offsetUs, "Decoder resync", "Two consecutive invalid boundaries forced NSL-01 into resynchronization.", [frame.id]));
+        events.push(makeDiagnostic("decoder-resync", "warning", frame.offsetUs, "Decoder resync", `Two consecutive invalid boundaries forced ${decoderId} into resynchronization.`, [frame.id]));
       }
     } else {
       consecutiveInvalid = 0;
@@ -1016,7 +1064,7 @@ function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly Me
             "info",
             frame.offsetUs,
             "Decoder locked",
-            "At least three valid CRC frames over 40 uninterrupted seconds restored decoder boundary lock.",
+            "At least three valid checksummed records over 40 uninterrupted seconds restored decoder boundary lock.",
             [frame.id],
           ));
         }
@@ -1189,26 +1237,45 @@ function normalizedCaptureEvidence(document: SessionDocument): {
   });
 }
 
-export function parseSession(input: unknown): ParsedSession {
-  const document = deepFreeze(validateSessionDocument(input));
+export function parseSession(
+  input: unknown,
+  observer?: SessionDerivationObserver,
+): ParsedSession {
+  const document = deepFreeze(validateSessionDocument(input, observer));
+  const decoderPack = deepFreeze(resolveDecoderPack(
+    document.decoder,
+    document.formatVersion === 2 ? document.decoderPack : undefined,
+  ));
   const captureEvidence = normalizedCaptureEvidence(document);
   const transportProvenance = document.formatVersion === 2 ? document.transportProvenance : undefined;
-  const frames = document.records.map((record, ordinal) => decodeRecord(record, ordinal));
+  const frames: DecodedFrame[] = [];
+  reportDerivationProgress(observer, "decoding", 0, document.records.length);
+  for (const [ordinal, record] of document.records.entries()) {
+    frames.push(decodeRecord(record, ordinal, decoderPack));
+    reportDerivationProgress(observer, "decoding", ordinal + 1, document.records.length);
+  }
+  reportDerivationProgress(observer, "aggregating", 0, 4);
   const buckets = createMetricBuckets(document, frames);
+  reportDerivationProgress(observer, "aggregating", 1, 4);
   const provenanceDiagnostic = transportProvenance == null
     ? null
     : transportProvenanceDiagnostic(transportProvenance, document.durationUs);
   const diagnostics = [
-    ...deriveDiagnostics(frames, buckets),
+    ...deriveDiagnostics(frames, buckets, document.decoder.id),
     ...captureEvidence.transportEvents.map((event) => transportEventDiagnostic(event, document.durationUs)),
     ...(provenanceDiagnostic == null ? [] : [provenanceDiagnostic]),
   ].sort((left, right) => left.startUs - right.startUs || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  reportDerivationProgress(observer, "aggregating", 2, 4);
   const incidentPresets: IncidentPreset[] = document.incidents.length > 0
     ? document.incidents
     : [{ id: "full-session", title: "Full session review", startUs: 0, endUs: document.durationUs, severity: "info" }];
   const incidents = incidentPresets.map((preset) => projectIncident(preset, frames, diagnostics));
+  reportDerivationProgress(observer, "aggregating", 3, 4);
+  const framesById = new Map(frames.map((frame) => [frame.id, frame]));
+  reportDerivationProgress(observer, "aggregating", 4, 4);
   return {
     document,
+    decoderPack,
     transportEvents: captureEvidence.transportEvents,
     captureIntegrity: captureEvidence.captureIntegrity,
     ...(transportProvenance == null ? {} : { transportProvenance }),
@@ -1216,7 +1283,7 @@ export function parseSession(input: unknown): ParsedSession {
     buckets,
     diagnostics,
     incidents,
-    framesById: new Map(frames.map((frame) => [frame.id, frame])),
+    framesById,
   };
 }
 

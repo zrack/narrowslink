@@ -4,21 +4,35 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { DownloadSimple, SpinnerGap, WarningCircle, X } from "@phosphor-icons/react";
+import { DownloadSimple, SpinnerGap, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
 
 import type { CaptureIntegrityIssueCode, CaptureIntegrityReceipt, SessionDocument, UdpBridgeJournal } from "../domain/types";
+import {
+  BUILT_IN_DECODER_PACKS,
+  NSL01_DECODER_PACK,
+} from "../domain/decoder";
+import { verifyDecoderPackConformance } from "../domain/decoder-conformance";
+import {
+  MAX_DECODER_PACK_BYTES,
+  parseBoundedDecoderPackJson,
+  type DecoderPackDocument,
+} from "../domain/decoder-pack";
 import { serializeSessionDocument } from "../data/session-file";
 import { formatBytes, formatDurationUs } from "../lib/time";
 import {
   MANUAL_OPERATOR_RUNTIME,
   type OperatorRuntime,
 } from "../runtime/operator-runtime";
-import { Nsl01SerialFrameAssembler } from "./nsl01-serial-assembler";
+import {
+  createSerialAssembler,
+  type SerialRecordAssembler,
+} from "./serial-assembler";
 import {
   CaptureRecorder,
   CaptureRecorderError,
@@ -61,6 +75,7 @@ interface PendingUdpRecorderConfig {
   sessionId: string;
   title: string;
   displayTimeZone: string;
+  decoderPack: DecoderPackDocument;
 }
 
 interface PendingFinalization {
@@ -218,7 +233,7 @@ export function canRetainCapturedInput(
 }
 
 export function retainSerialAssemblerTail(
-  assembler: Nsl01SerialFrameAssembler,
+  assembler: SerialRecordAssembler,
   append: (input: CapturedBytes, origin: "serial-tail") => boolean,
 ): { records: number; bytes: number } {
   let records = 0;
@@ -555,6 +570,7 @@ export function CaptureDialog({
   const captureStatusRef = useRef<HTMLDivElement>(null);
   const discardTriggerRef = useRef<HTMLButtonElement>(null);
   const discardKeepRef = useRef<HTMLButtonElement>(null);
+  const decoderPackInputRef = useRef<HTMLInputElement>(null);
   const transportRef = useRef<CaptureTransport | null>(null);
   const recorderRef = useRef<CaptureRecorder | null>(null);
   const udpClientRef = useRef<UdpBridgeClient | null>(null);
@@ -581,7 +597,7 @@ export function CaptureDialog({
   const durationLimitEventRecordedRef = useRef(false);
   const serialCaptureRef = useRef<WebSerialCapture | null>(null);
   const serialProvenanceRef = useRef<Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }> | null>(null);
-  const serialAssemblerRef = useRef<Nsl01SerialFrameAssembler | null>(null);
+  const serialAssemblerRef = useRef<SerialRecordAssembler | null>(null);
   const serialDisconnectedRef = useRef(false);
   const observedSerialReadsRef = useRef(0);
   const observedSerialBytesRef = useRef(0);
@@ -614,6 +630,8 @@ export function CaptureDialog({
   const previousPhaseRef = useRef<CapturePhase>(phase);
   const [sessionTitle, setSessionTitle] = useState("Live telemetry capture");
   const [timeZone, setTimeZone] = useState(displayTimeZone ?? browserTimeZone());
+  const [localDecoderPack, setLocalDecoderPack] = useState<DecoderPackDocument | null>(null);
+  const [decoderPack, setDecoderPack] = useState<DecoderPackDocument>(NSL01_DECODER_PACK);
   const managedRuntime = operatorRuntime.mode === "managed" ? operatorRuntime : null;
   const [bridgeUrl, setBridgeUrl] = useState(managedRuntime?.controlUrl ?? DEFAULT_UDP_BRIDGE_URL);
   const [bridgeToken, setBridgeToken] = useState("");
@@ -636,6 +654,15 @@ export function CaptureDialog({
   const [timerTick, setTimerTick] = useState(0);
 
   const captureLocked = phase !== "ready";
+  const decoderPacks = useMemo(() => {
+    if (
+      localDecoderPack == null
+      || BUILT_IN_DECODER_PACKS.some((pack) => pack.integrity.canonicalSha256 === localDecoderPack.integrity.canonicalSha256)
+    ) {
+      return [...BUILT_IN_DECODER_PACKS];
+    }
+    return [...BUILT_IN_DECODER_PACKS, localDecoderPack];
+  }, [localDecoderPack]);
   const canDismiss = phase === "ready" || phase === "canceling";
   const serialAvailable = useMemo(() => getBrowserSerialApi() != null, []);
   const elapsedUs = (() => {
@@ -655,6 +682,37 @@ export function CaptureDialog({
     return lastDurationUsRef.current;
   })();
   void timerTick;
+
+  const selectDecoderPack = (packHash: string): void => {
+    const selected = decoderPacks.find((pack) => pack.integrity.canonicalSha256 === packHash);
+    if (!selected || captureLocked) return;
+    setDecoderPack(selected);
+    setIssue("");
+    setNotice("");
+  };
+
+  const loadDecoderPack = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || captureLocked) return;
+    setIssue("");
+    setNotice("");
+    try {
+      if (file.size > MAX_DECODER_PACK_BYTES) {
+        throw new Error(`Decoder pack files cannot exceed ${formatBytes(MAX_DECODER_PACK_BYTES)}.`);
+      }
+      const text = await file.text();
+      const input = parseBoundedDecoderPackJson(text);
+      const result = verifyDecoderPackConformance(input);
+      setLocalDecoderPack(result.pack);
+      setDecoderPack(result.pack);
+      setNotice(
+        `Loaded ${result.pack.displayName} ${result.pack.revision}; ${result.fixtureIds.length} fixture${result.fixtureIds.length === 1 ? "" : "s"} passed.`,
+      );
+    } catch (cause) {
+      setIssue(errorMessage(cause, "The decoder pack could not be loaded."));
+    }
+  };
 
   const blockedClose = () => setNotice("Stop and save the capture, or explicitly discard it, before closing this dialog.");
   useDialogFocus(dialogRef, onClose, canDismiss, blockedClose);
@@ -992,6 +1050,7 @@ export function CaptureDialog({
         address: sourceAddress,
         port: status.udp.port,
       },
+      decoderPack: config.decoderPack,
     });
     recorderRef.current = recorder;
     flushPendingTransportEvents(recorder);
@@ -1046,6 +1105,7 @@ export function CaptureDialog({
       sessionId: createSessionId(),
       title,
       displayTimeZone: resolvedTimeZone,
+      decoderPack,
     };
     setPhase("starting");
     let client: UdpBridgeClient;
@@ -1163,6 +1223,7 @@ export function CaptureDialog({
     let resolvedTimeZone: string;
     const title = sessionTitle.trim();
     const serialSessionId = createSessionId();
+    const captureDecoderPack = decoderPack;
     try {
       if (!title) throw new Error("Session title is required.");
       parsedBaudRate = strictInteger(baudRate, "Baud rate", 1, 4_000_000);
@@ -1209,12 +1270,13 @@ export function CaptureDialog({
             kind: "serial",
             label: `${device.label} · ${parsedBaudRate.toLocaleString("en-US")} baud`.slice(0, 200),
           },
+          decoderPack: captureDecoderPack,
         });
         captureStartMsRef.current = nowMonotonicMs();
         lastDurationUsRef.current = 0;
         recorderRef.current = recorder;
         flushPendingTransportEvents(recorder);
-        serialAssemblerRef.current = new Nsl01SerialFrameAssembler();
+        serialAssemblerRef.current = createSerialAssembler(captureDecoderPack);
         setSerialDevice(device.label);
         setSerialState("open");
         setPhase("capturing");
@@ -1724,7 +1786,7 @@ export function CaptureDialog({
 
         <span className="dialog-kicker">Local capture</span>
         <h2 id={titleId}>Record live telemetry</h2>
-        <p id={descriptionId}>Capture exact UDP datagrams or NSL-01 serial frames locally, then open the immutable session in the replay workspace.</p>
+        <p id={descriptionId}>Capture exact UDP datagrams or assembled serial records locally, decode them with an identified pack, then open the immutable session in the replay workspace.</p>
 
         <form className="capture-dialog-form" onSubmit={formSubmit}>
           <div className="dialog-fields capture-session-fields">
@@ -1752,6 +1814,45 @@ export function CaptureDialog({
               <small className="field-help">IANA name, such as America/Los_Angeles</small>
             </label>
           </div>
+
+          <section className="capture-decoder-picker" aria-label="Decoder pack">
+            <label>
+              <span>Decoder pack</span>
+              <select
+                value={decoderPack.integrity.canonicalSha256}
+                disabled={captureLocked}
+                onChange={(event) => selectDecoderPack(event.target.value)}
+              >
+                {decoderPacks.map((pack) => (
+                  <option key={pack.integrity.canonicalSha256} value={pack.integrity.canonicalSha256}>
+                    {pack.displayName} · {pack.revision}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="secondary-action capture-decoder-load"
+              type="button"
+              disabled={captureLocked}
+              onClick={() => decoderPackInputRef.current?.click()}
+            >
+              <UploadSimple size={16} aria-hidden="true" /> Load pack
+            </button>
+            <input
+              ref={decoderPackInputRef}
+              className="visually-hidden"
+              type="file"
+              accept=".nldecoder,.json,application/json"
+              aria-label="Decoder pack file"
+              disabled={captureLocked}
+              onChange={(event) => void loadDecoderPack(event)}
+            />
+            <p>
+              {decoderPack.runtime.id} r{decoderPack.runtime.revision}
+              {" · "}pack {decoderPack.integrity.canonicalSha256.slice(0, 12)}
+              {" · "}{BUILT_IN_DECODER_PACKS.some((pack) => pack.integrity.canonicalSha256 === decoderPack.integrity.canonicalSha256) ? "bundled" : "local"}
+            </p>
+          </section>
 
           <div className="capture-transport-tabs" role="tablist" aria-label="Capture transport">
             <button
@@ -1955,6 +2056,9 @@ export function CaptureDialog({
               <div><dt>Records retained</dt><dd>{totals.records.toLocaleString()}</dd></div>
               <div><dt>Bytes retained</dt><dd>{formatBytes(totals.recordedBytes)}</dd></div>
             </dl>
+            <p className="capture-transport-state">
+              Decoder: <strong>{decoderPack.displayName}</strong> · {decoderPack.revision} · {decoderPack.integrity.canonicalSha256.slice(0, 12)}
+            </p>
             {transport === "udp" && udpStatus && (
               <p className="capture-transport-state">
                 Bridge state: <strong>{udpStatus.state}</strong> · subscribers: {udpStatus.subscribers.toLocaleString()}

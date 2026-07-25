@@ -1,8 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 
 import { expect, test, type Page } from "@playwright/test";
 import { strFromU8, unzipSync } from "fflate";
 
+import { NMEA0183_DECODER_PACK } from "../../src/domain/decoder";
+import { sealDecoderPack } from "../../src/domain/decoder-pack";
 import { verifyEvidenceBundle } from "./support/archive";
 import {
   startLoopbackBridge,
@@ -124,11 +126,190 @@ function jsonArchiveEntry<T>(entries: Record<string, Uint8Array>, path: string):
   return JSON.parse(strFromU8(bytes)) as T;
 }
 
+async function openEvidenceBundle(
+  page: Page,
+  bundlePath: string,
+  expectedTitle: string,
+): Promise<ReturnType<Page["getByRole"]>> {
+  await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(bundlePath);
+  const workspace = page.getByRole("main", { name: "Received incident evidence workspace" });
+  await expect(workspace).toBeVisible({ timeout: 30_000 });
+  await expect(workspace.getByRole("heading", { name: expectedTitle, level: 1 })).toBeVisible();
+  await expect(workspace.getByRole("region", { name: "Evidence verification claims" }))
+    .toContainText("Internally Consistent");
+  return workspace;
+}
+
 let bridge: LoopbackBridge | undefined;
 
 test.afterEach(async () => {
   await bridge?.close();
   bridge = undefined;
+});
+
+test("captures real NMEA UDP traffic and hands off the exact decoder interpretation", async ({ page }, testInfo) => {
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+
+  const title = "NMEA decoder portability proof";
+  const nmeaHex = NMEA0183_DECODER_PACK.fixtures.flatMap((fixture) =>
+    fixture.records.map((record) => record.dataHex));
+  const { integrity: _integrity, ...portableDraft } = structuredClone(NMEA0183_DECODER_PACK);
+  portableDraft.id = "NMEA-0183-GIG-HARBOR";
+  portableDraft.revision = "harbor-reference-v1";
+  portableDraft.displayName = "Gig Harbor NMEA reference";
+  portableDraft.description = "Local NMEA 0183 decoder pack used to prove protocol portability.";
+  const portablePack = sealDecoderPack(portableDraft);
+  bridge = await startLoopbackBridge();
+  await page.goto("/");
+  await page.getByRole("button", { name: /Live capture UDP or serial/ }).click();
+  const captureDialog = page.getByRole("dialog", { name: "Record live telemetry" });
+  await captureDialog.getByLabel("Session title", { exact: true }).fill(title);
+  await captureDialog.getByLabel(/Display timezone/).fill("UTC");
+  const packPath = testInfo.outputPath("gig-harbor-nmea-reference.nldecoder");
+  await writeFile(packPath, `${JSON.stringify(portablePack, null, 2)}\n`);
+  await captureDialog.locator("input[type='file'][accept*='.nldecoder']").setInputFiles(packPath);
+  await expect(captureDialog).toContainText("Loaded Gig Harbor NMEA reference harbor-reference-v1; 4 fixtures passed.");
+  await expect(captureDialog).toContainText(portablePack.integrity.canonicalSha256.slice(0, 12));
+  await expect(captureDialog).toContainText("local");
+  await captureDialog.getByLabel(/Bridge URL/).fill(bridge.controlUrl);
+  await captureDialog.getByLabel("Bridge token", { exact: true }).fill(bridge.token);
+  await captureDialog.getByLabel("UDP bind host", { exact: true }).fill("127.0.0.1");
+  await captureDialog.getByLabel(/UDP port/).fill("0");
+  await captureDialog.getByRole("button", { name: "Start UDP capture" }).click();
+  await expect(captureDialog.getByRole("region", { name: "Recording" })).toBeVisible();
+
+  const sent = await bridge.sendDatagrams(nmeaHex, { intervalMs: 15 });
+  const sentBytes = sent.reduce((total, datagram) => total + datagram.byteLength, 0);
+  await bridge.waitForStatus((status) => status.capture?.datagrams === sent.length);
+  await expect(captureDialog.getByText("Records retained", { exact: true }).locator("..")).toContainText(String(sent.length));
+
+  const sessionDownloadPromise = page.waitForEvent("download");
+  await captureDialog.getByRole("button", { name: "Stop, save & replay" }).click();
+  const sessionDownload = await sessionDownloadPromise;
+  const sessionPath = testInfo.outputPath("nmea-captured-session.nlsession");
+  await sessionDownload.saveAs(sessionPath);
+  await expect(page.getByRole("heading", { name: title, level: 1 })).toBeVisible();
+
+  const document = JSON.parse(await readFile(sessionPath, "utf8")) as CapturedSessionDocument & {
+    decoder: {
+      id: string;
+      revision: string;
+      schemaHash: string;
+      packHash: string;
+      runtimeId: string;
+      runtimeRevision: string;
+    };
+    decoderPack: {
+      integrity: { canonicalSha256: string };
+      runtime: { id: string; revision: string };
+    };
+  };
+  expect(document.records.map((record) => record.dataHex.toLowerCase())).toEqual(
+    sent.map((datagram) => datagram.dataHex),
+  );
+  expect(document.captureIntegrity).toMatchObject({
+    status: "verified",
+    assessmentBasis: "udp-bridge-reconciled",
+    issueCodes: [],
+  });
+  expect(document.decoder).toMatchObject({
+    id: "NMEA-0183-GIG-HARBOR",
+    revision: "harbor-reference-v1",
+    packHash: portablePack.integrity.canonicalSha256,
+    runtimeId: "nmea0183-line-v1",
+    runtimeRevision: "1",
+  });
+  expect(document.decoderPack).toMatchObject({
+    integrity: { canonicalSha256: portablePack.integrity.canonicalSha256 },
+    runtime: { id: "nmea0183-line-v1", revision: "1" },
+  });
+
+  const bundlePanel = page.getByRole("region", { name: "Incident bundle preview" });
+  await bundlePanel.getByRole("button", { name: "Create incident bundle" }).click();
+  const bundleDialog = page.getByRole("dialog", { name: "Package this incident for handoff?" });
+  const bundleDownloadPromise = page.waitForEvent("download");
+  await bundleDialog.getByRole("button", { name: "Build and download" }).click();
+  const bundleDownload = await bundleDownloadPromise;
+  const bundlePath = testInfo.outputPath("nmea-evidence.nlb");
+  await bundleDownload.saveAs(bundlePath);
+
+  const verified = await verifyEvidenceBundle(bundlePath);
+  expect(verified.manifest.session).toMatchObject({
+    decoderId: "NMEA-0183-GIG-HARBOR",
+    decoderRevision: "harbor-reference-v1",
+    packHash: portablePack.integrity.canonicalSha256,
+    runtimeId: "nmea0183-line-v1",
+    runtimeRevision: "1",
+  });
+  expect(verified.rawRecords.map((record) => record.dataHex.toLowerCase())).toEqual(
+    sent.map((datagram) => datagram.dataHex),
+  );
+  expect(verified.decodedRecordCount).toBe(sent.length);
+  expect(verified.report.warnings).not.toContain(
+    "Decoded packet rows could not be replay-checked because this receiver does not implement the declared decoder.",
+  );
+  const entries = unzipSync(new Uint8Array(await readFile(bundlePath)));
+  const schema = jsonArchiveEntry<{
+    schema: { packSha256: string; runtimeId: string; runtimeRevision: string };
+    decoderPack: { integrity: { canonicalSha256: string } };
+  }>(entries, "schema/schema.json");
+  expect(schema).toMatchObject({
+    schema: {
+      packSha256: portablePack.integrity.canonicalSha256,
+      runtimeId: "nmea0183-line-v1",
+      runtimeRevision: "1",
+    },
+    decoderPack: {
+      integrity: { canonicalSha256: portablePack.integrity.canonicalSha256 },
+    },
+  });
+
+  await page.getByRole("dialog", { name: "Handoff archive is ready" })
+    .getByRole("button", { name: "Return to session" })
+    .click();
+  const receiverTitle = verified.manifest.selection.title ?? title;
+  const receiver = await openEvidenceBundle(page, bundlePath, receiverTitle);
+  const claims = receiver.getByRole("region", { name: "Evidence verification claims" });
+  await expect(claims).toContainText("Evidence completeness");
+  await expect(claims).toContainText("Verified");
+  await expect(claims).toContainText("Source authenticity");
+  await expect(claims).toContainText("Not Established");
+  await expect(receiver.getByText("NMEA GGA · Global Positioning System Fix Data", { exact: true }).first())
+    .toBeVisible();
+  await receiver.getByRole("tab", { name: "provenance" }).click();
+  await expect(receiver.getByRole("tabpanel", { name: "provenance" }))
+    .toContainText("NMEA-0183-GIG-HARBOR");
+
+  const receiverFinding = "Receiver independently reproduced the NMEA interpretation.";
+  await receiver.getByRole("tab", { name: "notes" }).click();
+  await receiver.getByLabel("Receiver finding for this evidence bundle").fill(receiverFinding);
+  await expect(receiver.getByText("Stored separately", { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Harbor relay downlink", level: 1 })).toBeVisible();
+  const reopenedReceiver = await openEvidenceBundle(page, bundlePath, receiverTitle);
+  await reopenedReceiver.getByRole("tab", { name: "notes" }).click();
+  await expect(reopenedReceiver.getByLabel("Receiver finding for this evidence bundle"))
+    .toHaveValue(receiverFinding);
+
+  const malformedBundlePath = testInfo.outputPath("malformed-evidence.nlb");
+  await writeFile(malformedBundlePath, "This is not a NarrowsLink evidence archive.");
+  await page.getByLabel("Choose a NarrowsLink evidence bundle").setInputFiles(malformedBundlePath);
+  const rejectedDialog = page.getByRole("dialog", { name: "malformed-evidence.nlb was not opened" });
+  await expect(rejectedDialog).toBeVisible();
+  await expect(rejectedDialog).toContainText("Evidence bundle rejected");
+  await expect(rejectedDialog).toContainText("The previously open workspace remains unchanged.");
+  await rejectedDialog.getByRole("button", { name: "Return to workspace" }).click();
+  await expect(reopenedReceiver.getByRole("heading", { name: receiverTitle, level: 1 })).toBeVisible();
+  await expect(reopenedReceiver.getByLabel("Receiver finding for this evidence bundle"))
+    .toHaveValue(receiverFinding);
+
+  expect(sentBytes).toBeGreaterThan(0);
+  expect(browserErrors).toEqual([]);
 });
 
 test("records UDP, replays and investigates it, then exports independently verifiable evidence", async ({ page }, testInfo) => {
@@ -462,6 +643,18 @@ test("records UDP, replays and investigates it, then exports independently verif
   expect(artifactCounts.get("transport/journal.json")).toBe(terminalJournal.entries.length);
 
   await readyBundleDialog.getByRole("button", { name: "Return to session" }).click();
+  const receiver = await openEvidenceBundle(page, bundlePath, RANGE_TITLE);
+  await expect(receiver.getByRole("region", { name: "Evidence verification claims" })).toContainText("Verified");
+  await expect(receiver.getByText(`${expectedRangeRecords.length} packet rows`, { exact: true })).toBeVisible();
+  await expect(receiver.locator(`.receiver-mark.annotation[title="${MARKER_TITLE}"]`)).toBeVisible();
+  await receiver.getByRole("tab", { name: "notes" }).click();
+  await expect(receiver.getByRole("tabpanel", { name: "notes" })).toContainText(OPERATOR_NOTE);
+  await receiver.getByRole("tab", { name: "provenance" }).click();
+  await expect(receiver.getByRole("tabpanel", { name: "provenance" }))
+    .toContainText(archive.manifest.session.decoderId);
+  await receiver.getByRole("button", { name: "Return to demo session" }).click();
+  await expect(page.getByRole("heading", { name: "Harbor relay downlink", level: 1 })).toBeVisible();
+
   await page.reload();
   await expect(page.getByRole("heading", { name: "Harbor relay downlink", level: 1 })).toBeVisible();
   const reopenButton = page.getByRole("button", {

@@ -1,4 +1,4 @@
-import { inflateRawSync } from "node:zlib";
+import { Inflate } from "fflate";
 
 export const EVIDENCE_ZIP_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 export const EVIDENCE_ZIP_MAX_ENTRIES = 16;
@@ -117,10 +117,11 @@ interface LocalEntryRange {
   end: number;
 }
 
-interface InflateInfoResult {
-  buffer: Uint8Array;
-  engine: {
-    bytesWritten: number;
+interface InspectableInflate {
+  p?: Uint8Array;
+  s?: {
+    f?: number;
+    p?: number;
   };
 }
 
@@ -537,6 +538,55 @@ function crc32(bytes: Uint8Array): number {
   return (checksum ^ 0xffffffff) >>> 0;
 }
 
+function inflateRawExact(
+  compressed: Uint8Array,
+  expectedBytes: number,
+  entryPath: string,
+): Uint8Array {
+  const output = new Uint8Array(expectedBytes);
+  let written = 0;
+  const inflater = new Inflate((chunk) => {
+    if (chunk.byteLength > expectedBytes - written) {
+      fail(
+        "size-mismatch",
+        `DEFLATE entry ${JSON.stringify(entryPath)} exceeds its declared uncompressed size.`,
+        entryPath,
+      );
+    }
+    output.set(chunk, written);
+    written += chunk.byteLength;
+  });
+
+  const chunkBytes = 4 * 1024;
+  if (compressed.byteLength === 0) {
+    inflater.push(compressed, true);
+  } else {
+    for (let offset = 0; offset < compressed.byteLength; offset += chunkBytes) {
+      const end = Math.min(compressed.byteLength, offset + chunkBytes);
+      inflater.push(compressed.subarray(offset, end), end === compressed.byteLength);
+    }
+  }
+
+  const state = inflater as unknown as InspectableInflate;
+  if (state.s?.f !== 1) {
+    fail(
+      "decompression-failed",
+      `DEFLATE entry ${JSON.stringify(entryPath)} does not contain a complete terminal block.`,
+      entryPath,
+    );
+  }
+  const bufferedBytes = state.p?.byteLength ?? 0;
+  const partialByte = (state.s?.p ?? 0) > 0 ? 1 : 0;
+  if (bufferedBytes - partialByte !== 0) {
+    fail(
+      "compressed-input-not-consumed",
+      `DEFLATE entry ${JSON.stringify(entryPath)} contains trailing compressed input.`,
+      entryPath,
+    );
+  }
+  return output.subarray(0, written);
+}
+
 function extractEntry(archive: Uint8Array, entry: CentralDirectoryEntry, range: LocalEntryRange): Uint8Array {
   const compressed = archive.subarray(range.dataStart, range.end);
   let output: Uint8Array;
@@ -547,18 +597,7 @@ function extractEntry(archive: Uint8Array, entry: CentralDirectoryEntry, range: 
     output = Uint8Array.from(compressed);
   } else {
     try {
-      const result = inflateRawSync(compressed, {
-        info: true,
-        maxOutputLength: Math.max(1, entry.uncompressedSize),
-      }) as unknown as InflateInfoResult;
-      if (result.engine.bytesWritten !== compressed.byteLength) {
-        fail(
-          "compressed-input-not-consumed",
-          `DEFLATE entry ${JSON.stringify(entry.path)} contains trailing compressed input.`,
-          entry.path,
-        );
-      }
-      output = Uint8Array.from(result.buffer);
+      output = inflateRawExact(compressed, entry.uncompressedSize, entry.path);
     } catch (cause) {
       if (cause instanceof EvidenceZipError) throw cause;
       fail(

@@ -1,7 +1,8 @@
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 
-import { SUPPORTED_DECODER } from "../domain/decoder";
+import { NMEA0183_DECODER_PACK, SUPPORTED_DECODER } from "../domain/decoder";
+import { decoderDescriptorForPack } from "../domain/decoder-pack";
 import type { SessionDocument, SessionDocumentV2 } from "../domain/types";
 import {
   createSessionLibrary,
@@ -68,9 +69,57 @@ function version2Session(): SessionDocumentV2 {
   };
 }
 
+function nmeaVersion2Session(): SessionDocumentV2 {
+  const fixture = NMEA0183_DECODER_PACK.fixtures[0];
+  const fixtureRecord = fixture?.records[0];
+  if (!fixtureRecord) throw new Error("Expected NMEA fixture record");
+  const bytes = fixtureRecord.dataHex.length / 2;
+  return {
+    format: "narrowslink/session",
+    formatVersion: 2,
+    id: "session-nmea",
+    title: "NMEA replay",
+    startedAt: "2026-07-16T04:38:12.000Z",
+    displayTimeZone: "America/Los_Angeles",
+    durationUs: fixtureRecord.offsetUs + 1,
+    source: { id: "nmea-file", kind: "file", label: "NMEA fixture" },
+    decoder: decoderDescriptorForPack(NMEA0183_DECODER_PACK),
+    decoderPack: NMEA0183_DECODER_PACK,
+    records: [{
+      id: "nmea-record-0",
+      index: 0,
+      sourceId: "nmea-file",
+      offsetUs: fixtureRecord.offsetUs,
+      dataHex: fixtureRecord.dataHex,
+      captureBytes: bytes,
+      wireBytes: bytes,
+      transport: { kind: "file" },
+    }],
+    incidents: [],
+    transportEvents: [],
+    captureIntegrity: {
+      schemaVersion: 1,
+      status: "unknown",
+      assessmentBasis: "file-source-unassessed",
+      stopDisposition: "not-observed",
+      stopOffsetUs: null,
+      eventLogComplete: false,
+      input: {
+        unit: "unknown",
+        observedUnits: null,
+        observedBytes: null,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: { records: 1, bytes },
+      issueCodes: ["file-source-unassessed"],
+    },
+  };
+}
+
 function oversizedSession(): SessionDocument {
   const dataHex = "00".repeat(65_500);
-  const records = Array.from({ length: 257 }, (_, index) => ({
+  const records = Array.from({ length: 513 }, (_, index) => ({
     id: `record-${index}`,
     index,
     sourceId: "alpha-udp",
@@ -112,10 +161,36 @@ async function corruptSerializedContent(
     const store = transaction.objectStore(SESSION_LIBRARY_STORE_NAME);
     const value = await waitForRequest(store.get(identity)) as Record<string, unknown> | undefined;
     if (!value) throw new Error("Expected stored session record");
+    const corrupt = value.recordVersion === 3
+      ? { ...value, canonicalBytes: new TextEncoder().encode("{").buffer }
+      : value.recordVersion === 2
+        ? { ...value, canonicalBlob: new Blob(["{"]) }
+        : { ...value, serialized: "{" };
     await Promise.all([
-      waitForRequest(store.put({ ...value, serialized: "{" })),
+      waitForRequest(store.put(corrupt)),
       completed,
     ]);
+  } finally {
+    database.close();
+  }
+}
+
+async function storedRecord(
+  factory: IDBFactory,
+  databaseName: string,
+  identity: string,
+): Promise<Record<string, unknown>> {
+  const database = await waitForRequest(factory.open(databaseName, SESSION_LIBRARY_DB_VERSION));
+  try {
+    const transaction = database.transaction(SESSION_LIBRARY_STORE_NAME, "readonly");
+    const [value] = await Promise.all([
+      waitForRequest(transaction.objectStore(SESSION_LIBRARY_STORE_NAME).get(identity)),
+      waitForTransaction(transaction),
+    ]);
+    if (typeof value !== "object" || value === null) {
+      throw new Error("Expected stored session record");
+    }
+    return value as Record<string, unknown>;
   } finally {
     database.close();
   }
@@ -153,6 +228,10 @@ describe("durable local session library", () => {
     });
     expect(saved.byteLength).toBeGreaterThan(0);
     expect(await library.list()).toEqual([saved]);
+    const persisted = await storedRecord(factory, databaseName, saved.identity);
+    expect(persisted.recordVersion).toBe(3);
+    expect(persisted.canonicalBytes).toBeInstanceOf(ArrayBuffer);
+    expect((persisted.canonicalBytes as ArrayBuffer).byteLength).toBe(saved.byteLength);
 
     const loaded = await library.load(saved.identity);
     expect(loaded.document).toEqual(document);
@@ -183,6 +262,61 @@ describe("durable local session library", () => {
     expect(loaded.document.formatVersion).toBe(2);
     expect(loaded.transportEvents).toEqual([]);
     expect(loaded.captureIntegrity).toEqual(document.captureIntegrity);
+  });
+
+  it("reopens a version 2 Blob-backed library record without rewriting it", async () => {
+    const factory = new IDBFactory();
+    const databaseName = "session-library-blob-record";
+    const library = createSessionLibrary({ indexedDB: factory, databaseName });
+    const saved = await library.save(session());
+    const current = await storedRecord(factory, databaseName, saved.identity);
+    const canonicalBytes = current.canonicalBytes;
+    if (!(canonicalBytes instanceof ArrayBuffer)) {
+      throw new Error("Expected version 3 canonical bytes");
+    }
+
+    const database = await waitForRequest(factory.open(databaseName, SESSION_LIBRARY_DB_VERSION));
+    try {
+      const transaction = database.transaction(SESSION_LIBRARY_STORE_NAME, "readwrite");
+      const completed = waitForTransaction(transaction);
+      const {
+        canonicalBytes: _canonicalBytes,
+        recordVersion: _recordVersion,
+        ...metadata
+      } = current;
+      await Promise.all([
+        waitForRequest(transaction.objectStore(SESSION_LIBRARY_STORE_NAME).put({
+          ...metadata,
+          recordVersion: 2,
+          canonicalBlob: new Blob([canonicalBytes], { type: "application/json" }),
+        })),
+        completed,
+      ]);
+    } finally {
+      database.close();
+    }
+
+    const loaded = await library.load(saved.identity);
+    expect(loaded.document).toEqual(session());
+    expect((await storedRecord(factory, databaseName, saved.identity)).recordVersion).toBe(2);
+  });
+
+  it("persists and reopens the exact embedded decoder pack", async () => {
+    const library = createSessionLibrary({
+      indexedDB: new IDBFactory(),
+      databaseName: "session-library-nmea-pack",
+    });
+    const document = nmeaVersion2Session();
+
+    const saved = await library.save(document);
+    const loaded = await library.load(saved.identity);
+
+    expect(loaded.decoderPack.integrity.canonicalSha256).toBe(NMEA0183_DECODER_PACK.integrity.canonicalSha256);
+    expect(loaded.frames[0]).toMatchObject({
+      status: "complete",
+      familyName: "NMEA GGA · Global Positioning System Fix Data",
+    });
+    expect(loaded.document).toEqual(document);
   });
 
   it("validates a session document before any record is written", async () => {
@@ -218,7 +352,7 @@ describe("durable local session library", () => {
     await expect(library.save(oversizedSession())).rejects.toMatchObject({
       name: "SessionLibraryError",
       code: "too-large",
-      message: "The session exceeds the 32 MiB local-library safety limit and was not saved.",
+      message: "The session exceeds the 64 MiB local-library safety limit and was not saved.",
     });
     expect(openCalls).toBe(0);
   });

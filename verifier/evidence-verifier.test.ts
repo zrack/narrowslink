@@ -9,11 +9,18 @@ import { describe, expect, it } from "vitest";
 
 import { isCliEntry, renderVerificationReport, runCli } from "../scripts/narrowslink";
 import { buildEvidenceBundle, type EvidenceBundleManifest } from "../src/domain/bundle";
-import { bytesToHex, encodeFrame, SUPPORTED_DECODER } from "../src/domain/decoder";
+import {
+  bytesToHex,
+  encodeFrame,
+  NMEA0183_DECODER_PACK,
+  SUPPORTED_DECODER,
+} from "../src/domain/decoder";
+import { decoderDescriptorForPack } from "../src/domain/decoder-pack";
 import { EVIDENCE_ARCHIVE_LIMITS } from "../src/domain/evidence-contract";
 import { parseSession } from "../src/domain/session";
 import type { SessionDocumentV1, SessionDocumentV2, SourceRecord } from "../src/domain/types";
-import { EvidenceVerificationError, verifyEvidenceBundleBytes, verifyEvidenceBundleFile } from "./evidence-verifier";
+import { EvidenceVerificationError, verifyEvidenceBundleBytes } from "./evidence-verifier";
+import { verifyEvidenceBundleFile } from "./evidence-verifier-file";
 
 const generatedAt = "2026-07-18T18:00:00.000Z";
 
@@ -206,6 +213,56 @@ function makeSerialSession(includeProvenance = true) {
   return parseSession(document);
 }
 
+function makeNmeaFileSession() {
+  const records: SourceRecord[] = NMEA0183_DECODER_PACK.fixtures.flatMap((fixture) =>
+    fixture.records.map((item, index) => ({
+      id: `${fixture.id}-${index}`,
+      index: 0,
+      sourceId: "nmea-file-source",
+      offsetUs: item.offsetUs,
+      dataHex: item.dataHex,
+      captureBytes: item.dataHex.length / 2,
+      wireBytes: item.dataHex.length / 2,
+      transport: { kind: "file" as const },
+    })));
+  records.sort((left, right) => left.offsetUs - right.offsetUs);
+  records.forEach((item, index) => { item.index = index; });
+  const bytes = records.reduce((total, item) => total + item.captureBytes, 0);
+  const document: SessionDocumentV2 = {
+    format: "narrowslink/session",
+    formatVersion: 2,
+    id: "receiver-nmea",
+    title: "Receiver NMEA evidence",
+    startedAt: "2026-07-18T17:59:00.000Z",
+    displayTimeZone: "America/Los_Angeles",
+    durationUs: Math.max(...records.map((item) => item.offsetUs)) + 1,
+    source: { id: "nmea-file-source", kind: "file", label: "NMEA conformance source" },
+    decoder: decoderDescriptorForPack(NMEA0183_DECODER_PACK),
+    decoderPack: NMEA0183_DECODER_PACK,
+    records,
+    incidents: [],
+    transportEvents: [],
+    captureIntegrity: {
+      schemaVersion: 1,
+      status: "unknown",
+      assessmentBasis: "file-source-unassessed",
+      stopDisposition: "not-observed",
+      stopOffsetUs: null,
+      eventLogComplete: false,
+      input: {
+        unit: "unknown",
+        observedUnits: null,
+        observedBytes: null,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: { records: records.length, bytes },
+      issueCodes: ["file-source-unassessed"],
+    },
+  };
+  return parseSession(document);
+}
+
 function makeIncompleteUdpSession() {
   const document = structuredClone(makeUdpSession().document) as SessionDocumentV2;
   document.transportEvents = [{
@@ -369,6 +426,29 @@ describe("production evidence receiver verifier", () => {
     expect(minimal.rawRecords).toEqual([]);
     expect(minimal.report.integrity).toBe("internally-consistent");
     expect(minimal.report.warnings).toContain("Raw source records were excluded from this bundle.");
+  });
+
+  it("replays NMEA evidence through the exact embedded decoder pack", async () => {
+    const session = makeNmeaFileSession();
+    const verified = verifyEvidenceBundleBytes(await buildEvidenceBundle({
+      session,
+      range: { startUs: 0, endUs: session.document.durationUs },
+      generatedAt,
+    }));
+
+    expect(verified.manifest.session).toMatchObject({
+      decoderId: "NMEA-0183",
+      decoderRevision: "reference-v1",
+      packHash: NMEA0183_DECODER_PACK.integrity.canonicalSha256,
+      runtimeId: "nmea0183-line-v1",
+      runtimeRevision: "1",
+    });
+    expect(verified.decodedRecordCount).toBe(
+      NMEA0183_DECODER_PACK.fixtures.reduce((total, fixture) => total + fixture.records.length, 0),
+    );
+    expect(verified.report.warnings).not.toContain(
+      "Decoded packet rows could not be replay-checked because this receiver does not implement the declared decoder.",
+    );
   });
 
   it("returns success for an internally consistent bundle that truthfully discloses incomplete evidence", async () => {

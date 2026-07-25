@@ -398,7 +398,7 @@ describe("CaptureRecorder", () => {
     }
   });
 
-  it("fills the conservative 32 MiB file budget and remains re-importable at the accepted boundary", async () => {
+  it("fills the conservative 64 MiB file budget and remains re-importable at the accepted boundary", async () => {
     const recorder = udpRecorder();
     const maximumRecord = new Uint8Array(MAX_CAPTURE_RECORD_BYTES).fill(0x11);
     let offsetUs = 0;

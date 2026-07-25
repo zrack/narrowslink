@@ -13,6 +13,12 @@ local UDP bridge, the bundled Harbor Relay fixture, and the offline evidence
 receiver. It has no npm runtime dependencies and does not require a source
 checkout, Vite, or development tooling.
 
+Imported and saved replay documents are bounded to 64 MiB of canonical UTF-8
+JSON, 200,000 records, and 24 hours. Long replay, comparison, and bundle
+operations run in local Web Workers with progress and cancellation. Live
+capture retains a separate ceiling of 100,000 records, 32 MiB of retained
+payload bytes, 24 hours, and a canonical file within the replay limit.
+
 ## Install and run
 
 Install the downloaded release asset without running package scripts:
