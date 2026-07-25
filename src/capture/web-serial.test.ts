@@ -193,6 +193,49 @@ describe("WebSerialCapture", () => {
     expect(close).toHaveBeenCalledOnce();
     expect(capture.active).toBe(false);
   });
+
+  it("switches future chunks to new handlers without reopening the selected port", async () => {
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const readable = new ReadableStream<Uint8Array>({
+      start(nextController) {
+        controller = nextController;
+      },
+    });
+    const port: WebSerialPort = {
+      readable,
+      open: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      getInfo: () => ({ usbVendorId: 0x1209 }),
+    };
+    const requestPort = vi.fn(async () => port);
+    const preflight: number[][] = [];
+    const recording: number[][] = [];
+    const capture = new WebSerialCapture({ requestPort });
+
+    await capture.start({ baudRate: 115_200 }, {
+      onChunk: (bytes) => preflight.push([...bytes]),
+    });
+    controller?.enqueue(Uint8Array.from([1, 2]));
+    await vi.waitFor(() => expect(preflight).toEqual([[1, 2]]));
+
+    capture.replaceHandlers({
+      onChunk: (bytes) => recording.push([...bytes]),
+    });
+    controller?.enqueue(Uint8Array.from([3, 4]));
+    await vi.waitFor(() => expect(recording).toEqual([[3, 4]]));
+    await capture.stop();
+
+    expect(preflight).toEqual([[1, 2]]);
+    expect(requestPort).toHaveBeenCalledOnce();
+    expect(port.open).toHaveBeenCalledOnce();
+  });
+
+  it("rejects handler replacement when no serial port is open", () => {
+    const capture = new WebSerialCapture({ requestPort: vi.fn() });
+    expect(() => capture.replaceHandlers({ onChunk: () => undefined })).toThrow(
+      "Serial handlers can only be replaced while the selected port is open.",
+    );
+  });
 });
 
 describe("getBrowserSerialApi", () => {

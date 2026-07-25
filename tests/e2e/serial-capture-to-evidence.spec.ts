@@ -114,11 +114,15 @@ test("records fragmented serial input and carries it through durable verified ev
   await captureDialog.getByRole("tab", { name: "Serial port" }).click();
   await captureDialog.getByLabel("Session title", { exact: true }).fill(CAPTURE_TITLE);
   await captureDialog.getByLabel(/Display timezone/).fill("UTC");
-  await captureDialog.getByRole("button", { name: "Select port & start" }).click();
-  await expect(captureDialog.getByRole("region", { name: "Recording" })).toBeVisible();
+  await captureDialog.getByRole("button", { name: "Select port & preflight" }).click();
+  await expect(captureDialog.getByRole("region", { name: "Preflight waiting for traffic" })).toBeVisible();
   await expect(captureDialog.getByText(/Serial state:/)).toContainText("open");
 
   const frames = [501, 502, 503, 504, 505].map(heartbeatFrame);
+  await serial.emit(heartbeatFrame(500));
+  await expect(captureDialog.getByRole("region", { name: "Preflight ready" })).toBeVisible();
+  await captureDialog.getByRole("button", { name: "Start recording" }).click();
+  await expect(captureDialog.getByRole("region", { name: "Recording" })).toBeVisible();
   const reads = [
     frames[0]!.slice(0, 5),
     concat(frames[0]!.slice(5), frames[1]!),
@@ -144,8 +148,8 @@ test("records fragmented serial input and carries it through durable verified ev
       parity: "none",
       stopBits: 1,
     }],
-    emittedReads: 4,
-    emittedBytes: observedBytes,
+    emittedReads: 5,
+    emittedBytes: observedBytes + heartbeatFrame(500).byteLength,
     readerCancellations: 0,
     portCloses: 0,
   });

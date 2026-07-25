@@ -10,7 +10,15 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { DownloadSimple, SpinnerGap, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
+import {
+  DownloadSimple,
+  FloppyDisk,
+  SpinnerGap,
+  Trash,
+  UploadSimple,
+  WarningCircle,
+  X,
+} from "@phosphor-icons/react";
 
 import type { CaptureIntegrityIssueCode, CaptureIntegrityReceipt, SessionDocument, UdpBridgeJournal } from "../domain/types";
 import {
@@ -29,6 +37,21 @@ import {
   MANUAL_OPERATOR_RUNTIME,
   type OperatorRuntime,
 } from "../runtime/operator-runtime";
+import {
+  clearCaptureProfiles,
+  createCaptureProfile,
+  loadCaptureProfiles,
+  removeCaptureProfile,
+  saveCaptureProfile,
+  type CaptureProfileDocument,
+  type CaptureProfileSettings,
+} from "./capture-profile";
+import {
+  CapturePreflightAnalyzer,
+  MAX_PREFLIGHT_ANALYZED_BYTES,
+  MAX_PREFLIGHT_ANALYZED_RECORDS,
+  type CapturePreflightSummary,
+} from "./capture-preflight";
 import {
   createSerialAssembler,
   type SerialRecordAssembler,
@@ -55,13 +78,24 @@ import {
 import {
   getBrowserSerialApi,
   WebSerialCapture,
+  type SerialCaptureHandlers,
   type SerialFlowControl,
   type SerialCaptureDevice,
   type SerialParity,
 } from "./web-serial";
 
 type CaptureTransport = "udp" | "serial";
-type CapturePhase = "ready" | "starting" | "canceling" | "capturing" | "stopping" | "saving" | "save-error" | "finalize-error";
+type CapturePhase =
+  | "ready"
+  | "starting"
+  | "preflighting"
+  | "canceling"
+  | "capturing"
+  | "stopping"
+  | "saving"
+  | "save-error"
+  | "finalize-error";
+type CaptureStartingPurpose = "preflight" | "recording";
 type SerialConnectionState = "idle" | "selecting" | "open" | "disconnected" | "closed" | "error";
 
 interface CaptureTotals {
@@ -369,7 +403,8 @@ export interface UdpCaptureIntegritySnapshot {
 /**
  * Refreshes status before issuing the global bridge stop command. The command
  * is never sent unless the currently reported capture ID is the one returned
- * by this dialog's successful start request.
+ * by this dialog's successful start request, and success requires the bridge
+ * to confirm that capture is no longer active.
  */
 export async function stopUdpCaptureIfOwned(
   client: UdpStopClient,
@@ -386,6 +421,11 @@ export async function stopUdpCaptureIfOwned(
   if (stopped.capture?.id !== ownedCaptureId) {
     throw new UdpCaptureOwnershipError(
       "The bridge stop response identified a different capture. Clean save was refused.",
+    );
+  }
+  if (stopped.state !== "stopped" && stopped.state !== "idle") {
+    throw new UdpCaptureIntegrityError(
+      `The bridge stop response remained in ${stopped.state} state. Capture shutdown was not confirmed.`,
     );
   }
   return stopped;
@@ -547,8 +587,22 @@ function useDialogFocus(
   }, [dialogRef]);
 }
 
-function capturePhaseLabel(phase: CapturePhase, transport: CaptureTransport, issue: string): string {
-  if (phase === "starting") return transport === "udp" ? "Connecting to bridge" : "Selecting serial device";
+function capturePhaseLabel(
+  phase: CapturePhase,
+  transport: CaptureTransport,
+  issue: string,
+  startingPurpose: CaptureStartingPurpose,
+  preflight: CapturePreflightSummary | null,
+): string {
+  if (phase === "starting") {
+    if (startingPurpose === "recording") return "Establishing evidence boundary";
+    return transport === "udp" ? "Opening UDP preflight" : "Selecting serial device";
+  }
+  if (phase === "preflighting") {
+    if (preflight?.readiness === "ready") return "Preflight ready";
+    if (preflight?.readiness === "attention") return "Preflight needs attention";
+    return "Preflight waiting for traffic";
+  }
   if (phase === "canceling") return "Capture setup cancelled";
   if (phase === "capturing") return issue ? "Recording with attention required" : "Recording";
   if (phase === "stopping") return "Stopping transport";
@@ -571,7 +625,9 @@ export function CaptureDialog({
   const discardTriggerRef = useRef<HTMLButtonElement>(null);
   const discardKeepRef = useRef<HTMLButtonElement>(null);
   const decoderPackInputRef = useRef<HTMLInputElement>(null);
+  const profileNameInputRef = useRef<HTMLInputElement>(null);
   const transportRef = useRef<CaptureTransport | null>(null);
+  const startingPurposeRef = useRef<CaptureStartingPurpose>("preflight");
   const recorderRef = useRef<CaptureRecorder | null>(null);
   const udpClientRef = useRef<UdpBridgeClient | null>(null);
   const udpStatusRef = useRef<UdpBridgeStatus | null>(null);
@@ -596,6 +652,9 @@ export function CaptureDialog({
   const finalizationIssueCodesRef = useRef<CaptureIntegrityIssueCode[]>([]);
   const durationLimitEventRecordedRef = useRef(false);
   const serialCaptureRef = useRef<WebSerialCapture | null>(null);
+  const serialPreflightDeviceRef = useRef<SerialCaptureDevice | null>(null);
+  const serialPreflightSettingsRef = useRef<Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }>["settings"] | null>(null);
+  const serialPreflightAssemblerRef = useRef<SerialRecordAssembler | null>(null);
   const serialProvenanceRef = useRef<Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }> | null>(null);
   const serialAssemblerRef = useRef<SerialRecordAssembler | null>(null);
   const serialDisconnectedRef = useRef(false);
@@ -613,6 +672,8 @@ export function CaptureDialog({
   const startCancelledRef = useRef(false);
   const pendingFinalizedSessionRef = useRef<SessionDocument | null>(null);
   const pendingFinalizationRef = useRef<PendingFinalization | null>(null);
+  const preflightAnalyzerRef = useRef<CapturePreflightAnalyzer | null>(null);
+  const preflightConnectedRef = useRef(false);
   const mountedRef = useRef(true);
 
   const id = useId().replace(/:/g, "");
@@ -624,6 +685,7 @@ export function CaptureDialog({
   const serialPanelId = `capture-serial-panel-${id}`;
   const udpTabId = `capture-udp-tab-${id}`;
   const serialTabId = `capture-serial-tab-${id}`;
+  const profileEditorId = `capture-profile-editor-${id}`;
 
   const [transport, setTransport] = useState<CaptureTransport>("udp");
   const [phase, setPhase] = useState<CapturePhase>("ready");
@@ -651,6 +713,13 @@ export function CaptureDialog({
   const [issue, setIssue] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [profiles, setProfiles] = useState<CaptureProfileDocument[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [profileStorageIssue, setProfileStorageIssue] = useState("");
+  const [preflightSummary, setPreflightSummary] = useState<CapturePreflightSummary | null>(null);
   const [timerTick, setTimerTick] = useState(0);
 
   const captureLocked = phase !== "ready";
@@ -666,6 +735,9 @@ export function CaptureDialog({
   const canDismiss = phase === "ready" || phase === "canceling";
   const serialAvailable = useMemo(() => getBrowserSerialApi() != null, []);
   const elapsedUs = (() => {
+    if (phase === "preflighting" || (phase === "starting" && startingPurposeRef.current === "preflight")) {
+      return Math.floor((preflightSummary?.elapsedMs ?? 0) * 1_000);
+    }
     if (durationFrozenRef.current) return frozenDurationUsRef.current;
     if (captureStartMsRef.current === 0) return lastDurationUsRef.current;
     if (transportRef.current === "udp") {
@@ -683,12 +755,33 @@ export function CaptureDialog({
   })();
   void timerTick;
 
+  useEffect(() => {
+    try {
+      setProfiles(loadCaptureProfiles());
+      setProfileStorageIssue("");
+    } catch (cause) {
+      setProfileStorageIssue(errorMessage(cause, "Saved capture profiles could not be loaded."));
+    }
+  }, []);
+
+  const markConfigurationChanged = (): void => {
+    setProfileDirty(selectedProfileId !== "");
+    setPreflightSummary(null);
+    setIssue("");
+    setNotice("");
+  };
+
+  const markConnectionChanged = (): void => {
+    setPreflightSummary(null);
+    setIssue("");
+    setNotice("");
+  };
+
   const selectDecoderPack = (packHash: string): void => {
     const selected = decoderPacks.find((pack) => pack.integrity.canonicalSha256 === packHash);
     if (!selected || captureLocked) return;
     setDecoderPack(selected);
-    setIssue("");
-    setNotice("");
+    markConfigurationChanged();
   };
 
   const loadDecoderPack = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
@@ -706,6 +799,8 @@ export function CaptureDialog({
       const result = verifyDecoderPackConformance(input);
       setLocalDecoderPack(result.pack);
       setDecoderPack(result.pack);
+      setProfileDirty(selectedProfileId !== "");
+      setPreflightSummary(null);
       setNotice(
         `Loaded ${result.pack.displayName} ${result.pack.revision}; ${result.fixtureIds.length} fixture${result.fixtureIds.length === 1 ? "" : "s"} passed.`,
       );
@@ -714,7 +809,137 @@ export function CaptureDialog({
     }
   };
 
-  const blockedClose = () => setNotice("Stop and save the capture, or explicitly discard it, before closing this dialog.");
+  const profileSettings = (): CaptureProfileSettings => {
+    if (transport === "udp") {
+      return {
+        transport: "udp",
+        host: udpHost.trim(),
+        port: strictInteger(udpPort, "UDP port", 0, 65_535),
+        multicastGroup: multicastGroup.trim() || null,
+        multicastInterface: multicastInterface.trim() || null,
+      };
+    }
+    return {
+      transport: "serial",
+      baudRate: strictInteger(baudRate, "Baud rate", 1, 4_000_000),
+      dataBits: Number(dataBits) as 7 | 8,
+      stopBits: Number(stopBits) as 1 | 2,
+      parity,
+      flowControl,
+    };
+  };
+
+  const applyProfile = (profileId: string): void => {
+    if (captureLocked) return;
+    if (!profileId) {
+      setSelectedProfileId("");
+      setProfileDirty(false);
+      setProfileEditorOpen(false);
+      setIssue("");
+      setNotice("");
+      return;
+    }
+    const profile = profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) return;
+    const pack = verifyDecoderPackConformance(profile.decoderPack).pack;
+    setDecoderPack(pack);
+    if (!BUILT_IN_DECODER_PACKS.some(
+      (candidate) => candidate.integrity.canonicalSha256 === pack.integrity.canonicalSha256,
+    )) {
+      setLocalDecoderPack(pack);
+    }
+    setTransport(profile.settings.transport);
+    if (profile.settings.transport === "udp") {
+      setUdpHost(profile.settings.host);
+      setUdpPort(String(profile.settings.port));
+      setMulticastGroup(profile.settings.multicastGroup ?? "");
+      setMulticastInterface(profile.settings.multicastInterface ?? "");
+    } else {
+      setBaudRate(String(profile.settings.baudRate));
+      setDataBits(String(profile.settings.dataBits) as "7" | "8");
+      setStopBits(String(profile.settings.stopBits) as "1" | "2");
+      setParity(profile.settings.parity);
+      setFlowControl(profile.settings.flowControl);
+    }
+    setSelectedProfileId(profile.id);
+    setProfileName(profile.name);
+    setProfileDirty(false);
+    setProfileEditorOpen(false);
+    setPreflightSummary(null);
+    setIssue("");
+    setNotice(`Loaded ${profile.name}. Bridge credentials and session naming remain operator-entered.`);
+  };
+
+  const openProfileEditor = (): void => {
+    const selected = profiles.find((profile) => profile.id === selectedProfileId);
+    setProfileName(
+      selected?.name
+      ?? `${transport === "udp" ? "UDP" : "Serial"} · ${decoderPack.displayName}`,
+    );
+    setProfileEditorOpen(true);
+    requestAnimationFrame(() => profileNameInputRef.current?.focus({ preventScroll: true }));
+  };
+
+  const persistProfile = (): void => {
+    if (captureLocked) return;
+    try {
+      const existing = profiles.find((profile) => profile.id === selectedProfileId);
+      const now = new Date().toISOString();
+      const profile = createCaptureProfile({
+        ...(existing ? { id: existing.id, createdAt: existing.createdAt } : {}),
+        name: profileName,
+        updatedAt: now,
+        decoderPack,
+        settings: profileSettings(),
+      });
+      const next = saveCaptureProfile(profile);
+      setProfiles(next);
+      setSelectedProfileId(profile.id);
+      setProfileName(profile.name);
+      setProfileDirty(false);
+      setProfileEditorOpen(false);
+      setProfileStorageIssue("");
+      setIssue("");
+      setNotice(`${profile.name} was saved locally without bridge credentials, device permissions, or telemetry payloads.`);
+    } catch (cause) {
+      setProfileStorageIssue(errorMessage(cause, "The capture profile could not be saved."));
+    }
+  };
+
+  const deleteSelectedProfile = (): void => {
+    if (captureLocked || !selectedProfileId) return;
+    const selected = profiles.find((profile) => profile.id === selectedProfileId);
+    try {
+      setProfiles(removeCaptureProfile(selectedProfileId));
+      setSelectedProfileId("");
+      setProfileDirty(false);
+      setProfileEditorOpen(false);
+      setProfileStorageIssue("");
+      setNotice(`${selected?.name ?? "The capture profile"} was removed. Current field values were kept.`);
+    } catch (cause) {
+      setProfileStorageIssue(errorMessage(cause, "The capture profile could not be removed."));
+    }
+  };
+
+  const resetProfileStorage = (): void => {
+    try {
+      clearCaptureProfiles();
+      setProfiles([]);
+      setSelectedProfileId("");
+      setProfileDirty(false);
+      setProfileEditorOpen(false);
+      setProfileStorageIssue("");
+      setNotice("Saved capture profiles were reset. Current capture settings were not changed.");
+    } catch (cause) {
+      setProfileStorageIssue(errorMessage(cause, "Saved capture profiles could not be reset."));
+    }
+  };
+
+  const blockedClose = () => setNotice(
+    phase === "preflighting"
+      ? "Stop the preflight source before closing this dialog."
+      : "Stop and save the capture, or explicitly discard it, before closing this dialog.",
+  );
   useDialogFocus(dialogRef, onClose, canDismiss, blockedClose);
 
   useEffect(() => {
@@ -728,8 +953,12 @@ export function CaptureDialog({
   }, [phase]);
 
   useEffect(() => {
-    if (phase !== "starting" && phase !== "capturing") return;
+    if (phase !== "starting" && phase !== "preflighting" && phase !== "capturing") return;
     const flush = () => {
+      const preflightAnalyzer = preflightAnalyzerRef.current;
+      if (preflightAnalyzer && (phase === "preflighting" || startingPurposeRef.current === "preflight")) {
+        setPreflightSummary(preflightAnalyzer.snapshot(nowMonotonicMs(), preflightConnectedRef.current));
+      }
       const activeTransport = transportRef.current;
       const recorder = recorderRef.current;
       setTotals({
@@ -749,7 +978,7 @@ export function CaptureDialog({
     if (phase !== "starting") return;
     const timeout = globalThis.setTimeout(() => {
       startCancelledRef.current = true;
-      setNotice("Capture setup timed out. Any late transport open will be closed without recording; dismiss the device chooser if it remains visible.");
+      setNotice("Source setup timed out. Any late transport open will be closed without recording; dismiss the device chooser if it remains visible.");
       udpClientRef.current?.disconnect();
       setPhase("canceling");
     }, 20_000);
@@ -829,6 +1058,15 @@ export function CaptureDialog({
     udpStatusRef.current = null;
   };
 
+  const resetForPreflight = (nextTransport: CaptureTransport): void => {
+    resetForStart(nextTransport);
+    const startedAtMs = nowMonotonicMs();
+    startingPurposeRef.current = "preflight";
+    preflightConnectedRef.current = false;
+    preflightAnalyzerRef.current = new CapturePreflightAnalyzer(decoderPack, startedAtMs);
+    setPreflightSummary(preflightAnalyzerRef.current.snapshot(startedAtMs, false));
+  };
+
   const clearRuntime = (): void => {
     recorderRef.current = null;
     udpClientRef.current = null;
@@ -853,6 +1091,9 @@ export function CaptureDialog({
     observedUdpDatagramsRef.current = 0;
     observedUdpBytesRef.current = 0;
     serialCaptureRef.current = null;
+    serialPreflightDeviceRef.current = null;
+    serialPreflightSettingsRef.current = null;
+    serialPreflightAssemblerRef.current = null;
     serialAssemblerRef.current = null;
     serialDisconnectedRef.current = false;
     transportRef.current = null;
@@ -862,8 +1103,11 @@ export function CaptureDialog({
     captureInputClosedRef.current = false;
     startCancelledRef.current = false;
     captureStartMsRef.current = 0;
+    lastDurationUsRef.current = 0;
     lastRetainedOffsetUsRef.current = -1;
     verifiedStopDurationUsRef.current = 0;
+    preflightConnectedRef.current = false;
+    preflightAnalyzerRef.current = null;
   };
 
   const captureEventOffsetUs = (): number => {
@@ -1082,8 +1326,140 @@ export function CaptureDialog({
     }
   };
 
-  const startUdpCapture = async (): Promise<void> => {
+  const acceptPreflightUdpDatagram = (datagram: UdpBridgeDatagram): void => {
+    const ownedCaptureId = ownedUdpCaptureIdRef.current;
+    if (!ownedCaptureId || datagram.captureId !== ownedCaptureId) return;
+    const analyzer = preflightAnalyzerRef.current;
+    if (!analyzer) return;
+    const observedAtMs = nowMonotonicMs();
+    analyzer.observeInput(datagram.byteLength, observedAtMs);
+    analyzer.observeRecord({
+      bytes: datagram.data,
+      offsetUs: datagram.offsetUs,
+      transport: "udp",
+      remoteEndpoint: {
+        address: datagram.remoteAddress,
+        port: datagram.remotePort,
+        family: datagram.remoteFamily,
+      },
+    });
+    lastDurationUsRef.current = Math.max(lastDurationUsRef.current, datagram.offsetUs + 1);
+  };
+
+  const startUdpPreflight = async (): Promise<void> => {
     if (captureLocked || transportRef.current) return;
+    if (operatorRuntime.mode === "invalid") {
+      setIssue(operatorRuntime.message);
+      return;
+    }
+    let port: number;
+    try {
+      port = strictInteger(udpPort, "UDP port", 0, 65_535);
+    } catch (cause) {
+      setIssue(errorMessage(cause, "The UDP preflight configuration is invalid."));
+      return;
+    }
+
+    resetForPreflight("udp");
+    setPhase("starting");
+    let client: UdpBridgeClient;
+    try {
+      client = new UdpBridgeClient({
+        baseUrl: bridgeUrl.trim(),
+        ...(operatorRuntime.mode === "managed"
+          ? { authentication: { mode: "same-origin-proxy" as const } }
+          : { token: bridgeToken }),
+        onStatus: (status) => {
+          udpStatusRef.current = status;
+          if (mountedRef.current) setUdpStatus(status);
+          const ownedCaptureId = ownedUdpCaptureIdRef.current;
+          if (ownedCaptureId && status.capture?.id === ownedCaptureId) {
+            lastDurationUsRef.current = Math.max(lastDurationUsRef.current, status.capture.durationUs);
+          }
+          if (status.lastError && mountedRef.current) setIssue(udpErrorMessage(status.lastError));
+        },
+        onDatagram: (datagram) => {
+          if (transportRef.current !== "udp") return;
+          if (ownedUdpCaptureIdRef.current) {
+            acceptPreflightUdpDatagram(datagram);
+          } else if (
+            pendingUdpDatagramsRef.current.length < MAX_PREFLIGHT_ANALYZED_RECORDS
+            && pendingUdpBytesRef.current + datagram.byteLength <= MAX_PREFLIGHT_ANALYZED_BYTES
+          ) {
+            pendingUdpDatagramsRef.current.push(datagram);
+            pendingUdpBytesRef.current += datagram.byteLength;
+          } else if (mountedRef.current) {
+            setIssue("UDP traffic exceeded the bounded preflight sample before ownership was confirmed. Stop and retry the preflight.");
+          }
+        },
+        onError: (error) => {
+          preflightConnectedRef.current = false;
+          if (mountedRef.current) setIssue(udpErrorMessage(error));
+        },
+      });
+    } catch (cause) {
+      clearRuntime();
+      setPhase("ready");
+      setIssue(errorMessage(cause, "The local UDP bridge configuration is invalid."));
+      return;
+    }
+    udpClientRef.current = client;
+
+    try {
+      const group = multicastGroup.trim();
+      const interfaceAddress = multicastInterface.trim();
+      const status = await client.start({
+        host: udpHost.trim(),
+        port,
+        ...(group ? { multicastGroup: group } : {}),
+        ...(interfaceAddress ? { multicastInterface: interfaceAddress } : {}),
+      });
+      if (startCancelledRef.current || !mountedRef.current) {
+        if (status.state === "capturing" && status.capture) {
+          ownedUdpCaptureIdRef.current = status.capture.id;
+          await stopUdpCaptureIfOwned(client, status.capture.id).catch(() => undefined);
+        }
+        client.disconnect();
+        clearRuntime();
+        if (mountedRef.current) {
+          setPhase("ready");
+          setNotice("UDP preflight was cancelled before the source opened.");
+        }
+        return;
+      }
+      if (status.state !== "capturing" || !status.capture || !status.udp) {
+        throw new UdpCaptureOwnershipError(
+          "The bridge did not identify the UDP preflight capture and bind address.",
+        );
+      }
+      ownedUdpCaptureIdRef.current = status.capture.id;
+      preflightConnectedRef.current = true;
+      captureStartMsRef.current = nowMonotonicMs() - status.capture.durationUs / 1_000;
+      udpStatusRef.current = status;
+      setUdpStatus(status);
+      const pending = pendingUdpDatagramsRef.current;
+      pendingUdpDatagramsRef.current = [];
+      pendingUdpBytesRef.current = 0;
+      for (const datagram of pending) acceptPreflightUdpDatagram(datagram);
+      setPhase("preflighting");
+    } catch (cause) {
+      const cancelled = startCancelledRef.current;
+      const ownedCaptureId = ownedUdpCaptureIdRef.current;
+      if (ownedCaptureId) {
+        await stopUdpCaptureIfOwned(client, ownedCaptureId).catch(() => undefined);
+      }
+      client.disconnect();
+      clearRuntime();
+      if (mountedRef.current) {
+        setPhase("ready");
+        if (cancelled) setNotice("UDP preflight was cancelled before the source opened.");
+        else setIssue(errorMessage(cause, "The UDP preflight could not be started."));
+      }
+    }
+  };
+
+  const startUdpCapture = async (): Promise<void> => {
+    if (transportRef.current) return;
     if (operatorRuntime.mode === "invalid") {
       setIssue(operatorRuntime.message);
       return;
@@ -1101,6 +1477,7 @@ export function CaptureDialog({
     }
 
     resetForStart("udp");
+    startingPurposeRef.current = "recording";
     udpRecorderConfigRef.current = {
       sessionId: createSessionId(),
       title,
@@ -1211,7 +1588,54 @@ export function CaptureDialog({
     }
   };
 
-  const startSerialCapture = (): void => {
+  const createSerialRecordingHandlers = (): SerialCaptureHandlers => ({
+    onChunk: (bytes) => {
+      if (transportRef.current !== "serial") return;
+      const offsetUs = Math.max(0, Math.floor((nowMonotonicMs() - captureStartMsRef.current) * 1_000));
+      if (!durationFrozenRef.current) lastDurationUsRef.current = Math.max(lastDurationUsRef.current, offsetUs + 1);
+      observedSerialReadsRef.current += 1;
+      observedSerialBytesRef.current += bytes.byteLength;
+      if (captureInputClosedRef.current || ingestPausedRef.current) return;
+      try {
+        const assembler = serialAssemblerRef.current;
+        if (!assembler) throw new Error("The serial frame assembler was not initialized before input arrived.");
+        for (const assembly of assembler.push(bytes, offsetUs)) {
+          appendCapturedBytes({ offsetUs: assembly.offsetUs, bytes: assembly.bytes });
+        }
+      } catch (cause) {
+        pauseIngest(cause);
+      }
+    },
+    onError: (error) => {
+      freezeCaptureDuration();
+      captureInputClosedRef.current = true;
+      transportIntegrityIssueRef.current = error.message;
+      recordTransportEvent(serialTransportFailureEvent(
+        "serial-read-error",
+        captureEventOffsetUs(),
+        error.message,
+        error.name || "serial-read-error",
+      ));
+      setSerialState("error");
+      setIssue(`${error.message} Stop and save the records retained before the serial error.`);
+    },
+    onDisconnect: () => {
+      freezeCaptureDuration();
+      captureInputClosedRef.current = true;
+      transportIntegrityIssueRef.current = "The serial stream disconnected before the operator stopped it.";
+      recordTransportEvent(serialTransportFailureEvent(
+        "serial-disconnected",
+        captureEventOffsetUs(),
+        "The serial stream disconnected before the operator stopped it.",
+        "serial-stream-ended",
+      ));
+      serialDisconnectedRef.current = true;
+      setSerialState("disconnected");
+      setIssue("The serial stream disconnected. Stop and save the records retained before the disconnect.");
+    },
+  });
+
+  const startSerialPreflight = (): void => {
     if (captureLocked || transportRef.current) return;
     const api = getBrowserSerialApi();
     if (!api) {
@@ -1220,20 +1644,15 @@ export function CaptureDialog({
     }
 
     let parsedBaudRate: number;
-    let resolvedTimeZone: string;
-    const title = sessionTitle.trim();
-    const serialSessionId = createSessionId();
     const captureDecoderPack = decoderPack;
     try {
-      if (!title) throw new Error("Session title is required.");
       parsedBaudRate = strictInteger(baudRate, "Baud rate", 1, 4_000_000);
-      resolvedTimeZone = validateTimeZone(timeZone);
     } catch (cause) {
-      setIssue(errorMessage(cause, "The serial capture configuration is invalid."));
+      setIssue(errorMessage(cause, "The serial preflight configuration is invalid."));
       return;
     }
 
-    resetForStart("serial");
+    resetForPreflight("serial");
     const normalizedSerialSettings: Extract<CaptureTransportProvenanceEvidence, { transport: "serial" }>["settings"] = {
       baudRate: parsedBaudRate,
       dataBits: Number(dataBits) as 7 | 8,
@@ -1244,87 +1663,59 @@ export function CaptureDialog({
     };
     const serialCapture = new WebSerialCapture(api);
     serialCaptureRef.current = serialCapture;
+    serialPreflightSettingsRef.current = normalizedSerialSettings;
+    serialPreflightAssemblerRef.current = createSerialAssembler(captureDecoderPack);
     serialDisconnectedRef.current = false;
     setSerialDevice("Waiting for operator selection");
     setSerialState("selecting");
     setPhase("starting");
 
-    // Keep this call in the Start button's synchronous event path. WebSerialCapture
+    // Keep this call in the Preflight button's synchronous event path. WebSerialCapture
     // invokes navigator.serial.requestPort() before its first await so the browser's
     // transient user activation is retained for the device chooser.
     const startPromise = serialCapture.start(normalizedSerialSettings, {
       onOpen: (device) => {
         if (startCancelledRef.current || !mountedRef.current) {
-          throw new Error("Serial setup was cancelled before recording began.");
+          throw new Error("Serial setup was cancelled before preflight began.");
         }
-        // WebSerialCapture invokes onOpen synchronously after port.open() and
-        // before readLoop(), making this the exact serial capture epoch.
-        serialProvenanceRef.current = serialCaptureProvenance(device, normalizedSerialSettings);
-        const recorder = new CaptureRecorder({
-          sessionId: serialSessionId,
-          title,
-          startedAt: new Date(),
-          displayTimeZone: resolvedTimeZone,
-          source: {
-            id: `live-serial-${serialSessionId}`.slice(0, 128),
-            kind: "serial",
-            label: `${device.label} · ${parsedBaudRate.toLocaleString("en-US")} baud`.slice(0, 200),
-          },
-          decoderPack: captureDecoderPack,
-        });
         captureStartMsRef.current = nowMonotonicMs();
         lastDurationUsRef.current = 0;
-        recorderRef.current = recorder;
-        flushPendingTransportEvents(recorder);
-        serialAssemblerRef.current = createSerialAssembler(captureDecoderPack);
+        serialPreflightDeviceRef.current = device;
+        preflightConnectedRef.current = true;
         setSerialDevice(device.label);
         setSerialState("open");
-        setPhase("capturing");
+        setPhase("preflighting");
       },
       onChunk: (bytes) => {
         if (transportRef.current !== "serial") return;
         const offsetUs = Math.max(0, Math.floor((nowMonotonicMs() - captureStartMsRef.current) * 1_000));
-        if (!durationFrozenRef.current) lastDurationUsRef.current = Math.max(lastDurationUsRef.current, offsetUs + 1);
-        observedSerialReadsRef.current += 1;
-        observedSerialBytesRef.current += bytes.byteLength;
-        if (captureInputClosedRef.current) return;
-        if (ingestPausedRef.current) return;
+        const analyzer = preflightAnalyzerRef.current;
+        analyzer?.observeInput(bytes.byteLength, nowMonotonicMs());
         try {
-          const assembler = serialAssemblerRef.current;
-          if (!assembler) throw new Error("The serial frame assembler was not initialized before input arrived.");
+          const assembler = serialPreflightAssemblerRef.current;
+          if (!assembler) throw new Error("The serial preflight assembler was not initialized before input arrived.");
           for (const assembly of assembler.push(bytes, offsetUs)) {
-            appendCapturedBytes({ offsetUs: assembly.offsetUs, bytes: assembly.bytes });
+            analyzer?.observeRecord({
+              bytes: assembly.bytes,
+              offsetUs: assembly.offsetUs,
+              transport: "serial",
+            });
           }
         } catch (cause) {
-          pauseIngest(cause);
+          preflightConnectedRef.current = false;
+          setIssue(errorMessage(cause, "Serial preflight analysis failed."));
         }
       },
       onError: (error) => {
-        freezeCaptureDuration();
-        captureInputClosedRef.current = true;
-        transportIntegrityIssueRef.current = error.message;
-        recordTransportEvent(serialTransportFailureEvent(
-          "serial-read-error",
-          captureEventOffsetUs(),
-          error.message,
-          error.name || "serial-read-error",
-        ));
+        preflightConnectedRef.current = false;
         setSerialState("error");
-        setIssue(`${error.message} Stop and save the records retained before the serial error.`);
+        setIssue(`${error.message} Stop the preflight and check the device and serial settings.`);
       },
       onDisconnect: () => {
-        freezeCaptureDuration();
-        captureInputClosedRef.current = true;
-        transportIntegrityIssueRef.current = "The serial stream disconnected before the operator stopped it.";
-        recordTransportEvent(serialTransportFailureEvent(
-          "serial-disconnected",
-          captureEventOffsetUs(),
-          "The serial stream disconnected before the operator stopped it.",
-          "serial-stream-ended",
-        ));
+        preflightConnectedRef.current = false;
         serialDisconnectedRef.current = true;
         setSerialState("disconnected");
-        setIssue("The serial stream disconnected. Stop and save the records retained before the disconnect.");
+        setIssue("The serial stream disconnected during preflight. Stop the preflight and check the device.");
       },
     });
 
@@ -1338,10 +1729,134 @@ export function CaptureDialog({
       if (mountedRef.current) {
         setSerialState("error");
         setPhase("ready");
-        if (cancelled) setNotice("Serial capture setup was cancelled before recording began.");
-        else setIssue(errorMessage(cause, "The serial capture could not be started."));
+        if (cancelled) setNotice("Serial preflight was cancelled before the source opened.");
+        else setIssue(errorMessage(cause, "The serial preflight could not be started."));
       }
     });
+  };
+
+  const stopActivePreflight = async (): Promise<void> => {
+    if (transportRef.current === "udp") {
+      const client = udpClientRef.current;
+      const ownedCaptureId = ownedUdpCaptureIdRef.current;
+      if (client && ownedCaptureId) await stopUdpCaptureIfOwned(client, ownedCaptureId);
+      client?.disconnect();
+      return;
+    }
+    if (transportRef.current === "serial") {
+      await serialCaptureRef.current?.stop();
+    }
+  };
+
+  const stopPreflight = async (): Promise<void> => {
+    if (phase !== "preflighting" || finalizingRef.current) return;
+    finalizingRef.current = true;
+    setPhase("stopping");
+    let stopWarning = "";
+    try {
+      await stopActivePreflight();
+    } catch (cause) {
+      stopWarning = ` The source did not confirm a clean preflight stop: ${errorMessage(cause, "unknown stop failure")}`;
+      udpClientRef.current?.disconnect();
+      await serialCaptureRef.current?.stop().catch(() => undefined);
+    }
+    clearRuntime();
+    setUdpStatus(null);
+    udpStatusRef.current = null;
+    setSerialState("closed");
+    setPhase("ready");
+    setIssue("");
+    setNotice(`Preflight stopped. Its sampled bytes were not added to a session.${stopWarning}`);
+    finalizingRef.current = false;
+  };
+
+  const beginUdpRecording = async (): Promise<void> => {
+    if (phase !== "preflighting" || transportRef.current !== "udp" || finalizingRef.current) return;
+    const title = sessionTitle.trim();
+    try {
+      if (!title) throw new Error("Session title is required.");
+      validateTimeZone(timeZone);
+    } catch (cause) {
+      setIssue(errorMessage(cause, "Session metadata is invalid."));
+      return;
+    }
+
+    finalizingRef.current = true;
+    startingPurposeRef.current = "recording";
+    setPhase("starting");
+    try {
+      await stopActivePreflight();
+    } catch (cause) {
+      udpClientRef.current?.disconnect();
+      clearRuntime();
+      setPhase("ready");
+      setIssue(`${errorMessage(cause, "UDP preflight did not stop cleanly.")} Recording was not started because a new evidence boundary could not be established.`);
+      finalizingRef.current = false;
+      return;
+    }
+    clearRuntime();
+    finalizingRef.current = false;
+    await startUdpCapture();
+  };
+
+  const beginSerialRecording = (): void => {
+    if (phase !== "preflighting" || transportRef.current !== "serial") return;
+    const serialCapture = serialCaptureRef.current;
+    const device = serialPreflightDeviceRef.current;
+    const settings = serialPreflightSettingsRef.current;
+    let resolvedTimeZone: string;
+    const title = sessionTitle.trim();
+    try {
+      if (!title) throw new Error("Session title is required.");
+      resolvedTimeZone = validateTimeZone(timeZone);
+      if (!serialCapture?.active || !device || !settings) {
+        throw new Error("The serial preflight source is no longer open.");
+      }
+    } catch (cause) {
+      setIssue(errorMessage(cause, "Session metadata is invalid."));
+      return;
+    }
+
+    const sessionId = createSessionId();
+    const captureDecoderPack = decoderPack;
+    resetForStart("serial");
+    startingPurposeRef.current = "recording";
+    serialProvenanceRef.current = serialCaptureProvenance(device, settings);
+    const recorder = new CaptureRecorder({
+      sessionId,
+      title,
+      startedAt: new Date(),
+      displayTimeZone: resolvedTimeZone,
+      source: {
+        id: `live-serial-${sessionId}`.slice(0, 128),
+        kind: "serial",
+        label: `${device.label} · ${settings.baudRate.toLocaleString("en-US")} baud`.slice(0, 200),
+      },
+      decoderPack: captureDecoderPack,
+    });
+    recorderRef.current = recorder;
+    serialAssemblerRef.current = createSerialAssembler(captureDecoderPack);
+    captureStartMsRef.current = nowMonotonicMs();
+    lastDurationUsRef.current = 0;
+    preflightConnectedRef.current = false;
+    serialPreflightAssemblerRef.current = null;
+    try {
+      serialCapture.replaceHandlers(createSerialRecordingHandlers());
+    } catch (cause) {
+      recorderRef.current = null;
+      serialAssemblerRef.current = null;
+      setPhase("preflighting");
+      setIssue(errorMessage(cause, "The serial evidence boundary could not be established."));
+      return;
+    }
+    flushPendingTransportEvents(recorder);
+    setSerialState("open");
+    setPhase("capturing");
+  };
+
+  const beginRecording = (): void => {
+    if (transport === "udp") void beginUdpRecording();
+    else beginSerialRecording();
   };
 
   const stopTransport = async (): Promise<number> => {
@@ -1729,8 +2244,7 @@ export function CaptureDialog({
   const chooseTransport = (nextTransport: CaptureTransport): void => {
     if (captureLocked) return;
     setTransport(nextTransport);
-    setIssue("");
-    setNotice("");
+    markConfigurationChanged();
   };
 
   const handleTabKey = (event: ReactKeyboardEvent<HTMLButtonElement>): void => {
@@ -1743,16 +2257,37 @@ export function CaptureDialog({
 
   const formSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (transport === "udp") void startUdpCapture();
+    if (phase !== "ready") return;
+    if (transport === "udp") void startUdpPreflight();
   };
 
-  const phaseLabel = capturePhaseLabel(phase, transport, issue);
+  const phaseLabel = capturePhaseLabel(
+    phase,
+    transport,
+    issue,
+    startingPurposeRef.current,
+    preflightSummary,
+  );
   const unitLabel = transport === "udp" ? "Datagrams received" : "Serial reads received";
   const transportDetail = transport === "udp"
     ? udpStatus?.udp
       ? `${udpStatus.udp.host}:${udpStatus.udp.port}${udpStatus.udp.family ? ` · ${udpStatus.udp.family}` : ""}`
       : phase === "starting" ? "Negotiating local bind" : "Not bound"
     : serialDevice;
+  const preflightFamilyLabel = preflightSummary?.families.length
+    ? preflightSummary.families.slice(0, 2).map((family) => `${family.name} (${family.count})`).join(", ")
+    : "None observed";
+  const preflightEndpointLabel = preflightSummary?.endpoints.length
+    ? preflightSummary.endpoints
+        .slice(0, 2)
+        .map((endpoint) => `${endpoint.address}:${endpoint.port}`)
+        .join(", ")
+    : "None observed";
+  const preflightActionLabel = preflightSummary?.readiness === "ready"
+    ? "Start recording"
+    : preflightSummary?.inputUnits
+      ? "Record with warning"
+      : "Start recording anyway";
 
   return createPortal(
     <div
@@ -1789,6 +2324,87 @@ export function CaptureDialog({
         <p id={descriptionId}>Capture exact UDP datagrams or assembled serial records locally, decode them with an identified pack, then open the immutable session in the replay workspace.</p>
 
         <form className="capture-dialog-form" onSubmit={formSubmit}>
+          <section className="capture-profile-picker" aria-label="Capture profile controls">
+            <label>
+              <span>Capture profile</span>
+              <select
+                value={selectedProfileId}
+                disabled={captureLocked}
+                onChange={(event) => applyProfile(event.target.value)}
+              >
+                <option value="">Unsaved setup</option>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name} · {profile.settings.transport.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="secondary-action capture-profile-save"
+              type="button"
+              disabled={captureLocked}
+              aria-expanded={profileEditorOpen}
+              aria-controls={profileEditorId}
+              onClick={openProfileEditor}
+            >
+              <FloppyDisk size={16} aria-hidden="true" />
+              {selectedProfileId ? "Update setup" : "Save setup"}
+            </button>
+            <button
+              className="icon-button capture-profile-delete"
+              type="button"
+              disabled={captureLocked || !selectedProfileId}
+              aria-label="Delete selected capture profile"
+              title="Delete selected capture profile"
+              onClick={deleteSelectedProfile}
+            >
+              <Trash size={16} aria-hidden="true" />
+            </button>
+            <p>
+              {selectedProfileId
+                ? `${profiles.find((profile) => profile.id === selectedProfileId)?.name ?? "Selected profile"}${profileDirty ? " · modified" : " · loaded"}`
+                : "Profiles store transport settings and the exact decoder pack locally. Credentials, device permission, and telemetry are excluded."}
+            </p>
+            {profileEditorOpen && (
+              <div id={profileEditorId} className="capture-profile-editor">
+                <label>
+                  <span>Profile name</span>
+                  <input
+                    ref={profileNameInputRef}
+                    value={profileName}
+                    maxLength={80}
+                    disabled={captureLocked}
+                    onChange={(event) => setProfileName(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => setProfileEditorOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="primary-action"
+                  type="button"
+                  disabled={!profileName.trim()}
+                  onClick={persistProfile}
+                >
+                  <FloppyDisk size={16} aria-hidden="true" /> Save profile
+                </button>
+              </div>
+            )}
+            {profileStorageIssue && (
+              <div className="capture-profile-storage-error" role="alert">
+                <span>{profileStorageIssue}</span>
+                <button className="destructive-link" type="button" onClick={resetProfileStorage}>
+                  Reset profiles
+                </button>
+              </div>
+            )}
+          </section>
+
           <div className="dialog-fields capture-session-fields">
             <label>
               <span>Session title</span>
@@ -1913,7 +2529,10 @@ export function CaptureDialog({
                       required={transport === "udp"}
                       value={bridgeUrl}
                       disabled={captureLocked}
-                      onChange={(event) => setBridgeUrl(event.target.value)}
+                      onChange={(event) => {
+                        setBridgeUrl(event.target.value);
+                        markConnectionChanged();
+                      }}
                       spellCheck={false}
                     />
                     <small className="field-help">Loopback HTTP origin only; telemetry is not sent to a remote service.</small>
@@ -1928,7 +2547,10 @@ export function CaptureDialog({
                       autoComplete="off"
                       value={bridgeToken}
                       disabled={captureLocked}
-                      onChange={(event) => setBridgeToken(event.target.value)}
+                      onChange={(event) => {
+                        setBridgeToken(event.target.value);
+                        markConnectionChanged();
+                      }}
                       spellCheck={false}
                     />
                   </label>
@@ -1941,7 +2563,10 @@ export function CaptureDialog({
                   maxLength={253}
                   value={udpHost}
                   disabled={captureLocked}
-                  onChange={(event) => setUdpHost(event.target.value)}
+                  onChange={(event) => {
+                    setUdpHost(event.target.value);
+                    markConfigurationChanged();
+                  }}
                   spellCheck={false}
                 />
               </label>
@@ -1956,7 +2581,10 @@ export function CaptureDialog({
                   inputMode="numeric"
                   value={udpPort}
                   disabled={captureLocked}
-                  onChange={(event) => setUdpPort(event.target.value)}
+                  onChange={(event) => {
+                    setUdpPort(event.target.value);
+                    markConfigurationChanged();
+                  }}
                 />
                 <small className="field-help">Use 0 to let the bridge choose an available local port.</small>
               </label>
@@ -1966,7 +2594,10 @@ export function CaptureDialog({
                   maxLength={253}
                   value={multicastGroup}
                   disabled={captureLocked}
-                  onChange={(event) => setMulticastGroup(event.target.value)}
+                  onChange={(event) => {
+                    setMulticastGroup(event.target.value);
+                    markConfigurationChanged();
+                  }}
                   placeholder="239.255.42.99"
                   spellCheck={false}
                 />
@@ -1977,7 +2608,10 @@ export function CaptureDialog({
                   maxLength={253}
                   value={multicastInterface}
                   disabled={captureLocked}
-                  onChange={(event) => setMulticastInterface(event.target.value)}
+                  onChange={(event) => {
+                    setMulticastInterface(event.target.value);
+                    markConfigurationChanged();
+                  }}
                   placeholder="127.0.0.1"
                   spellCheck={false}
                 />
@@ -2005,26 +2639,38 @@ export function CaptureDialog({
                   inputMode="numeric"
                   value={baudRate}
                   disabled={captureLocked}
-                  onChange={(event) => setBaudRate(event.target.value)}
+                  onChange={(event) => {
+                    setBaudRate(event.target.value);
+                    markConfigurationChanged();
+                  }}
                 />
               </label>
               <label>
                 <span>Data bits</span>
-                <select value={dataBits} disabled={captureLocked} onChange={(event) => setDataBits(event.target.value as "7" | "8")}>
+                <select value={dataBits} disabled={captureLocked} onChange={(event) => {
+                  setDataBits(event.target.value as "7" | "8");
+                  markConfigurationChanged();
+                }}>
                   <option value="8">8</option>
                   <option value="7">7</option>
                 </select>
               </label>
               <label>
                 <span>Stop bits</span>
-                <select value={stopBits} disabled={captureLocked} onChange={(event) => setStopBits(event.target.value as "1" | "2")}>
+                <select value={stopBits} disabled={captureLocked} onChange={(event) => {
+                  setStopBits(event.target.value as "1" | "2");
+                  markConfigurationChanged();
+                }}>
                   <option value="1">1</option>
                   <option value="2">2</option>
                 </select>
               </label>
               <label>
                 <span>Parity</span>
-                <select value={parity} disabled={captureLocked} onChange={(event) => setParity(event.target.value as SerialParity)}>
+                <select value={parity} disabled={captureLocked} onChange={(event) => {
+                  setParity(event.target.value as SerialParity);
+                  markConfigurationChanged();
+                }}>
                   <option value="none">None</option>
                   <option value="even">Even</option>
                   <option value="odd">Odd</option>
@@ -2032,7 +2678,10 @@ export function CaptureDialog({
               </label>
               <label>
                 <span>Flow control</span>
-                <select value={flowControl} disabled={captureLocked} onChange={(event) => setFlowControl(event.target.value as SerialFlowControl)}>
+                <select value={flowControl} disabled={captureLocked} onChange={(event) => {
+                  setFlowControl(event.target.value as SerialFlowControl);
+                  markConfigurationChanged();
+                }}>
                   <option value="none">None</option>
                   <option value="hardware">Hardware</option>
                 </select>
@@ -2048,17 +2697,63 @@ export function CaptureDialog({
               <span id={statusId}>{phaseLabel}</span>
               {(phase === "starting" || phase === "stopping" || phase === "saving") && <SpinnerGap className="spin" size={16} aria-hidden="true" />}
             </div>
-            <dl className="capture-status-grid">
-              <div><dt>Source</dt><dd>{transportDetail}</dd></div>
-              <div><dt>Elapsed</dt><dd>{formatDurationUs(elapsedUs, true)}</dd></div>
-              <div><dt>{unitLabel}</dt><dd>{totals.inputUnits.toLocaleString()}</dd></div>
-              <div><dt>Input bytes</dt><dd>{formatBytes(totals.inputBytes)}</dd></div>
-              <div><dt>Records retained</dt><dd>{totals.records.toLocaleString()}</dd></div>
-              <div><dt>Bytes retained</dt><dd>{formatBytes(totals.recordedBytes)}</dd></div>
-            </dl>
+            {phase === "preflighting" || (phase === "starting" && startingPurposeRef.current === "preflight") ? (
+              <dl className="capture-status-grid">
+                <div><dt>Source</dt><dd>{transportDetail}</dd></div>
+                <div>
+                  <dt>Traffic</dt>
+                  <dd>{(preflightSummary?.unitRate ?? 0).toFixed(1)}/s · {formatBytes(Math.round(preflightSummary?.byteRate ?? 0))}/s</dd>
+                </div>
+                <div>
+                  <dt>Last input</dt>
+                  <dd>
+                    {preflightSummary?.lastInputAgeMs == null
+                      ? "Not observed"
+                      : preflightSummary.lastInputAgeMs < 1_000
+                        ? "Now"
+                        : `${(preflightSummary.lastInputAgeMs / 1_000).toFixed(1)}s ago`}
+                  </dd>
+                </div>
+                <div><dt>Valid frames</dt><dd>{(preflightSummary?.completeFrames ?? 0).toLocaleString()}</dd></div>
+                <div>
+                  <dt>Malformed</dt>
+                  <dd>
+                    {(preflightSummary?.malformedFrames ?? 0).toLocaleString()}
+                    {(preflightSummary?.checksumFailures ?? 0) > 0 ? ` · ${preflightSummary?.checksumFailures} checksum` : ""}
+                  </dd>
+                </div>
+                <div><dt>Message families</dt><dd title={preflightFamilyLabel}>{preflightFamilyLabel}</dd></div>
+              </dl>
+            ) : (
+              <dl className="capture-status-grid">
+                <div><dt>Source</dt><dd>{transportDetail}</dd></div>
+                <div><dt>Elapsed</dt><dd>{formatDurationUs(elapsedUs, true)}</dd></div>
+                <div><dt>{unitLabel}</dt><dd>{totals.inputUnits.toLocaleString()}</dd></div>
+                <div><dt>Input bytes</dt><dd>{formatBytes(totals.inputBytes)}</dd></div>
+                <div><dt>Records retained</dt><dd>{totals.records.toLocaleString()}</dd></div>
+                <div><dt>Bytes retained</dt><dd>{formatBytes(totals.recordedBytes)}</dd></div>
+              </dl>
+            )}
             <p className="capture-transport-state">
               Decoder: <strong>{decoderPack.displayName}</strong> · {decoderPack.revision} · {decoderPack.integrity.canonicalSha256.slice(0, 12)}
             </p>
+            {phase === "preflighting" && preflightSummary && (
+              <>
+                <p className={`capture-preflight-assessment ${preflightSummary.readiness}`}>
+                  {preflightSummary.message}
+                </p>
+                <p className="capture-transport-state">
+                  Sampled: {preflightSummary.inputUnits.toLocaleString()} {transport === "udp" ? "datagrams" : "serial reads"} · {formatBytes(preflightSummary.inputBytes)}
+                  {transport === "udp" ? ` · endpoints ${preflightEndpointLabel}` : ""}
+                  {preflightSummary.analysisLimited ? " · analysis limit reached" : ""}
+                </p>
+                <p className="capture-evidence-boundary">
+                  Preflight samples are not retained. {transport === "udp"
+                    ? "Starting recording stops this probe and opens a new owned capture ID."
+                    : "Starting recording resets framing and routes only future serial reads into the session."}
+                </p>
+              </>
+            )}
             {transport === "udp" && udpStatus && (
               <p className="capture-transport-state">
                 Bridge state: <strong>{udpStatus.state}</strong> · subscribers: {udpStatus.subscribers.toLocaleString()}
@@ -2068,7 +2763,13 @@ export function CaptureDialog({
             {transport === "serial" && (
               <p className="capture-transport-state">Serial state: <strong>{serialState}</strong></p>
             )}
-            {!canDismiss && <p className="capture-lock-notice">Closing is locked until the source is stopped and the capture is saved or explicitly discarded.</p>}
+            {!canDismiss && (
+              <p className="capture-lock-notice">
+                {phase === "preflighting"
+                  ? "Closing is locked while the preflight source is open."
+                  : "Closing is locked until the source is stopped and the capture is saved or explicitly discarded."}
+              </p>
+            )}
           </section>
 
           {issue && <p id={errorId} className="dialog-error capture-dialog-error" role="alert"><WarningCircle size={16} aria-hidden="true" /> {issue}</p>}
@@ -2093,19 +2794,34 @@ export function CaptureDialog({
                     disabled={operatorRuntime.mode === "invalid"}
                     data-capture-phase-focus="ready"
                   >
-                    Start UDP capture
+                    Run UDP preflight
                   </button>
                 ) : (
                   <button
                     className="primary-action"
                     type="button"
                     disabled={!serialAvailable}
-                    onClick={startSerialCapture}
+                    onClick={startSerialPreflight}
                     data-capture-phase-focus="ready"
                   >
-                    Select port &amp; start
+                    Select port &amp; preflight
                   </button>
                 )}
+              </>
+            ) : phase === "preflighting" ? (
+              <>
+                <button className="secondary-action" type="button" onClick={() => void stopPreflight()}>
+                  Stop preflight
+                </button>
+                <button
+                  className="primary-action"
+                  type="button"
+                  onClick={beginRecording}
+                  disabled={!preflightConnectedRef.current}
+                  data-capture-phase-focus="preflighting"
+                >
+                  {preflightActionLabel}
+                </button>
               </>
             ) : phase === "starting" ? (
               <button className="secondary-action" type="button" onClick={cancelStartingCapture} data-capture-phase-focus="starting">Cancel setup</button>

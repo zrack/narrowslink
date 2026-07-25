@@ -142,6 +142,8 @@ Changing a description, schema, fixture, or expected result changes pack identit
 - Re-hash, parse, and validate every saved-session reopen. Surface corruption and storage failures without replacing the active validated replay or claiming an uncommitted save succeeded.
 - Treat saved-session removal as a two-store operation: delete the IndexedDB replay, clear its per-session local-storage workspace when identifiable, keep any active replay in memory, and warn if residual operator context could not be cleared.
 - Never let a control client stop or adopt a UDP capture it did not start; reconcile bridge sequence, datagram, and byte totals before claiming a capture is complete.
+- Keep saved capture profiles bounded and local, bind them to an exact conformant decoder pack, and exclude credentials, browser device permission, session naming, and telemetry payloads.
+- Keep preflight bounded and outside session evidence. Require confirmed UDP probe shutdown before opening a new recording identity; for serial, keep the selected port but reset framing and route only future reads to the recorder.
 - New live captures must finalize as session v2 with immutable transport events and a terminal receipt. Preserve strict v1 import behavior and never infer verified integrity for legacy evidence.
 - Never substitute browser or recorder counts for an unavailable transport-reported count. Preserve null observations, use the truthful incomplete assessment basis, and require explicit adapter evidence before verification.
 - Preserve the bridge journal, per-datagram UDP remote endpoint, and Web Serial device and negotiated-setting evidence when changing capture code. Keep unavailable operating-system counters explicitly null with their observation source; do not convert missing evidence into a clean zero.
@@ -172,6 +174,7 @@ Changing a description, schema, fixture, or expected result changes pack identit
 | Evidence receiver verification and CLI | `verifier/`, `scripts/narrowslink.ts`, `vite.cli.config.ts` |
 | Session serialization and import behavior | `src/data/session-file.ts`, `src/data/load-session.ts` |
 | Capture lifecycle and session finalization | `src/capture/CaptureDialog.tsx`, `src/capture/recorder.ts` |
+| Capture profiles and bounded preflight | `src/capture/capture-profile.ts`, `src/capture/capture-preflight.ts` |
 | Serial capture and runtime-selected assembly | `src/capture/web-serial.ts`, `src/capture/serial-assembler.ts`, `src/capture/nsl01-serial-assembler.ts`, `src/capture/nmea0183-serial-assembler.ts` |
 | UDP browser protocol and local bridge | `src/capture/udp-bridge.ts`, `scripts/capture-bridge.mjs` |
 | Durable session-document library | `src/storage/session-library.ts` |
@@ -206,7 +209,7 @@ Screenshots are evidence, not the review itself. Keep `design-qa.md` focused on 
 - For large-session changes, regenerate the 200,000-record corpus and exercise import, progress, cancellation, exact-byte persistence, reload, reopen, selected-range comparison, bundle cancellation, completed export, production verification, heartbeat gaps, and Chromium heap growth in both the source and unpacked-release matrices.
 - For UI changes, exercise the bundled replay, file-import error state, saved-session save/list/reopen/remove and failure states, playback, seeking, incident switching, marker creation, note persistence, and bundle flow at desktop and narrow widths.
 - Keep critical dialogs and workspace states clean under axe rules tagged WCAG A/AA. Test keyboard focus when an action, dialog phase, incident selection, or responsive layout replaces the focused element; retain visible non-color state and severity cues.
-- For capture changes, exercise both the real loopback UDP path and the browser-injected Web Serial application path from start through stop, re-import, durable reopen, replay, annotation, bundle export, and production receiver verification. Include active-capture ownership, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage. Treat the injected serial gate as application-path evidence, not physical hardware certification.
+- For capture changes, exercise both the real loopback UDP path and the browser-injected Web Serial application path from profile or direct setup through preflight, the explicit recording boundary, stop, re-import, durable reopen, replay, annotation, bundle export, and production receiver verification. Include decoder mismatch, no probe leakage, active-capture ownership, unconfirmed probe shutdown, sequence gaps, zero-length datagrams, and corrupt serial-length resynchronization in automated coverage. Treat the injected serial gate as application-path evidence, not physical hardware certification.
 - For integrity changes, add a failure round trip through capture finalization, JSON serialization, replay parsing, operator-authored half-open range projection, bundle generation, and production receiver verification. Cover both a UDP and serial path when the contract affects both.
 
 ## Contribution workflow

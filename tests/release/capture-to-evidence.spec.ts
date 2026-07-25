@@ -114,7 +114,7 @@ test("unpacked release records UDP and preserves verifiable evidence across repl
     const originalPort = Number(new URL(appUrl).port);
     const releaseIdentity = { ...installation.identity };
     expect(originalPort).toBeGreaterThan(0);
-    expect(releaseIdentity.version).toBe("0.1.0");
+    expect(releaseIdentity.version).toBe("0.2.0");
     expect(releaseIdentity.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(server.ready).toMatchObject(releaseIdentity);
     expect(new URL(server.ready.bridgeUrl).hostname).toBe("127.0.0.1");
@@ -136,7 +136,12 @@ test("unpacked release records UDP and preserves verifiable evidence across repl
     await captureDialog.getByLabel(/Display timezone/).fill("UTC");
     await captureDialog.getByLabel("UDP bind host", { exact: true }).fill("127.0.0.1");
     await captureDialog.getByLabel(/UDP port/).fill("0");
-    await captureDialog.getByRole("button", { name: "Start UDP capture" }).click();
+    await captureDialog.getByRole("button", { name: "Run UDP preflight" }).click();
+    await expect(captureDialog.getByRole("region", { name: "Preflight waiting for traffic" })).toBeVisible();
+    const preflightPort = await boundUdpPort(captureDialog);
+    await sendReleaseDatagrams(datagrams.slice(0, 2), preflightPort);
+    await expect(captureDialog.getByRole("region", { name: "Preflight ready" })).toBeVisible();
+    await captureDialog.getByRole("button", { name: "Start recording" }).click();
     await expect(captureDialog.getByRole("region", { name: "Recording" })).toBeVisible();
 
     const udpPort = await boundUdpPort(captureDialog);

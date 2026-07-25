@@ -93,6 +93,7 @@ export class WebSerialCapture {
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private readTask: Promise<void> | null = null;
   private stopTask: Promise<void> | null = null;
+  private handlers: SerialCaptureHandlers | null = null;
   private starting = false;
   private stopRequested = false;
 
@@ -100,6 +101,19 @@ export class WebSerialCapture {
 
   get active(): boolean {
     return this.port != null && !this.stopRequested;
+  }
+
+  /**
+   * Changes where future serial reads are delivered without reopening the
+   * operator-selected device. JavaScript callback execution is serialized, so
+   * this creates an exact boundary between the final old-handler chunk and the
+   * first new-handler chunk.
+   */
+  replaceHandlers(handlers: SerialCaptureHandlers): void {
+    if (!this.active) {
+      throw new WebSerialCaptureError("Serial handlers can only be replaced while the selected port is open.");
+    }
+    this.handlers = handlers;
   }
 
   async start(options: SerialOpenOptions, handlers: SerialCaptureHandlers): Promise<SerialCaptureDevice> {
@@ -129,7 +143,8 @@ export class WebSerialCapture {
         const info = port.getInfo();
         const device = { label: formatSerialDevice(info), info };
         handlers.onOpen?.(device);
-        this.readTask = this.readLoop(port, handlers);
+        this.handlers = handlers;
+        this.readTask = this.readLoop(port);
         return device;
       } catch (cause) {
         this.stopRequested = true;
@@ -143,6 +158,7 @@ export class WebSerialCapture {
           this.port = null;
           this.reader = null;
           this.readTask = null;
+          this.handlers = null;
         }
         throw new WebSerialCaptureError("Serial capture setup failed before reading began.", { cause });
       }
@@ -190,6 +206,7 @@ export class WebSerialCapture {
         this.readTask = null;
         this.reader = null;
         this.port = null;
+        this.handlers = null;
       }
     }
 
@@ -197,7 +214,7 @@ export class WebSerialCapture {
     if (readFailure) throw new WebSerialCaptureError("The serial read loop did not stop cleanly.", { cause: readFailure });
   }
 
-  private async readLoop(port: WebSerialPort, handlers: SerialCaptureHandlers): Promise<void> {
+  private async readLoop(port: WebSerialPort): Promise<void> {
     while (!this.stopRequested && port.readable) {
       const reader = port.readable.getReader();
       let streamEnded = false;
@@ -209,10 +226,10 @@ export class WebSerialCapture {
             streamEnded = true;
             break;
           }
-          if (value && value.byteLength > 0) handlers.onChunk(new Uint8Array(value));
+          if (value && value.byteLength > 0) this.handlers?.onChunk(new Uint8Array(value));
         }
       } catch (cause) {
-        if (!this.stopRequested) handlers.onError?.(asError(cause, "Serial read failed."));
+        if (!this.stopRequested) this.handlers?.onError?.(asError(cause, "Serial read failed."));
       } finally {
         reader.releaseLock();
         if (this.reader === reader) this.reader = null;
@@ -221,7 +238,7 @@ export class WebSerialCapture {
     }
     if (!this.stopRequested) {
       this.stopRequested = true;
-      handlers.onDisconnect?.();
+      this.handlers?.onDisconnect?.();
     }
   }
 }

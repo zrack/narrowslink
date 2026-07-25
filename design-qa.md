@@ -11,15 +11,18 @@ This document records the currently accepted visual baseline and its verificatio
 - Accepted focused source/geometry comparison: [focused comparison](docs/design/comparison-production-focused.png)
 - Responsive session-library dialog evidence: [responsive library implementation](docs/design/implementation-functional-mobile.png)
 - Capture-integrity functional evidence: [incomplete UDP capture replay](docs/design/implementation-capture-integrity.png)
-- Decoder-pack capture setup evidence: [NMEA capture setup](docs/design/live-capture-setup.jpg)
+- Field-capture setup evidence: [capture profile setup](docs/design/capture-profile-setup.png)
+- Field-capture preflight evidence: [verified UDP preflight](docs/design/capture-preflight-ready.png)
+- Responsive field-capture evidence: [mobile capture setup](docs/design/capture-profile-mobile.png)
 - Received-incident evidence workspace: [verified receiver workspace](docs/design/receiver-workspace.png)
 - Comparative replay evidence workspace: [bounded comparison workspace](docs/design/comparison-workspace.png)
-- Desktop viewport: `1487 × 1058`, matching the source image.
-- Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`, and the open library and live-capture dialogs each measure `358 px` wide.
+- Desktop viewport: `1487 × 1058`, matching the `1487 × 1058` source image at device scale factor `1`; the capture-profile and preflight implementation images are also `1487 × 1058` at device scale factor `1`, so no density normalization was required.
+- Responsive viewport: `390 × 844` at device scale factor `1`; measured document, body scroll, and document scroll widths all equal `390 px`, and the open live-capture dialog measures `358 × 812 px`.
 - State: bundled Harbor relay replay reopened from the library; replay paused inside the link-fade incident at `23:40`; Narrative tab; all six evidence groups selected; two genuine saved sessions; two local operator markers, one in the visible timeline; and a session-wide note present.
 - Release-gate state: the same bundled incident and operator note with one genuine saved session, visible non-color diagnostic severity tokens, selected-incident semantics, and all six evidence groups selected.
 - Comparison evidence state: the selected link-fade incident is compared with the same validated fixture at `1280 × 720` using explicit range-start alignment. Packet, diagnostic, decoded-field, and link evidence are comparable and unchanged; the overall result remains unresolved because both legacy-v1 capture-integrity assessments are unknown. The controlled real-capture regression is proven separately by the browser gate.
 - Maximum-record evidence state: a generated 52,378,445-byte, 200,000-record replay opens in the unchanged mission workspace while import, saved-session reopen, candidate loading, comparison construction, and bundle construction use a compact modal with a named progress bar, current phase, percentage, and cancel action. The transient surface preserves the existing square, restrained instrument language and never displaces the active workspace until processing succeeds.
+- Field-capture evidence state: the packaged managed bridge opened an ephemeral loopback socket, observed 24 real NSL-01 datagrams and 737 bytes from one endpoint, reported 24 valid frames with no malformed frames, identified Position and Attitude families, confirmed decoder fit, and kept the explicit preflight-to-recording boundary beside a persistent **Start recording** action.
 
 ### Current release result
 
@@ -47,13 +50,21 @@ This document records the currently accepted visual baseline and its verificatio
 
 [![NarrowsLink comparing two explicitly aligned telemetry incidents](docs/design/comparison-workspace.png)](docs/design/comparison-workspace.png)
 
+### Accepted field-capture result
+
+[![NarrowsLink field setup with reusable capture profiles](docs/design/capture-profile-setup.png)](docs/design/capture-profile-setup.png)
+
+[![NarrowsLink confirming UDP source traffic and decoder fit before evidence recording](docs/design/capture-preflight-ready.png)](docs/design/capture-preflight-ready.png)
+
+[![NarrowsLink field setup at 390 by 844 pixels](docs/design/capture-profile-mobile.png)](docs/design/capture-profile-mobile.png)
+
 ## Final findings
 
 No actionable P0, P1, or P2 visual findings remain.
 
 The final implementation matches the source's primary composition and geometry: `232 px` source rail, compact session command bar, stacked overview plots, shared time grid, labeled telemetry lanes, `280 px` incident rail, amber half-open incident selection, and the full-width evidence workspace. The interface also retains square controls, quiet one-pixel structure, restrained warm-black surfaces, dense instrument typography, semantic chart colors, and a pale-blue export action.
 
-Six visible differences are intentional and accepted product, data, or accessibility constraints:
+Seven visible differences are intentional and accepted product, data, or accessibility constraints:
 
 - The source mocks several active and recent sessions. The implementation shows one genuine loaded source plus two genuinely persisted sessions and does not present invented sessions as available data.
 - The source shows a live-follow control. A recorded session truthfully exposes replay controls, while live capture remains available from the source rail and command bar.
@@ -61,6 +72,13 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Evidence rows describe the real local NarrowsLink archive contents and sizes rather than the source's illustrative PCAP and `24.7 MB` copy.
 - The evidence table has a sixth required Capture integrity row so optional derived diagnostics remain independently selectable while the transport event log, provenance document, bridge journal, and receipt cannot be removed from a verifiable archive.
 - Diagnostics add visible severity words or compact `C`/`W`/`I` tokens, and overview incidents expose selected-state treatment, so meaning is not carried by color alone.
+- Live capture adds a compact local profile row and a bounded preflight state before recording. These controls extend the source-aligned dialog rather than changing the mission workspace, and their locked, warning, and ready states represent real source observations rather than decorative setup progress.
+
+## Comparison history
+
+- Initial field-capture pass at `1487 × 1058`: adding the profile row pushed the primary capture actions below the visible modal edge, a P2 reachability and source-geometry regression.
+- Fix: made the capture action strip sticky inside the existing scroll-bounded, square-cornered dialog and corrected the narrow layout so **Save setup** and delete occupy separate grid tracks.
+- Post-fix evidence: [desktop capture setup](docs/design/capture-profile-setup.png), [ready preflight](docs/design/capture-preflight-ready.png), and [mobile capture setup](docs/design/capture-profile-mobile.png) keep the current phase action visible without document overflow or control overlap. No actionable P0, P1, or P2 findings remain.
 
 ## Focused comparison evidence
 
@@ -71,7 +89,7 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Session library: the current desktop and responsive evidence confirms two real IndexedDB entries, active-row treatment, meaningful date/duration/integrity metadata, guarded removal, a reachable narrow-screen dialog, and no horizontal body overflow.
 - Capture integrity: the functional evidence confirms that an incomplete v2 receipt is visible in session context, its immutable UDP anomaly appears in the shared Diagnostics lane and Narrative as `Capture path`, and the evidence workspace keeps Capture integrity mandatory while Diagnostics remains optional.
 - Transport provenance: a verified loopback capture confirms that the source-aligned incident rail can expose capture identity, bound socket, endpoint attribution, bridge totals, explicit unavailable kernel-drop evidence, lifecycle journal entries, and evidence boundaries without disturbing the mission timeline's density or hierarchy.
-- Decoder portability: the current capture setup keeps the decoder decision ahead of transport setup, exposes the selected pack's runtime and shortened immutable identity, and preserves the established square, compact instrument language. At `390 × 844`, the selector and load action stack inside the `358 px` dialog without horizontal overflow.
+- Field capture: the current setup keeps profile recall, decoder identity, and transport configuration in that order; exposes live source, rate, last-input, validity, family, endpoint, and decoder-fit observations; states that probe bytes are excluded from evidence; and keeps the current transition action visible. At `390 × 844`, profile, decoder, transport, and sticky actions fit inside the `358 px` dialog without overlap or horizontal overflow.
 - Received evidence: the accepted receiver keeps the same rail, compact command bar, warm-black one-pixel structure, dense instrument typography, shared timeline vocabulary, and inspector geometry while giving verification claims their own fixed band. Artifact counts, exact range, packet integrity, diagnostics, source evidence, and explicit unavailable states all come from the verified archive rather than decorative values.
 - Comparative replay: the accepted comparison retains the same instrument language while replacing the mission timeline with two explicitly aligned source lanes, a comparability strip, bounded metric table, and fixed trace inspector. Input identities, range boundaries, overlap, unmatched tails, evidence IDs, and unresolved states come from the comparison contract rather than visual inference. At `390 × 844`, commands wrap into a stable two-column group, the eligibility matrix becomes two columns, timeline detail remains internally bounded, and document and body widths both remain `390 px`.
 - Long-running processing: the modal uses the existing one-pixel structure, dense type scale, compact status hierarchy, and familiar secondary cancel action. Phase text and a native progress value communicate change without relying on animation or color, and the underlying validated workspace remains visually stable throughout cancellation.
@@ -79,10 +97,10 @@ Six visible differences are intentional and accepted product, data, or accessibi
 ## Required fidelity surfaces
 
 - Fonts and typography: bundled Inter carries interface copy and IBM Plex Mono carries times, values, and protocol metadata. Uppercase micro-labels, numeric alignment, weight, and dense line heights were checked in the focused comparison.
-- Spacing and layout rhythm: the viewport, rail and incident-panel widths, header and overview heights, label/scale gutters, lane baselines, evidence proportions, dividers, and square corners were compared against the source at identical dimensions.
+- Spacing and layout rhythm: the viewport, rail and incident-panel widths, header and overview heights, label/scale gutters, lane baselines, evidence proportions, dividers, square corners, capture-profile grid, scroll-bounded dialog, and sticky action strip were compared at the stated desktop and mobile dimensions.
 - Colors and visual tokens: warm near-black surfaces, muted gray structure, amber incident selection, green link/position data, blue received packet rate, red inferred missing frames, purple markers, cyan packet-family data, and pale-blue primary actions preserve the source semantics.
 - Image and icon fidelity: the repository's NarrowsLink mark is reused as a real image asset. The source contains no photography or illustration. Recharts renders data plots and Phosphor supplies the icon family; no placeholder art, emoji, or improvised CSS/SVG illustration was introduced.
-- Copy and content: session metadata, diagnostics, units, decoder state, bundle contents, and privacy language remain coherent and derived from the same replay pipeline instead of reproducing contradictory prototype numbers.
+- Copy and content: session metadata, diagnostics, units, decoder state, bundle contents, profile exclusions, source observations, decoder-fit guidance, and preflight evidence boundary remain coherent and derived from application state instead of reproducing contradictory prototype numbers.
 - Responsiveness: at `390 × 844`, the page has no horizontal body overflow, labels no longer collide, the command strip and Saved control remain reachable, the `358 px` library dialog fits the viewport, the telemetry surface uses its deliberate internal scroller, and panels preserve the desktop hierarchy.
 - Accessibility review: semantic buttons, native checkboxes/selects, labels, tabs, dialogs, named progress bars, cancellation controls, focus treatment, status text, chart summaries, disabled states, reduced-motion behavior, non-color diagnostic cues, and narrow keyboard scrollers pass axe rules tagged WCAG A/AA plus interaction coverage in Playwright Chromium, Firefox, and WebKit. All three engines pass `960`, `640` (`200%`-equivalent), and `390` CSS-pixel reflow plus forced-color checks. This is not a claim of full accessibility compliance; packaged-browser screen-reader, native zoom, and hardware matrices remain manual follow-up work documented in [ACCESSIBILITY.md](ACCESSIBILITY.md).
 
@@ -100,6 +118,11 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Built and downloaded `capture-integrity-browser-review-capture-integrity-incident.nlb`; the success state reported six selected groups and verifiable local evidence with Capture integrity locked on while Diagnostics remained independently selectable.
 - Opened and closed the live UDP/serial capture setup.
 - Selected the bundled NMEA pack and confirmed its runtime and pack identity updated together; the same controls reflowed without horizontal overflow at `390 × 844`.
+- Saved, updated, reapplied, and removed a local capture profile while confirming the exact custom decoder pack and transport settings returned and bridge credentials, session title, device permission, and telemetry did not.
+- Ran real UDP preflight with matching NSL-01 traffic, confirmed 24 valid frames and the observed endpoint, then proved probe records were absent after the new owned recording began.
+- Ran a deliberate NMEA-decoder/NSL-01-traffic mismatch, confirmed the explicit warning path remained available, and stopped the probe without creating or saving a session.
+- Ran simulated Web Serial preflight, retained one selected and opened device, reset framing at **Start recording**, and proved only reads after that boundary entered the session.
+- Stopped preflight and confirmed the dialog returned to a zero-duration **Ready** state with an explicit no-session notice.
 - Saved the bundled replay, reloaded the page, and confirmed its genuine IndexedDB row and active state survived browser navigation.
 - Imported the exact same fixture and confirmed content-addressed deduplication kept the library at one entry and preserved the original saved order.
 - Added a second validated session through the real repository path, confirmed newest-first ordering, reopened it from the rail, switched away and back, and verified its per-session operator note restored.
@@ -118,11 +141,11 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Verified the comparison setup and workspace with axe rules tagged WCAG A/AA, keyboard-scrollable evidence regions, and no page-level overflow at `960 × 900`, `640 × 900`, and `390 × 844` in Chromium, Firefox, and WebKit.
 - Recorded a 24-datagram loopback acceptance capture and visually confirmed the verified Provenance tab reconciled all 24 records and 737 retained bytes to one exact remote endpoint and a clean two-entry bridge journal while preserving the unavailable host-drop-counter boundary.
 - Exercised simulated Web Serial device selection through four fragmented reads, retained four complete frames and one terminal partial frame without byte loss, saved and deduplicated the canonical v2 session, reopened and replayed it from IndexedDB, authored an exact half-open range, and verified the downloaded `.nlb` with the production receiver in Chromium, Firefox, and WebKit. Physical device, driver, and native permission behavior remains a manual boundary.
-- Launched the unpacked v0.1 operator package with `narrowslink serve` and visually confirmed the production workspace and capture dialog at the managed origin. The dialog showed the authenticated managed-bridge state and exact version/commit identity without bridge URL or token fields, while preserving the accepted component geometry and producing no browser warnings or errors.
+- Launched the v0.2 operator build with `narrowslink serve` and visually confirmed the production workspace, profile setup, and live preflight at the managed origin. The dialog showed the authenticated managed-bridge state without bridge URL or token fields, preserved the accepted component geometry, and produced no browser warnings or errors.
 - Repeated the capture-to-receiver, replay/library, failure-recovery, axe rules tagged WCAG A/AA, focus-handoff, responsive, keyboard-scroller, and forced-color gates in Playwright Chromium, Firefox, and WebKit.
 - Imported the deterministic 52,378,445-byte, 200,000-record corpus with visible phase progress, retained interaction heartbeats, exact canonical-byte persistence, and no workspace replacement on cancellation; then reopened it, compared its exact 10,000-record incident, cancelled one bundle build without a download, rebuilt it, and verified exactly 10,000 raw and decoded records through the production receiver in Chromium, Firefox, and WebKit.
 - Repeated the maximum-record import, persistence, reload, reopen, and progress path from the independently built unpacked operator distribution in Chromium, Firefox, and WebKit.
-- Ran the complete `npm run check` command set: TypeScript validation, `278` tests across `35` files, the production application and CLI builds, `49` passing source-workspace Playwright checks with `2` intentional engine-redundant cancellation skips, two byte-identical release compilations, and all `6` unpacked-release capture-to-receiver, comparison, and maximum-record checks across Chromium, Firefox, and WebKit passed.
+- Current release evidence: TypeScript validation, `289` tests across `37` files, the production application and CLI builds, CLI smoke verification, `52` passing source-workspace Playwright checks with `2` intentional engine-redundant cancellation skips, two byte-identical release compilations, and all `6` unpacked-package capture-to-receiver and maximum-record checks across Chromium, Firefox, and WebKit passed.
 
 ## Implementation checklist
 
@@ -133,9 +156,10 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - [x] Preserve capture-path anomalies, endpoint or device provenance, bridge journal, and terminal integrity receipt through replay, operator range projection, and checksummed export.
 - [x] Populate the source rail with real durable sessions and preserve validated reopen, explicit removal, and responsive access.
 - [x] Preserve exact source identities, explicit alignment, bounded comparability, evidence traceability, and unresolved states through comparative replay and checksummed finding export.
+- [x] Preserve exact profile setup, bounded non-evidence preflight, and an explicit UDP or serial transition into immutable recording.
 - [x] Keep maximum-record import, reopen, selected-range comparison, and bundle construction responsive, cancellable, deterministic, and free of partial persistence or downloads.
 - [x] Gate the full capture-to-evidence loop, independent archive verification, storage failures, keyboard focus, and automated accessibility across the supported browser-engine matrix.
 - [x] Verify desktop, responsive, and primary interaction states.
 - [x] Resolve every P0, P1, and P2 visual QA finding.
 
-**Result: passed.**
+final result: passed

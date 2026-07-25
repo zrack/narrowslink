@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v0.1.0"
+      - "v*.*.*"
 
 permissions:
   contents: read
@@ -35,6 +35,9 @@ jobs:
           test "$(git cat-file -t "refs/tags/${RELEASE_TAG}")" = "tag"
           test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{}")" = "${GITHUB_SHA}"
 
+      - name: Resolve release version
+        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "${GITHUB_ENV}"
+
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -58,7 +61,7 @@ jobs:
 
       - name: Test unpacked release bytes
         env:
-          NARROWSLINK_RELEASE_ARCHIVE: build/release/narrowslink-0.1.0.tgz
+          NARROWSLINK_RELEASE_ARCHIVE: build/release/narrowslink-${{ env.RELEASE_VERSION }}.tgz
         run: npm run test:release
 
       - name: Verify published checksum set
@@ -70,9 +73,9 @@ jobs:
         with:
           name: narrowslink-release-${{ github.ref_name }}
           path: |
-            build/release/narrowslink-0.1.0.tgz
-            build/release/narrowslink-0.1.0.release.json
-            build/release/narrowslink-0.1.0.cdx.json
+            build/release/narrowslink-*.tgz
+            build/release/narrowslink-*.release.json
+            build/release/narrowslink-*.cdx.json
             build/release/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
@@ -106,14 +109,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          test "${GITHUB_REF_NAME}" = "v0.1.0"
-          test -f "docs/releases/v0.1.0.md"
+          RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          test "v${RELEASE_VERSION}" = "${GITHUB_REF_NAME}"
+          test -f "docs/releases/${GITHUB_REF_NAME}.md"
+          test -f "build/release/narrowslink-${RELEASE_VERSION}.tgz"
           gh release create "${GITHUB_REF_NAME}" \
-            build/release/narrowslink-0.1.0.tgz \
-            build/release/narrowslink-0.1.0.release.json \
-            build/release/narrowslink-0.1.0.cdx.json \
+            "build/release/narrowslink-${RELEASE_VERSION}.tgz" \
+            "build/release/narrowslink-${RELEASE_VERSION}.release.json" \
+            "build/release/narrowslink-${RELEASE_VERSION}.cdx.json" \
             build/release/SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
-            --title "NarrowsLink v0.1.0" \
-            --notes-file "docs/releases/v0.1.0.md"
+            --title "NarrowsLink ${GITHUB_REF_NAME}" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md"

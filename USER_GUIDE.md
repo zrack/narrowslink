@@ -1,8 +1,6 @@
 # NarrowsLink user guide
 
-This guide covers NarrowsLink operation from installation through local capture, replay, incident authoring, evidence export, and receiver verification. Source contributors should use [CONTRIBUTING.md](CONTRIBUTING.md).
-
-The installation section remains specific to the tagged v0.1.0 package. Decoder-pack, NMEA, in-application receiver, comparative replay, and large-session processing procedures are available in the current repository under `[Unreleased]` and will require a later packaged release.
+This guide covers NarrowsLink v0.2.0 operation from installation through local capture, replay, incident authoring, evidence export, receiver verification, and comparative replay. Source contributors should use [CONTRIBUTING.md](CONTRIBUTING.md).
 
 NarrowsLink keeps telemetry, saved sessions, operator annotations, and evidence generation on the local machine. It does not provide accounts, cloud storage, hosted ingestion, or telemetry upload.
 
@@ -14,17 +12,17 @@ You need:
 - A local browser.
 - A supported Chromium browser for physical Web Serial capture.
 - Enough browser memory and storage for the sessions you plan to process and retain.
-- The four files from the [NarrowsLink v0.1.0 release](https://github.com/zrack/narrowslink/releases/tag/v0.1.0).
+- The four files from the [NarrowsLink v0.2.0 release](https://github.com/zrack/narrowslink/releases/tag/v0.2.0).
 
-The release package contains the production application, authenticated UDP bridge, bundled Harbor relay replay, and evidence receiver CLI. A source checkout, Vite, and project dependencies are not required.
+The release package contains the production application, authenticated UDP bridge, bundled Harbor relay replay, decoder-pack tools, application and CLI evidence receivers, and comparison workflow. A source checkout, Vite, and project dependencies are not required.
 
-## Install and verify v0.1.0
+## Install and verify v0.2.0
 
 Download these four release assets into one directory:
 
-- `narrowslink-0.1.0.tgz`
-- `narrowslink-0.1.0.release.json`
-- `narrowslink-0.1.0.cdx.json`
+- `narrowslink-0.2.0.tgz`
+- `narrowslink-0.2.0.release.json`
+- `narrowslink-0.2.0.cdx.json`
 - `SHA256SUMS`
 
 On macOS, verify the published checksum set:
@@ -44,7 +42,7 @@ All three listed assets must report `OK`. The checksum file is delivered through
 Install the package without running lifecycle scripts:
 
 ```bash
-npm install --global ./narrowslink-0.1.0.tgz --ignore-scripts
+npm install --global ./narrowslink-0.2.0.tgz --ignore-scripts
 ```
 
 Confirm the installed identity:
@@ -53,13 +51,7 @@ Confirm the installed identity:
 narrowslink version --json
 ```
 
-For v0.1.0, the output must identify version `0.1.0` and commit:
-
-```text
-a9d6c6b737086d4240accc347a0a5d62f76d9531
-```
-
-Compare that output with `narrowslink-0.1.0.release.json`. If the version or commit differs, stop and resolve the package mismatch before collecting evidence.
+The output must identify version `0.2.0`. Compare its full commit and version with `narrowslink-0.2.0.release.json`. If either differs, stop and resolve the package mismatch before collecting evidence.
 
 ## Start and stop NarrowsLink
 
@@ -85,7 +77,7 @@ Press `Ctrl+C` in the serving terminal to stop the application server and bridge
 
 Keep the default application port when you want access to an existing local session library. Browser storage belongs to the exact origin `http://127.0.0.1:47890`; another application port or browser profile selects different storage.
 
-Use `narrowslink serve --help` to inspect bind and launch options. UDP-related command-line flags populate the capture dialog defaults. They do not start a UDP socket until you select **Start UDP capture**.
+Use `narrowslink serve --help` to inspect bind and launch options. UDP-related command-line flags populate the capture dialog defaults. They do not start a UDP socket until you select **Run UDP preflight**.
 
 ## First run with the bundled replay
 
@@ -142,15 +134,27 @@ Every new capture uses one decoder pack. The default is **NSL-01 v1.3.7**.
 4. Wait for the loaded-pack notice. Do not begin a test if identity, compatibility, or fixture validation fails.
 5. Confirm the displayed runtime revision and first 12 characters of the pack SHA-256 against the expected pack identity.
 
-Pack selection is locked once capture setup begins. The resulting `.nlsession` embeds the exact pack, schema, runtime, and revision identities. NarrowsLink accepts only bounded declarative packs for its supported runtime allowlist and does not run pack-supplied JavaScript.
+Pack selection is locked once preflight begins. The resulting `.nlsession` embeds the exact pack, schema, runtime, and revision identities. NarrowsLink accepts only bounded declarative packs for its supported runtime allowlist and does not run pack-supplied JavaScript.
 
 For pack authoring, offline validation, NMEA record boundaries, and the trust model, use [DECODER_PACKS.md](DECODER_PACKS.md).
+
+## Save and reuse a capture profile
+
+A capture profile is local setup state, not capture evidence. It stores the exact validated decoder pack plus either UDP bind, port, and multicast settings or serial line settings. It never stores the bridge credential, browser device permission, session title, or sampled telemetry.
+
+1. Configure the decoder and transport in **Live capture**.
+2. Select **Save setup**, enter a profile name, and confirm the save.
+3. On a later run, choose the profile under **Capture profile**. NarrowsLink applies its exact decoder pack and transport settings.
+4. If you deliberately change that setup, the profile is marked **modified**. Select **Update setup** to replace the stored settings or leave the profile unchanged.
+5. Use the trash button to remove the selected profile.
+
+Profiles are stored in browser local storage at the current NarrowsLink origin. They are limited to 16 profiles and 2 MiB of canonical content. A serial profile can restore settings but cannot bypass the browser's native device-selection and permission prompt.
 
 ## Record live UDP
 
 The installed release manages the authenticated bridge. The operator never copies a bearer token.
 
-![NarrowsLink live UDP capture setup](docs/design/live-capture-setup.jpg)
+![NarrowsLink confirming UDP traffic and decoder fit before recording](docs/design/capture-preflight-ready.png)
 
 1. Start NarrowsLink with `narrowslink serve`.
 2. Select **Live capture** or **Capture**.
@@ -161,12 +165,17 @@ The installed release manages the authenticated bridge. The operator never copie
 7. Select or load the decoder pack that matches the incoming datagrams.
 8. Set **UDP bind host** and **UDP port**.
 9. For multicast, set **Multicast group** and, when needed, **Multicast interface**. The bind address and group must use the same IP family.
-10. Select **Start UDP capture**.
-11. Confirm the status is **Recording** and send telemetry to the exact address shown under **Source**.
-12. Watch **Datagrams received**, **Input bytes**, **Records retained**, **Bytes retained**, and **Bridge state**.
-13. Select **Stop, save & replay**.
+10. Select **Run UDP preflight**.
+11. Send known traffic to the exact address shown under **Source**.
+12. Inspect source state, datagram and byte rates, last-input age, valid and malformed frames, checksum failures, message families, endpoints, and the decoder-fit assessment.
+13. Select **Start recording** when the decoder fits. **Record with warning** or **Start recording anyway** remains available when the probe has traffic problems or no traffic, but the warning becomes an operator decision rather than a hidden assumption.
+14. Confirm the status is **Recording**, then send the telemetry that belongs in evidence.
+15. Watch **Datagrams received**, **Input bytes**, **Records retained**, **Bytes retained**, and **Bridge state**.
+16. Select **Stop, save & replay**.
 
 Using UDP port `0` lets the bridge choose an available port. Read the actual bound port under **Source** before starting the sender.
+
+UDP preflight uses a temporary bridge capture identity. Starting recording first requires that probe to stop cleanly, discards its sampled traffic, and opens a new capture identity. If NarrowsLink cannot confirm the stop, it refuses to record because the evidence boundary is not proven. The resulting `.nlsession` begins only with traffic received after **Start recording**.
 
 For NMEA 0183, send one complete `$...*HH` sentence per UDP datagram. Concatenating multiple sentences into one datagram is not split automatically.
 
@@ -194,13 +203,16 @@ Physical serial capture requires a browser with Web Serial support, normally a C
 3. Enter a **Session title** and confirm the **Display timezone**.
 4. Select or load the decoder pack that matches the serial stream.
 5. Set **Baud rate**, **Data bits**, **Stop bits**, **Parity**, and **Flow control**. The defaults are `115200`, `8`, `1`, `None`, and `None`.
-6. Select **Select port & start**.
+6. Select **Select port & preflight**.
 7. Choose the device in the browser's native prompt.
-8. Confirm **Serial state: open** and status **Recording**.
-9. Watch the serial reads, input bytes, retained records, and retained bytes.
-10. Select **Stop, save & replay**.
+8. Confirm **Serial state: open**, send known traffic, and inspect the preflight decoder-fit assessment.
+9. Select **Start recording**, **Record with warning**, or **Start recording anyway** as the observed traffic warrants.
+10. Send the telemetry that belongs in evidence and watch the serial reads, input bytes, retained records, and retained bytes.
+11. Select **Stop, save & replay**.
 
-Device selection and port setup happen before the capture clock starts. NarrowsLink retains undecodable and partial input as evidence. A disconnect or read failure produces an incomplete receipt and a capture-path diagnostic rather than silently claiming a clean capture.
+Device selection and port setup happen before the capture clock starts. When recording begins, NarrowsLink keeps the selected port open but resets serial framing and counters; only subsequent reads enter the immutable session. NarrowsLink retains undecodable and partial input received after that boundary as evidence. A disconnect or read failure produces an incomplete receipt and a capture-path diagnostic rather than silently claiming a clean capture.
+
+Both preflight paths analyze at most 256 input units, 512 KiB of input, and 16 UDP endpoints. The dialog retains aggregate observations, not sampled payloads. **Stop preflight** closes the temporary source without creating, saving, or downloading a session.
 
 NSL-01 serial framing uses its sync word and declared binary length. NMEA serial framing uses line-feed boundaries, preserves CRLF, and retains overlong or unterminated tails as bounded partial records.
 
@@ -279,7 +291,7 @@ Version 3 raw and decoded artifacts are each limited to 100,000 rows. When inves
 
 Treat received `.nlb` bytes as untrusted.
 
-The current repository build can verify and open the incident directly:
+The v0.2.0 application can verify and open the incident directly:
 
 1. Start NarrowsLink on the receiving machine.
 2. Select **Open evidence** in the Sessions rail or top bar.
@@ -327,11 +339,9 @@ Do not extract a bundle that exits `1`. Correct path, permissions, or command us
 
 A valid bundle can truthfully report `incomplete` or `unknown` capture or provenance evidence. Version 3 bundles are unsigned, so the verifier reports authenticity as `not-established`. Exchange the reported bundle SHA-256 or expected manifest identity through a separately trusted channel when authorship or source-channel authenticity matters.
 
-The tagged v0.1.0 package includes the CLI verifier but predates the in-application receiver. Use the current repository build until the receiver workspace is included in a later tagged release.
-
 ## Compare two bounded inputs
 
-The current repository build can compare an exact incident from the active replay or the fixed range from a verified receiver bundle with one candidate session or bundle.
+NarrowsLink v0.2.0 can compare an exact incident from the active replay or the fixed range from a verified receiver bundle with one candidate session or bundle.
 
 1. In the replay workspace, select the baseline incident and choose **Compare**. In the receiver workspace, choose **Compare** to use the bundle's exact included range.
 2. Under **Candidate**, choose a `.nlsession`, `.json`, or `.nlb`. NarrowsLink validates a session through the normal decoder pipeline and verifies a bundle through the production receiver before continuing. Session processing shows the same phase progress as replay import and can be cancelled without replacing either source workspace.
@@ -347,8 +357,6 @@ The current repository build can compare an exact incident from the active repla
 The finding includes both immutable input identities, source durations, exact ranges, evidence availability and aligned counts, decoder identities, alignment, overlap, unmatched tails, comparability decisions, metrics, bounded evidence-ID samples, assessment, limitations, and conclusion. Its canonical SHA-256 detects alteration to the finding itself. It does not authenticate the author, establish that clocks were synchronized, prove causality, or contain either source file. Keep the exact cited `.nlsession` or `.nlb` files with the finding so another engineer can reproduce the result.
 
 Invalid or incompatible candidate input leaves the current replay, receiver, and any open comparison unchanged. **Return** goes back to the source workspace; **New comparison** keeps the same baseline and reopens setup.
-
-The tagged v0.1.0 package predates comparative replay. Use the current repository build until the feature is included in a later tagged release.
 
 ## Use the local session library
 
@@ -418,8 +426,11 @@ To intentionally purge the browser-held library and workspace, preserve any requ
 | The browser did not open | Keep `narrowslink serve` running and open the printed loopback URL. |
 | Port `47890` is occupied | Stop the existing process when possible. An alternate `--app-port` works, but it selects a different browser-storage origin. |
 | The managed capture status is missing or invalid | Start the installed package with `narrowslink serve`; do not serve the application directory as static files. |
-| UDP capture will not start | Confirm the bind address exists locally, the port is free, and multicast group and interface values use the same IP family. |
-| UDP counters remain at zero | Confirm status **Recording**, send to the exact address under **Source**, and check firewall, routing, and sender configuration. |
+| UDP preflight will not start | Confirm the bind address exists locally, the port is free, and multicast group and interface values use the same IP family. |
+| UDP preflight sees no traffic | Send to the exact address under **Source**, then check firewall, routing, and sender configuration. Port `0` changes to the actual assigned port after preflight opens. |
+| Preflight reports a decoder mismatch | Confirm the sender's framing and protocol, then select or load the matching pack. Record with the warning only when preserving intentionally mismatched raw evidence is the test objective. |
+| Recording cannot follow UDP preflight | NarrowsLink could not prove the temporary probe stopped. Select **Stop preflight**, resolve the bridge problem, and run a new preflight; do not treat probe traffic as recorded evidence. |
+| A capture profile will not save | Confirm browser local storage is available and the profile set remains within 16 profiles and 2 MiB. Credentials, device permission, titles, and telemetry must be configured separately. |
 | A decoder pack will not load | Confirm the file is at most 512 KiB, was sealed with `narrowslink decoder seal`, uses a supported runtime, and passes its bundled fixtures. |
 | NMEA records are partial or unknown | Send one sentence per UDP datagram, or terminate each serial sentence with LF; confirm `$` prefix and `*HH` checksum. |
 | Web Serial is unavailable | Use a supported Chromium browser at the loopback application URL, or use UDP capture. |
@@ -448,11 +459,13 @@ Review and sanitize evidence before committing it to a repository, attaching it 
 
 The managed bridge control plane is loopback-only and uses an internal short-lived credential. The UDP listener still binds the interface chosen by the operator and can receive traffic from that interface.
 
-Release checksums and bundle verification establish internal consistency. The v0.1 release, checksum file, and version 3 evidence bundles are unsigned. They do not establish publisher, author, source-channel, or build-environment authenticity.
+Release checksums and bundle verification establish internal consistency. The v0.2 release, checksum file, decoder packs, comparison findings, and version 3 evidence bundles are unsigned. They do not establish publisher, author, source-channel, or build-environment authenticity.
 
 ## Current operating limits
 
 - Live capture supports UDP and Web Serial, not TCP or other transports.
+- Capture profiles are limited to 16 entries and 2 MiB of canonical content. They store an exact decoder pack and transport settings but no credentials, device permission, session titles, or telemetry.
+- Preflight analyzes at most 256 input units, 512 KiB of sampled input, and 16 UDP endpoints. It retains aggregate observations only, and preflight traffic is intentionally excluded from the recorded session.
 - Bundled packs support NSL-01 and checksummed NMEA 0183 GGA, RMC, and HDT. Local packs are limited to supported bounded runtimes; arbitrary code and automatic protocol detection are not supported.
 - Imported and saved replay documents are limited to 64 MiB of canonical UTF-8 JSON, 200,000 records, and 24 hours.
 - Live capture is limited to 100,000 retained records, 32 MiB of retained payload bytes, 24 hours, and a canonical file that fits the 64 MiB replay limit.

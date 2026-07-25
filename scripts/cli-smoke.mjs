@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const projectRoot = resolve(import.meta.dirname, "..");
+const packageDocument = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
+const expectedVersion = packageDocument.version;
 const outputDirectory = join(projectRoot, "dist-cli");
 const cliPath = join(outputDirectory, "narrowslink.mjs");
 const outputFiles = readdirSync(outputDirectory).sort();
@@ -43,7 +45,7 @@ try {
   const version = spawnSync(process.execPath, [symlinkPath, "version", "--json"], { encoding: "utf8" });
   if (version.status !== 0) throw new Error(`CLI version exit was ${version.status}; expected 0.`);
   const identity = JSON.parse(version.stdout);
-  if (identity.name !== "narrowslink" || identity.version !== "0.1.0" || typeof identity.commit !== "string") {
+  if (identity.name !== "narrowslink" || identity.version !== expectedVersion || typeof identity.commit !== "string") {
     throw new Error("CLI release identity is not stable.");
   }
 } finally {
