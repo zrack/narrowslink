@@ -70,7 +70,11 @@ async function captureUdpSession(
   await dialog.getByLabel("Bridge token", { exact: true }).fill(bridge.token);
   await dialog.getByLabel("UDP bind host", { exact: true }).fill("127.0.0.1");
   await dialog.getByLabel(/UDP port/).fill("0");
-  await dialog.getByRole("button", { name: "Start UDP capture" }).click();
+  await dialog.getByRole("button", { name: "Run UDP preflight" }).click();
+  await bridge.waitForStatus((status) => status.state === "capturing" && (status.udp?.port ?? 0) > 0);
+  await bridge.sendFixtureDatagrams({ count: 1 });
+  await expect(dialog.getByRole("region", { name: "Preflight ready" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Start recording" }).click();
   await expect(dialog.getByRole("region", { name: "Recording" })).toBeVisible();
   await bridge.waitForStatus((status) => status.state === "capturing" && (status.udp?.port ?? 0) > 0);
 

@@ -12,9 +12,10 @@ The current application ships two packs:
 1. Open **Live capture**.
 2. Choose a bundled pack under **Decoder pack**, or select **Load pack** and choose a local `.nldecoder` or `.json` file.
 3. Wait for the loaded-pack notice. NarrowsLink validates the file shape, canonical SHA-256 identity, supported runtime, schema compatibility, and every bundled fixture before making the pack active.
-4. Configure UDP or serial and start capture. The selected pack is locked for that capture.
-5. Stop and save. The version 2 `.nlsession` embeds the exact pack and records its pack, schema, runtime, and revision identities.
-6. Export an `.nlb` with **Decoder schema** included. The production receiver revalidates the embedded pack and reproduces decoded rows from the selected raw records.
+4. Configure UDP or serial, run preflight with known traffic, and confirm that the selected pack produces the expected valid frames and message families. The pack is locked once preflight begins.
+5. Select **Start recording**. UDP replaces the discarded probe with a new capture identity; serial resets framing on the already selected port so only subsequent reads enter evidence.
+6. Stop and save. The version 2 `.nlsession` embeds the exact pack and records its pack, schema, runtime, and revision identities.
+7. Export an `.nlb` with **Decoder schema** included. The production receiver revalidates the embedded pack and reproduces decoded rows from the selected raw records.
 
 If pack validation or a fixture fails, capture does not start with that pack. Existing raw session records are never rewritten to fit a replacement decoder.
 

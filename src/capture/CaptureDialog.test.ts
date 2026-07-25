@@ -92,6 +92,15 @@ describe("CaptureDialog UDP ownership", () => {
     }, "owned")).resolves.toBe(stopped);
     expect(stop).toHaveBeenCalledOnce();
   });
+
+  it("rejects an owned stop response that remains active", async () => {
+    const stop = vi.fn(async () => bridgeStatus("owned", {}, "capturing"));
+    await expect(stopUdpCaptureIfOwned({
+      getStatus: async () => bridgeStatus("owned"),
+      stop,
+    }, "owned")).rejects.toBeInstanceOf(UdpCaptureIntegrityError);
+    expect(stop).toHaveBeenCalledOnce();
+  });
 });
 
 describe("CaptureDialog UDP integrity", () => {

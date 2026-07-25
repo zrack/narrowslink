@@ -179,7 +179,21 @@ test("captures real NMEA UDP traffic and hands off the exact decoder interpretat
   await captureDialog.getByLabel("Bridge token", { exact: true }).fill(bridge.token);
   await captureDialog.getByLabel("UDP bind host", { exact: true }).fill("127.0.0.1");
   await captureDialog.getByLabel(/UDP port/).fill("0");
-  await captureDialog.getByRole("button", { name: "Start UDP capture" }).click();
+
+  await captureDialog.getByRole("button", { name: "Save setup" }).click();
+  await captureDialog.getByLabel("Profile name").fill("Gig Harbor NMEA UDP");
+  await captureDialog.getByRole("button", { name: "Save profile" }).click();
+  await expect(captureDialog).toContainText(
+    "Gig Harbor NMEA UDP was saved locally without bridge credentials, device permissions, or telemetry payloads.",
+  );
+
+  await captureDialog.getByRole("button", { name: "Run UDP preflight" }).click();
+  await expect(captureDialog.getByRole("region", { name: "Preflight waiting for traffic" })).toBeVisible();
+  await bridge.waitForStatus((status) => status.state === "capturing" && (status.udp?.port ?? 0) > 0);
+  await bridge.sendDatagrams([nmeaHex[0]!]);
+  await expect(captureDialog.getByRole("region", { name: "Preflight ready" })).toBeVisible();
+  await expect(captureDialog).toContainText("Traffic and decoder fit are confirmed.");
+  await captureDialog.getByRole("button", { name: "Start recording" }).click();
   await expect(captureDialog.getByRole("region", { name: "Recording" })).toBeVisible();
 
   const sent = await bridge.sendDatagrams(nmeaHex, { intervalMs: 15 });
@@ -227,6 +241,18 @@ test("captures real NMEA UDP traffic and hands off the exact decoder interpretat
     integrity: { canonicalSha256: portablePack.integrity.canonicalSha256 },
     runtime: { id: "nmea0183-line-v1", revision: "1" },
   });
+
+  await page.getByRole("button", { name: /Live capture UDP or serial/ }).click();
+  const reopenedCaptureDialog = page.getByRole("dialog", { name: "Record live telemetry" });
+  await reopenedCaptureDialog.getByRole("combobox", { name: "Capture profile", exact: true })
+    .selectOption({ label: "Gig Harbor NMEA UDP · UDP" });
+  await expect(reopenedCaptureDialog.getByRole("combobox", { name: "Decoder pack", exact: true })).toHaveValue(
+    portablePack.integrity.canonicalSha256,
+  );
+  await expect(reopenedCaptureDialog.getByLabel("UDP bind host", { exact: true })).toHaveValue("127.0.0.1");
+  await expect(reopenedCaptureDialog.getByLabel(/UDP port/)).toHaveValue("0");
+  await expect(reopenedCaptureDialog.getByLabel("Bridge token", { exact: true })).toHaveValue("");
+  await reopenedCaptureDialog.getByRole("button", { name: "Cancel" }).click();
 
   const bundlePanel = page.getByRole("region", { name: "Incident bundle preview" });
   await bundlePanel.getByRole("button", { name: "Create incident bundle" }).click();
@@ -312,6 +338,38 @@ test("captures real NMEA UDP traffic and hands off the exact decoder interpretat
   expect(browserErrors).toEqual([]);
 });
 
+test("diagnoses a decoder mismatch before recording and discards the probe cleanly", async ({ page }) => {
+  bridge = await startLoopbackBridge();
+  await page.goto("/");
+  await page.getByRole("button", { name: /Live capture UDP or serial/ }).click();
+  const captureDialog = page.getByRole("dialog", { name: "Record live telemetry" });
+  await captureDialog.getByRole("combobox", { name: "Decoder pack", exact: true })
+    .selectOption(NMEA0183_DECODER_PACK.integrity.canonicalSha256);
+  await captureDialog.getByLabel(/Bridge URL/).fill(bridge.controlUrl);
+  await captureDialog.getByLabel("Bridge token", { exact: true }).fill(bridge.token);
+  await captureDialog.getByLabel("UDP bind host", { exact: true }).fill("127.0.0.1");
+  await captureDialog.getByLabel(/UDP port/).fill("0");
+  await captureDialog.getByRole("button", { name: "Run UDP preflight" }).click();
+  await bridge.waitForStatus((status) => status.state === "capturing" && (status.udp?.port ?? 0) > 0);
+  await bridge.sendFixtureDatagrams({ count: 3, intervalMs: 10 });
+
+  await expect(captureDialog.getByRole("region", { name: "Preflight needs attention" })).toBeVisible();
+  await expect(captureDialog).toContainText(
+    "Traffic is arriving, but the selected decoder has not produced a valid frame.",
+  );
+  await expect(captureDialog.getByRole("button", { name: "Record with warning" })).toBeEnabled();
+  await expect(captureDialog).toContainText(
+    "Preflight samples are not retained. Starting recording stops this probe and opens a new owned capture ID.",
+  );
+
+  await captureDialog.getByRole("button", { name: "Stop preflight" }).click();
+  const readyStatus = captureDialog.getByRole("region", { name: "Ready" });
+  await expect(readyStatus).toBeVisible();
+  await expect(readyStatus.getByText("0s", { exact: true })).toBeVisible();
+  await expect(captureDialog).toContainText("Its sampled bytes were not added to a session.");
+  await bridge.waitForStatus((status) => status.state === "stopped");
+});
+
 test("records UDP, replays and investigates it, then exports independently verifiable evidence", async ({ page }, testInfo) => {
   const browserErrors: string[] = [];
   page.on("console", (message) => {
@@ -332,7 +390,12 @@ test("records UDP, replays and investigates it, then exports independently verif
   await captureDialog.getByLabel("Bridge token", { exact: true }).fill(bridge.token);
   await captureDialog.getByLabel("UDP bind host", { exact: true }).fill("127.0.0.1");
   await captureDialog.getByLabel(/UDP port/).fill("0");
-  await captureDialog.getByRole("button", { name: "Start UDP capture" }).click();
+  await captureDialog.getByRole("button", { name: "Run UDP preflight" }).click();
+  await expect(captureDialog.getByRole("region", { name: "Preflight waiting for traffic" })).toBeVisible();
+  await bridge.waitForStatus((status) => status.state === "capturing" && (status.udp?.port ?? 0) > 0);
+  await bridge.sendFixtureDatagrams({ count: 2, intervalMs: 10 });
+  await expect(captureDialog.getByRole("region", { name: "Preflight ready" })).toBeVisible();
+  await captureDialog.getByRole("button", { name: "Start recording" }).click();
   await expect(captureDialog.getByRole("region", { name: "Recording" })).toBeVisible();
   await expectFocusInside(page, "dialog");
 

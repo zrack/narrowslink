@@ -6,12 +6,12 @@ NarrowsLink records live UDP or serial telemetry through an identified, content-
 
 ![NarrowsLink mission-timeline session review workspace](docs/assets/narrowslink-dashboard.png)
 
-The application is local-first. The v0.1 distribution starts the production workspace and authenticated UDP bridge together on loopback; the browser uses a same-origin application relay, while the bridge credential remains internal to the managed process and never requires operator copying. Its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, worker-isolated replay processing, annotations, comparison, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
+The application is local-first. The v0.2 distribution starts the production workspace and authenticated UDP bridge together on loopback; the browser uses a same-origin application relay, while the bridge credential remains internal to the managed process and never requires operator copying. Its UDP socket binds the operator-selected interface. Serial ingest uses the browser's Web Serial connection. Capture, saved sessions, worker-isolated replay processing, annotations, comparison, evidence generation, and receiver verification stay on the operator's or receiving engineer's machine. NarrowsLink has no telemetry upload, cloud account, or hosted dependency.
 
 ## Start here
 
 - Follow the [user guide](USER_GUIDE.md) for installation, live capture, replay, incident authoring, evidence handoff, upgrades, removal, and troubleshooting.
-- Download the current package and release evidence from [NarrowsLink v0.1.0](https://github.com/zrack/narrowslink/releases/tag/v0.1.0).
+- Download the current package and release evidence from [NarrowsLink v0.2.0](https://github.com/zrack/narrowslink/releases/tag/v0.2.0).
 - Review the [use-case log](USE_CASES.md) for supported operator outcomes and current constraints.
 - Use the [decoder-pack guide](DECODER_PACKS.md) to load, author, seal, validate, and hand off a protocol definition.
 - Use [SUPPORT.md](SUPPORT.md) to prepare a reproducible support request without disclosing sensitive telemetry.
@@ -19,22 +19,20 @@ The application is local-first. The v0.1 distribution starts the production work
 
 ## Quick start
 
-NarrowsLink v0.1.0 is a self-contained package with zero runtime npm dependencies. It contains the production UI, managed UDP bridge, deterministic Harbor relay fixture, and receiver verifier. It requires Node.js 20.19 or newer, but it does not require a repository checkout, Vite, or project dependencies.
+NarrowsLink v0.2.0 is a self-contained package with zero runtime npm dependencies. It contains the production UI, managed UDP bridge, deterministic Harbor relay fixture, decoder-pack tools, application and CLI evidence receivers, and comparison workflow. It requires Node.js 20.19 or newer, but it does not require a repository checkout, Vite, or project dependencies.
 
-The decoder-pack, NMEA, in-application receiver, comparative replay, and large-session processing capabilities documented below are currently under `[Unreleased]` in this repository and are not present in the tagged v0.1.0 package.
+Download these four assets from the [v0.2.0 GitHub Release](https://github.com/zrack/narrowslink/releases/tag/v0.2.0):
 
-Download these four assets from the [v0.1.0 GitHub Release](https://github.com/zrack/narrowslink/releases/tag/v0.1.0):
-
-- `narrowslink-0.1.0.tgz`
-- `narrowslink-0.1.0.release.json`
-- `narrowslink-0.1.0.cdx.json`
+- `narrowslink-0.2.0.tgz`
+- `narrowslink-0.2.0.release.json`
+- `narrowslink-0.2.0.cdx.json`
 - `SHA256SUMS`
 
 On macOS, verify the assets, install the package without lifecycle scripts, confirm its identity, and start the application:
 
 ```bash
 shasum -a 256 -c SHA256SUMS
-npm install --global ./narrowslink-0.1.0.tgz --ignore-scripts
+npm install --global ./narrowslink-0.2.0.tgz --ignore-scripts
 narrowslink version --json
 narrowslink serve
 ```
@@ -50,6 +48,9 @@ Continue with the [guided first run](USER_GUIDE.md#first-run-with-the-bundled-re
 ## Current capabilities
 
 - Capture unicast or multicast UDP datagrams through the managed authenticated local bridge, or assemble serial records directly through Web Serial using the selected decoder pack. Stopping a source downloads a versioned `.nlsession`, opens the validated finalized capture for replay, and attempts to retain it in the local session library.
+- Save up to 16 local capture profiles containing the exact validated decoder pack and UDP or serial settings. Profiles deliberately exclude bridge credentials, browser device permission, session names, and telemetry payloads.
+- Preflight a live UDP or serial source before evidence recording. The bounded probe reports traffic and byte rates, last-input age, valid and malformed frames, checksum failures, observed message families, endpoints, and decoder fit without retaining sampled payloads as session evidence.
+- Start evidence collection through an explicit boundary. UDP stops and discards the probe before opening a new capture identity; serial retains the selected port while resetting framing and routing only future reads into the immutable session.
 - Choose the bundled NSL-01 or NMEA 0183 reference pack, or load a local bounded declarative pack. NarrowsLink checks canonical pack identity, runtime and schema compatibility, and bundled production-path fixtures before capture; it never executes pack-supplied JavaScript.
 - Load the bundled demonstration, reopen a saved session, or choose a local version 1 or 2 session. Imported and saved sessions are read, validated, decoded, aggregated, canonicalized, and transferred through a worker-backed processing contract with visible phase progress and cancellation. A failed or cancelled operation leaves the current replay unchanged and never persists partial content. Legacy v1 evidence remains unchanged and carries an explicit unknown capture-integrity assessment.
 - Keep multiple validated sessions in an IndexedDB-backed local library. The Sessions rail lists real title, time, duration, and integrity metadata; exact duplicate content remains one entry, and every reopen rechecks the stored SHA-256 identity, canonical session bytes, validation, and decoding before replacing the active replay. New saves use exact canonical bytes in the version 3 library record while version 1 text and version 2 Blob records remain readable. Removing an entry also clears its separately stored markers, note, and authored ranges when browser storage permits; an active replay stays open until it is replaced.
@@ -79,7 +80,7 @@ See the canonical [use-case log](USE_CASES.md) for actors, supported workflows, 
 
 NarrowsLink opens the bundled **Harbor relay downlink** replay automatically. An operator can replace it with a validated local file, reopen a saved session, or record live UDP or serial traffic. The normal capture-to-evidence path is:
 
-1. Select or load the decoder pack, then open or capture a session and select a replay preset or operator-authored incident range.
+1. Apply or create a capture profile, preflight known traffic against the selected decoder, then deliberately start evidence recording. Alternatively, open an existing session and select a replay preset or operator-authored incident range.
 2. Correlate link health, packet cadence, decoder state, diagnostics, decoded signals, and transport provenance on the shared replay clock.
 3. Add local markers and a session note without changing the captured records.
 4. Choose optional evidence groups; the transport event log, provenance, bridge journal, and capture-integrity receipt remain mandatory.
@@ -98,13 +99,13 @@ Uninstalling the package does not delete the local session library, operator wor
 
 ## Live capture
 
-![NarrowsLink live UDP capture setup](docs/design/live-capture-setup.jpg)
+![NarrowsLink confirming UDP traffic and decoder fit before recording](docs/design/capture-preflight-ready.png)
 
 The installed release offers **UDP bridge** and **Serial port** from the **Live capture** dialog.
 
-For UDP, the managed process keeps its bridge credential internal and exposes bind, port, and optional multicast settings in the dialog. Command-line UDP flags populate dialog defaults; no socket starts until the operator selects **Start UDP capture**. The chosen bind controls which local interface receives telemetry, so `0.0.0.0` should be used only when listening on every local IPv4 interface is intentional.
+For UDP, the managed process keeps its bridge credential internal and exposes bind, port, and optional multicast settings in the dialog. Command-line UDP flags populate dialog defaults; no socket starts until the operator selects **Run UDP preflight**. The preflight uses a temporary capture identity and retains only bounded aggregate observations. **Start recording** stops and discards that probe before opening a new capture identity, so probe traffic cannot silently become evidence. The chosen bind controls which local interface receives telemetry, so `0.0.0.0` should be used only when listening on every local IPv4 interface is intentional.
 
-For serial, the operator selects port settings and then chooses the device through the browser's native Web Serial prompt. Web Serial requires a supporting Chromium browser and a secure loopback context. Automated coverage exercises the application path with an injected standards-based serial API; physical adapters, drivers, native chooser behavior, and operating-system disconnect handling remain a manual boundary.
+For serial, the operator selects port settings and then chooses the device through the browser's native Web Serial prompt with **Select port & preflight**. **Start recording** keeps that open port, resets the framing state, and sends only subsequent reads to the recorder. Web Serial requires a supporting Chromium browser and a secure loopback context. Automated coverage exercises the application path with an injected standards-based serial API; physical adapters, drivers, native chooser behavior, and operating-system disconnect handling remain a manual boundary.
 
 Stopping either source with **Stop, save & replay** downloads a version 2 `.nlsession`, opens the validated finalized capture, and attempts to retain it in the local session library. Follow the [UDP procedure](USER_GUIDE.md#record-live-udp) or [serial procedure](USER_GUIDE.md#record-live-serial-telemetry) before connecting a field source.
 
@@ -214,13 +215,13 @@ Range-scoped events, records, decoded packets, diagnostics, markers, and notes a
 
 ### Receive and verify a bundle
 
-In the current repository build, choose **Open evidence** in the Sessions rail or top bar and select the `.nlb`. NarrowsLink reads the file as untrusted input, verifies it in a worker with the production verifier, and does not replace the current workspace unless every required archive and semantic check succeeds.
+In NarrowsLink v0.2.0, choose **Open evidence** in the Sessions rail or top bar and select the `.nlb`. NarrowsLink reads the file as untrusted input, verifies it in a worker with the production verifier, and does not replace the current workspace unless every required archive and semantic check succeeds.
 
 The receiver workspace preserves the source session identity and exact half-open selection while projecting only included raw records, decoded packets, diagnostics, source annotations, and transport evidence. Excluded artifact groups and unavailable whole-session context remain explicit. Internal consistency, evidence completeness, and source authenticity are shown as separate claims. The **Notes** tab stores a receiver-owned finding separately under the whole-bundle SHA-256; it does not alter the received bytes or become source evidence.
 
 ![NarrowsLink received incident evidence workspace](docs/design/receiver-workspace.png)
 
-The CLI remains available when a terminal or stable JSON report is required. After installing the v0.1.0 package, a receiving engineer can verify a version 3 bundle locally without a repository checkout, application server, browser workspace, or network access:
+The CLI remains available when a terminal or stable JSON report is required. After installing the v0.2.0 package, a receiving engineer can verify a version 3 bundle locally without a repository checkout, application server, browser workspace, or network access:
 
 ```bash
 narrowslink verify path/to/incident.nlb
@@ -253,6 +254,8 @@ The semantic validator rejects altered hashes and internally contradictory range
 | --- | --- |
 | `src/App.tsx` | Application state and mission-timeline workspace UI |
 | `src/capture/CaptureDialog.tsx` | Live-source configuration, capture lifecycle, integrity status, save, and replay handoff |
+| `src/capture/capture-profile.ts` | Bounded local profile validation, persistence, and exact decoder-pack recall |
+| `src/capture/capture-preflight.ts` | Bounded payload-free source observations and decoder-fit assessment before recording |
 | `src/capture/recorder.ts` | Bounded immutable source-record collection and versioned session finalization |
 | `src/capture/web-serial.ts` | Permission-aware Web Serial lifecycle and byte-stream reads |
 | `src/capture/nsl01-serial-assembler.ts` | NSL-01 framing, noise retention, and bounded resynchronization |
@@ -301,7 +304,9 @@ Local does not automatically mean safe to share. A saved replay or evidence bund
 ## Current limits
 
 - Live capture supports UDP and Web Serial; TCP and other transports are not implemented.
-- The v0.1 package requires a compatible local Node.js runtime and browser. It bundles all NarrowsLink application code and runtime dependencies, but it is not a native installer or embedded-browser distribution.
+- The v0.2 package requires a compatible local Node.js runtime and browser. It bundles all NarrowsLink application code and runtime dependencies, but it is not a native installer or embedded-browser distribution.
+- Capture profiles are local convenience state, not evidence or secrets storage. They are limited to 16 profiles and 2 MiB of canonical content, and cannot restore Web Serial permission.
+- Preflight analysis is limited to 256 records, 512 KiB of sampled input, and 16 observed endpoints. It stores aggregate observations only; traffic seen before **Start recording** is intentionally absent from the resulting session.
 - Decoder packs are limited to the built-in bounded runtime allowlist. The current declarative external runtime supports checksummed NMEA 0183 sentence schemas; arbitrary JavaScript, automatic protocol detection, competing decoders, and fundamentally new wire protocols without a reviewed runtime are not supported.
 - NMEA UDP capture expects one complete sentence per datagram. NMEA serial capture uses line-feed boundaries and retains overlong or unterminated input as partial evidence.
 - Imported and saved replay documents are limited to 64 MiB of canonical UTF-8 JSON, 200,000 records, and 24 hours. The release gate exercises 200,000 records at 52,378,445 bytes in every supported engine; it does not claim that every browser and machine has identical performance near the hard byte limit.

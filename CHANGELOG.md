@@ -4,8 +4,13 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-25
+
 ### Added
 
+- Added reusable local capture profiles that preserve validated UDP or serial settings and the exact decoder pack while explicitly excluding bridge credentials, browser device permission, session names, and telemetry payloads.
+- Added bounded UDP and Web Serial preflight before recording, with live source state, traffic and byte rates, last-input age, valid and malformed frame counts, checksum failures, message families, endpoint observations, no-traffic guidance, and decoder-mismatch guidance.
+- Added an explicit preflight-to-evidence boundary: UDP probes are stopped and discarded before a new owned capture ID begins, while serial retains the selected port but resets framing and routes only future reads into the immutable session.
 - Added bounded, content-addressed decoder packs with an allowlisted parser runtime, canonical pack and schema identities, production-path conformance fixtures, local operator loading, and packaged `decoder seal` and `decoder validate` commands; new captures persist the exact pack and runtime while legacy NSL-01 sessions remain compatible and unchanged.
 - Added the NMEA 0183 reference pack for checksummed GGA, RMC, and HDT sentences over one-sentence-per-datagram UDP or line-delimited serial input, including partial-tail retention, checksum diagnostics, real loopback UDP capture, local-library reopen, evidence export, and production receiver replay verification.
 - Added an in-application receiver workspace for untrusted version 3 `.nlb` bundles: worker-isolated production verification now precedes inspection, the exact bounded incident is reconstructed only from included evidence, excluded context remains explicit, and internal consistency, evidence completeness, and unsigned authenticity remain separate claims.
@@ -18,6 +23,8 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 
 ### Changed
 
+- Promoted decoder packs, NMEA 0183, the in-application receiver, comparative replay, worker-backed large-session processing, and field-capture preflight into the self-contained v0.2 operator distribution.
+- Generalized the annotated-tag release workflow so the package version, release notes, asset names, and GitHub Release remain bound to one `v<package-version>` identity.
 - Defined NarrowsLink's product goal and success criteria around reproducible constrained-telemetry incidents and independently verified handoffs; retained the strategic product directions and moonshot opportunities while keeping delivered capabilities in the changelog and current-state docs.
 - Expanded UC-001 with supported radio transport capture topologies, including USB serial radio, UDP base-station output, forwarded UDP copies, and network multicast observer setup and test paths.
 - Raised the imported and saved replay envelope from 32 MiB and 100,000 records to 64 MiB and 200,000 records while retaining the separate live-capture ceiling of 100,000 records, 32 MiB of retained payload bytes, 24 hours, and a canonical file within the replay limit.
@@ -55,5 +62,6 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 
 - Restricted the UDP bridge control plane to loopback access with server-enforced capture ownership and an internal short-lived bearer credential; the browser uses a same-origin application relay, so the credential is not exposed in runtime metadata, URLs, cookies, readiness output, or logs.
 
-[Unreleased]: https://github.com/zrack/narrowslink/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zrack/narrowslink/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/zrack/narrowslink/releases/tag/v0.2.0
 [0.1.0]: https://github.com/zrack/narrowslink/releases/tag/v0.1.0
