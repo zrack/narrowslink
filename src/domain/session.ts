@@ -1,4 +1,13 @@
-import { decodeRecord, getNumericField, SUPPORTED_DECODER } from "./decoder";
+import {
+  BUILT_IN_DECODER_PACKS,
+  decodeRecord,
+  getNumericField,
+  resolveDecoderPack,
+} from "./decoder";
+import {
+  DecoderPackValidationError,
+  decoderDescriptorForPack,
+} from "./decoder-pack";
 import {
   incidentPresetSchema,
   MAX_SESSION_DURATION_US,
@@ -656,14 +665,20 @@ export function validateSessionDocument(input: unknown): SessionDocument {
   }
 
   const document = result.data;
-  if (
-    document.decoder.id !== SUPPORTED_DECODER.id
-    || document.decoder.revision !== SUPPORTED_DECODER.revision
-    || document.decoder.schemaHash.toLowerCase() !== SUPPORTED_DECODER.schemaHash
-  ) {
-    throw new SessionValidationError("The replay references an unsupported decoder schema.", [
+  try {
+    resolveDecoderPack(
+      document.decoder,
+      document.formatVersion === 2 ? document.decoderPack : undefined,
+    );
+  } catch (error) {
+    const details = error instanceof DecoderPackValidationError ? error.details : [];
+    throw new SessionValidationError("The replay references an unsupported decoder schema or unavailable decoder pack.", [
       `Received ${document.decoder.id} ${document.decoder.revision} (${document.decoder.schemaHash})`,
-      `Supported ${SUPPORTED_DECODER.id} ${SUPPORTED_DECODER.revision} (${SUPPORTED_DECODER.schemaHash})`,
+      ...details,
+      ...BUILT_IN_DECODER_PACKS.map((pack) => {
+        const descriptor = decoderDescriptorForPack(pack);
+        return `Supported ${pack.id} ${pack.revision} (${descriptor.schemaHash})`;
+      }),
     ]);
   }
   const seenIds = new Set<string>();
@@ -874,7 +889,7 @@ function makeDiagnostic(
     || type === "loss-burst"
     || type === "recovery"
     ? "link"
-    : type === "crc-failure" || type === "partial-frame"
+    : type === "crc-failure" || type === "checksum-failure" || type === "partial-frame"
       ? "unknown"
       : "decoder";
   return {
@@ -939,7 +954,11 @@ function transportProvenanceDiagnostic(
   };
 }
 
-function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly MetricBucket[]): DiagnosticEvent[] {
+function deriveDiagnostics(
+  frames: readonly DecodedFrame[],
+  buckets: readonly MetricBucket[],
+  decoderId: string,
+): DiagnosticEvent[] {
   const events: DiagnosticEvent[] = [];
   let lowRssiBuckets = 0;
   let recoveryBuckets = 0;
@@ -986,18 +1005,20 @@ function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly Me
       consecutiveInvalid += 1;
       consecutiveValidAfterResync = 0;
       validRecoveryStartedUs = null;
-      const isCrc = frame.integrity.status === "crc-failed";
+      const isCrcFailure = frame.integrity.status === "crc-failed";
+      const isChecksumFailure = frame.integrity.status === "checksum-failed";
+      const isIntegrityFailure = isCrcFailure || isChecksumFailure;
       events.push(makeDiagnostic(
-        isCrc ? "crc-failure" : "partial-frame",
-        isCrc ? "critical" : "warning",
+        isCrcFailure ? "crc-failure" : isChecksumFailure ? "checksum-failure" : "partial-frame",
+        isIntegrityFailure ? "critical" : "warning",
         frame.offsetUs,
-        isCrc ? "Checksum failure" : "Partial frame retained",
-        isCrc ? "The frame checksum did not match the calculated CRC." : "The frame could not be decoded completely and remains available for inspection.",
+        isCrcFailure ? "CRC failure" : isChecksumFailure ? "Checksum failure" : "Partial frame retained",
+        isIntegrityFailure ? "The record checksum did not match the value calculated by the declared decoder pack." : "The frame could not be decoded completely and remains available for inspection.",
         [frame.id],
       ));
       if (!resyncing && consecutiveInvalid === 2) {
         resyncing = true;
-        events.push(makeDiagnostic("decoder-resync", "warning", frame.offsetUs, "Decoder resync", "Two consecutive invalid boundaries forced NSL-01 into resynchronization.", [frame.id]));
+        events.push(makeDiagnostic("decoder-resync", "warning", frame.offsetUs, "Decoder resync", `Two consecutive invalid boundaries forced ${decoderId} into resynchronization.`, [frame.id]));
       }
     } else {
       consecutiveInvalid = 0;
@@ -1016,7 +1037,7 @@ function deriveDiagnostics(frames: readonly DecodedFrame[], buckets: readonly Me
             "info",
             frame.offsetUs,
             "Decoder locked",
-            "At least three valid CRC frames over 40 uninterrupted seconds restored decoder boundary lock.",
+            "At least three valid checksummed records over 40 uninterrupted seconds restored decoder boundary lock.",
             [frame.id],
           ));
         }
@@ -1191,15 +1212,19 @@ function normalizedCaptureEvidence(document: SessionDocument): {
 
 export function parseSession(input: unknown): ParsedSession {
   const document = deepFreeze(validateSessionDocument(input));
+  const decoderPack = deepFreeze(resolveDecoderPack(
+    document.decoder,
+    document.formatVersion === 2 ? document.decoderPack : undefined,
+  ));
   const captureEvidence = normalizedCaptureEvidence(document);
   const transportProvenance = document.formatVersion === 2 ? document.transportProvenance : undefined;
-  const frames = document.records.map((record, ordinal) => decodeRecord(record, ordinal));
+  const frames = document.records.map((record, ordinal) => decodeRecord(record, ordinal, decoderPack));
   const buckets = createMetricBuckets(document, frames);
   const provenanceDiagnostic = transportProvenance == null
     ? null
     : transportProvenanceDiagnostic(transportProvenance, document.durationUs);
   const diagnostics = [
-    ...deriveDiagnostics(frames, buckets),
+    ...deriveDiagnostics(frames, buckets, document.decoder.id),
     ...captureEvidence.transportEvents.map((event) => transportEventDiagnostic(event, document.durationUs)),
     ...(provenanceDiagnostic == null ? [] : [provenanceDiagnostic]),
   ].sort((left, right) => left.startUs - right.startUs || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
@@ -1209,6 +1234,7 @@ export function parseSession(input: unknown): ParsedSession {
   const incidents = incidentPresets.map((preset) => projectIncident(preset, frames, diagnostics));
   return {
     document,
+    decoderPack,
     transportEvents: captureEvidence.transportEvents,
     captureIntegrity: captureEvidence.captureIntegrity,
     ...(transportProvenance == null ? {} : { transportProvenance }),

@@ -11,8 +11,9 @@ This document records the currently accepted visual baseline and its verificatio
 - Accepted focused source/geometry comparison: [focused comparison](docs/design/comparison-production-focused.png)
 - Responsive session-library dialog evidence: [responsive library implementation](docs/design/implementation-functional-mobile.png)
 - Capture-integrity functional evidence: [incomplete UDP capture replay](docs/design/implementation-capture-integrity.png)
+- Decoder-pack capture setup evidence: [NMEA capture setup](docs/design/live-capture-setup.jpg)
 - Desktop viewport: `1487 × 1058`, matching the source image.
-- Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`, and the open library dialog measures `358 px` wide.
+- Responsive viewport: `390 × 844`; measured document width and scroll width both equal `390 px`, and the open library and live-capture dialogs each measure `358 px` wide.
 - State: bundled Harbor relay replay reopened from the library; replay paused inside the link-fade incident at `23:40`; Narrative tab; all six evidence groups selected; two genuine saved sessions; two local operator markers, one in the visible timeline; and a session-wide note present.
 - Release-gate state: the same bundled incident and operator note with one genuine saved session, visible non-color diagnostic severity tokens, selected-incident semantics, and all six evidence groups selected.
 
@@ -58,6 +59,7 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Session library: the current desktop and responsive evidence confirms two real IndexedDB entries, active-row treatment, meaningful date/duration/integrity metadata, guarded removal, a reachable narrow-screen dialog, and no horizontal body overflow.
 - Capture integrity: the functional evidence confirms that an incomplete v2 receipt is visible in session context, its immutable UDP anomaly appears in the shared Diagnostics lane and Narrative as `Capture path`, and the evidence workspace keeps Capture integrity mandatory while Diagnostics remains optional.
 - Transport provenance: a verified loopback capture confirms that the source-aligned incident rail can expose capture identity, bound socket, endpoint attribution, bridge totals, explicit unavailable kernel-drop evidence, lifecycle journal entries, and evidence boundaries without disturbing the mission timeline's density or hierarchy.
+- Decoder portability: the current capture setup keeps the decoder decision ahead of transport setup, exposes the selected pack's runtime and shortened immutable identity, and preserves the established square, compact instrument language. At `390 × 844`, the selector and load action stack inside the `358 px` dialog without horizontal overflow.
 
 ## Required fidelity surfaces
 
@@ -82,6 +84,7 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Imported a purpose-built v2 UDP failure replay and confirmed the incomplete receipt, sequence-discontinuity event, exact capture-path diagnostic, and narrative entry survived reopen and projected into the selected incident range.
 - Built and downloaded `capture-integrity-browser-review-capture-integrity-incident.nlb`; the success state reported six selected groups and verifiable local evidence with Capture integrity locked on while Diagnostics remained independently selectable.
 - Opened and closed the live UDP/serial capture setup.
+- Selected the bundled NMEA pack and confirmed its runtime and pack identity updated together; the same controls reflowed without horizontal overflow at `390 × 844`.
 - Saved the bundled replay, reloaded the page, and confirmed its genuine IndexedDB row and active state survived browser navigation.
 - Imported the exact same fixture and confirmed content-addressed deduplication kept the library at one entry and preserved the original saved order.
 - Added a second validated session through the real repository path, confirmed newest-first ordering, reopened it from the rail, switched away and back, and verified its per-session operator note restored.
@@ -92,11 +95,12 @@ Six visible differences are intentional and accepted product, data, or accessibi
 - Checked browser warnings and errors after the complete session-library flow: none.
 - Checked and saved the capture-integrity replay at a `1487 × 1058` browser viewport with no document overflow; the header, required Capture integrity row, and all optional evidence controls remain visible in the accepted frame.
 - Recorded 12 real fixture datagrams through an ephemeral loopback UDP bridge, stopped with verified v2 integrity, saved and reimported the `.nlsession`, replayed it, authored an exact half-open range plus marker and note, and independently verified every `.nlb` path, boundary, byte count, record count, manifest hash, and `SHA256SUMS` entry.
+- Loaded a sealed, non-bundled `NMEA-0183-GIG-HARBOR` pack, recorded real GGA, RMC, and HDT UDP datagrams, retained a checksum failure as an inspectable diagnostic, and proved the custom pack, schema, runtime, raw records, decoded rows, and diagnostics survived `.nlsession` persistence and independent `.nlb` verification.
 - Recorded a 24-datagram loopback acceptance capture and visually confirmed the verified Provenance tab reconciled all 24 records and 737 retained bytes to one exact remote endpoint and a clean two-entry bridge journal while preserving the unavailable host-drop-counter boundary.
 - Exercised simulated Web Serial device selection through four fragmented reads, retained four complete frames and one terminal partial frame without byte loss, saved and deduplicated the canonical v2 session, reopened and replayed it from IndexedDB, authored an exact half-open range, and verified the downloaded `.nlb` with the production receiver in Chromium, Firefox, and WebKit. Physical device, driver, and native permission behavior remains a manual boundary.
 - Launched the unpacked v0.1 operator package with `narrowslink serve` and visually confirmed the production workspace and capture dialog at the managed origin. The dialog showed the authenticated managed-bridge state and exact version/commit identity without bridge URL or token fields, while preserving the accepted component geometry and producing no browser warnings or errors.
 - Repeated the capture-to-evidence, replay/library, failure-recovery, axe rules tagged WCAG A/AA, focus-handoff, responsive, keyboard-scroller, and forced-color gates in Playwright Chromium, Firefox, and WebKit.
-- Ran `npm run check`: TypeScript validation, `235` tests across `23` files, the production application and CLI builds, all `33` source-workspace Playwright checks, two byte-identical release compilations, and all `3` unpacked-release capture-to-verification checks across Chromium, Firefox, and WebKit passed.
+- Ran `npm run check`: TypeScript validation, `254` tests across `28` files, the production application and CLI builds, all `36` source-workspace Playwright checks, two byte-identical release compilations, and all `3` unpacked-release capture-to-verification checks across Chromium, Firefox, and WebKit passed.
 
 ## Implementation checklist
 

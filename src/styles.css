@@ -2650,6 +2650,47 @@ select:focus-visible {
   margin: 0;
 }
 
+.capture-decoder-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  background: #101410;
+}
+
+.capture-decoder-picker label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.capture-decoder-picker select {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: #0f1310;
+  color: var(--text);
+}
+
+.capture-decoder-picker p {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--dim);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8px;
+  line-height: 12px;
+}
+
+.capture-decoder-load {
+  min-width: 118px;
+}
+
 .capture-session-fields label:last-child,
 .capture-transport-fields label:last-child {
   grid-column: auto;
@@ -3218,6 +3259,18 @@ select:focus-visible {
   .capture-session-fields,
   .capture-transport-fields {
     grid-template-columns: 1fr;
+  }
+
+  .capture-decoder-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .capture-decoder-picker p {
+    grid-column: 1;
+  }
+
+  .capture-decoder-load {
+    width: 100%;
   }
 
   .capture-session-fields label,

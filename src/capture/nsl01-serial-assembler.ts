@@ -25,6 +25,12 @@ export interface SerialAssembly {
   bytes: Uint8Array;
 }
 
+export interface SerialRecordAssembler {
+  readonly bufferedBytes: number;
+  push(chunk: Uint8Array, offsetUs: number): SerialAssembly[];
+  finish(): SerialAssembly[];
+}
+
 interface OffsetSpan {
   length: number;
   offsetUs: number;
@@ -42,7 +48,7 @@ export class SerialFrameAssemblerError extends Error {
  * frame boundaries and bytes left at end-of-stream are emitted instead of
  * discarded so the existing decoder can retain them as diagnostics.
  */
-export class Nsl01SerialFrameAssembler {
+export class Nsl01SerialFrameAssembler implements SerialRecordAssembler {
   private buffer: number[] = [];
   private head = 0;
   private readonly spans: OffsetSpan[] = [];

@@ -25,7 +25,13 @@ import {
   type EvidenceTransportJournalDocument,
   type EvidenceTransportProvenanceDocument,
 } from "../src/domain/evidence-contract";
-import { decodeRecord, SUPPORTED_DECODER } from "../src/domain/decoder";
+import { decodeRecord, resolveDecoderPack } from "../src/domain/decoder";
+import { verifyDecoderPackConformance } from "../src/domain/decoder-conformance";
+import {
+  decoderPackDocumentSchema,
+  type DecoderDescriptor,
+  type DecoderPackDocument,
+} from "../src/domain/decoder-pack";
 import {
   captureIntegrityReceiptSchema,
   sourceRecordSchema,
@@ -79,6 +85,12 @@ export interface EvidenceVerificationReport {
     title: string;
     formatVersion: 1 | 2;
     sourceId: string;
+    decoderId: string;
+    decoderRevision: string;
+    schemaHash: string;
+    packHash: string | null;
+    runtimeId: string | null;
+    runtimeRevision: string | null;
   };
   artifacts: {
     count: number;
@@ -149,6 +161,12 @@ const decodedIntegritySchema = z.discriminatedUnion("status", [
     actual: z.number().int().min(0).max(65_535),
   }).strict(),
   z.object({
+    status: z.literal("checksum-failed"),
+    algorithm: z.string().min(1).max(64),
+    expected: z.number().int().min(0).max(65_535),
+    actual: z.number().int().min(0).max(65_535),
+  }).strict(),
+  z.object({
     status: z.enum(["truncated", "invalid-length", "unknown-family", "unsupported-version"]),
     reason: z.string().min(1).max(2_000),
   }).strict(),
@@ -167,8 +185,20 @@ const schemaArtifactSchema = z.object({
     id: z.string().min(1).max(128),
     revision: z.string().min(1).max(64),
     declaredSha256: z.string().regex(SHA256_PATTERN),
+    packSha256: z.string().regex(SHA256_PATTERN).optional(),
+    runtimeId: z.enum(["nsl01-binary-v1", "nmea0183-line-v1"]).optional(),
+    runtimeRevision: z.literal("1").optional(),
     artifactIntegrity: z.literal("The evidence manifest independently hashes this exported schema artifact."),
-  }).strict(),
+  }).strict().superRefine((schema, context) => {
+    const identityFields = [schema.packSha256, schema.runtimeId, schema.runtimeRevision];
+    const present = identityFields.filter((value) => value != null).length;
+    if (present !== 0 && present !== identityFields.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Decoder pack and runtime identity fields must be declared together.",
+      });
+    }
+  }),
   sessionFormat: z.object({
     id: z.literal("narrowslink/session"),
     version: z.union([z.literal(1), z.literal(2)]),
@@ -187,6 +217,7 @@ const schemaArtifactSchema = z.object({
     bridgeJournalScope: z.string().min(1).max(500),
   }).strict(),
   decoder: z.unknown(),
+  decoderPack: decoderPackDocumentSchema.optional(),
 }).strict();
 
 const DECODED_HEADER = [
@@ -493,6 +524,7 @@ function verifyDecodedCsv(
   entries: Map<string, Uint8Array>,
   manifest: EvidenceBundleManifest,
   rawRecords: readonly SourceRecord[],
+  decoderPack: DecoderPackDocument | null,
   warnings: string[],
 ): { recordCount: number; frameIds: Set<string> } {
   if (!manifest.inclusions.decodedPackets) return { recordCount: 0, frameIds: new Set() };
@@ -542,7 +574,7 @@ function verifyDecodedCsv(
     }
     sourceRecordIds.add(sourceRecordId);
     ensure(["complete", "partial", "invalid"].includes(values[4] ?? ""), "CONTENT_INVALID", `${path} row ${row} has invalid status.`, path);
-    ensure(["valid", "crc-failed", "truncated", "invalid-length", "unknown-family", "unsupported-version"].includes(values[5] ?? ""), "CONTENT_INVALID", `${path} row ${row} has invalid integrity.`, path);
+    ensure(["valid", "crc-failed", "checksum-failed", "truncated", "invalid-length", "unknown-family", "unsupported-version"].includes(values[5] ?? ""), "CONTENT_INVALID", `${path} row ${row} has invalid integrity.`, path);
     for (const column of [6, 7, 9, 10, 11]) parseIntegerCell(values[column] ?? "", path, row, DECODED_HEADER[column] ?? "numeric field", true);
     const integrity = parseCompactJsonCell(values[12] ?? "", path, row, "integrity_json");
     const parsedIntegrity = decodedIntegritySchema.safeParse(integrity);
@@ -561,10 +593,8 @@ function verifyDecodedCsv(
     const fields = parseCompactJsonCell(values[13] ?? "", path, row, "fields_json");
     ensure(z.array(decodedFieldSchema).max(100).safeParse(fields).success, "CONTENT_INVALID", `${path} row ${row} fields_json is invalid.`, path);
     const sourceRecord = rawByCsvId.get(sourceRecordId);
-    if (sourceRecord && manifest.session.decoderId === SUPPORTED_DECODER.id
-      && manifest.session.decoderRevision === SUPPORTED_DECODER.revision
-      && manifest.session.schemaHash === SUPPORTED_DECODER.schemaHash) {
-      const decoded = decodeRecord(sourceRecord, ordinal);
+    if (sourceRecord && decoderPack != null) {
+      const decoded = decodeRecord(sourceRecord, ordinal, decoderPack);
       const expected = [
         decoded.id,
         String(decoded.ordinal),
@@ -598,10 +628,7 @@ function verifyDecodedCsv(
   if (manifest.inclusions.rawRecords) {
     ensure(referencedRecordIds.size === rawRecords.length, "SEMANTIC_MISMATCH", `${path} does not contain exactly one decoded row for every selected raw record.`, path);
   }
-  if (manifest.inclusions.rawRecords
-    && (manifest.session.decoderId !== SUPPORTED_DECODER.id
-      || manifest.session.decoderRevision !== SUPPORTED_DECODER.revision
-      || manifest.session.schemaHash !== SUPPORTED_DECODER.schemaHash)) {
+  if (manifest.inclusions.rawRecords && decoderPack == null) {
     warnings.push("Decoded packet rows could not be replay-checked because this receiver does not implement the declared decoder.");
   }
   return { recordCount: rows.length - 1, frameIds };
@@ -708,7 +735,10 @@ function verifyCaptureReceipt(
 ): void {
   const path = "transport/integrity-receipt.json";
   ensure(new Set(receipt.issueCodes).size === receipt.issueCodes.length, "SEMANTIC_MISMATCH", "Capture-integrity issue codes must be unique.", path);
-  if (manifest.session.formatVersion === 2) {
+  if (
+    manifest.session.formatVersion === 2
+    && receipt.assessmentBasis !== "file-source-unassessed"
+  ) {
     ensure(receipt.eventLogComplete !== receipt.issueCodes.includes("event-log-incomplete"), "SEMANTIC_MISMATCH", "Capture-integrity event-log completeness conflicts with its issue codes.", path);
   }
   ensure((receipt.stopDisposition === "unconfirmed") === receipt.issueCodes.includes("shutdown-unconfirmed"), "SEMANTIC_MISMATCH", "Capture-integrity shutdown disposition conflicts with its issue codes.", path);
@@ -1117,10 +1147,59 @@ function verifyTransportEvidence(
   }), "SEMANTIC_MISMATCH", "Manifest journal summary does not match journal.json.");
 }
 
-function verifySchemaArtifact(entries: Map<string, Uint8Array>, manifest: EvidenceBundleManifest, warnings: string[]): void {
+function manifestDecoderDescriptor(manifest: EvidenceBundleManifest): DecoderDescriptor {
+  const descriptor: DecoderDescriptor = {
+    id: manifest.session.decoderId,
+    revision: manifest.session.decoderRevision,
+    schemaHash: manifest.session.schemaHash,
+  };
+  if (
+    manifest.session.packHash != null
+    && manifest.session.runtimeId != null
+    && manifest.session.runtimeRevision != null
+  ) {
+    descriptor.packHash = manifest.session.packHash;
+    descriptor.runtimeId = manifest.session.runtimeId;
+    descriptor.runtimeRevision = manifest.session.runtimeRevision;
+  }
+  return descriptor;
+}
+
+function resolveVerifiedDecoderPack(
+  manifest: EvidenceBundleManifest,
+  embeddedPack: DecoderPackDocument | undefined,
+  path: string,
+): DecoderPackDocument {
+  try {
+    const pack = resolveDecoderPack(manifestDecoderDescriptor(manifest), embeddedPack);
+    verifyDecoderPackConformance(pack);
+    return pack;
+  } catch (error) {
+    fail(
+      "SEMANTIC_MISMATCH",
+      `${path} does not provide a compatible, conformant decoder pack for the declared identity.`,
+      path,
+      error,
+    );
+  }
+}
+
+function verifySchemaArtifact(
+  entries: Map<string, Uint8Array>,
+  manifest: EvidenceBundleManifest,
+  warnings: string[],
+): DecoderPackDocument | null {
   if (!manifest.inclusions.schema) {
     warnings.push("The decoder schema artifact was excluded, so decoder identity cannot be independently re-hashed from this bundle.");
-    return;
+    try {
+      return resolveVerifiedDecoderPack(manifest, undefined, "manifest.json");
+    } catch (error) {
+      if (error instanceof EvidenceVerificationError) {
+        warnings.push("The exact decoder pack is unavailable, so decoded packet rows cannot be replay-checked.");
+        return null;
+      }
+      throw error;
+    }
   }
   const path = "schema/schema.json";
   const document = parseCanonicalJson(entries, path, schemaArtifactSchema);
@@ -1129,6 +1208,22 @@ function verifySchemaArtifact(entries: Map<string, Uint8Array>, manifest: Eviden
   ensure(document.sessionFormat.version === manifest.session.formatVersion && document.timing.displayTimeZone === manifest.session.displayTimeZone && document.timing.sessionStartedAt === manifest.session.startedAt, "SEMANTIC_MISMATCH", `${path} session identity does not match manifest.json.`, path);
   const decoderHash = sha256(TEXT_ENCODER.encode(JSON.stringify(canonicalize(document.decoder))));
   ensure(decoderHash === manifest.session.schemaHash, "SEMANTIC_MISMATCH", `${path} embedded decoder bytes do not match the declared schema SHA-256.`, path);
+  const hasPackIdentity = manifest.session.packHash != null;
+  ensure(
+    (document.decoderPack != null) === hasPackIdentity,
+    "SEMANTIC_MISMATCH",
+    `${path} embedded decoder-pack availability does not match manifest.json.`,
+    path,
+  );
+  ensure(
+    document.schema.packSha256 === manifest.session.packHash
+      && document.schema.runtimeId === manifest.session.runtimeId
+      && document.schema.runtimeRevision === manifest.session.runtimeRevision,
+    "SEMANTIC_MISMATCH",
+    `${path} decoder pack identity does not match manifest.json.`,
+    path,
+  );
+  return resolveVerifiedDecoderPack(manifest, document.decoderPack, path);
 }
 
 function verifyArtifactContract(entries: Map<string, Uint8Array>, manifest: EvidenceBundleManifest): void {
@@ -1283,14 +1378,14 @@ export function verifyEvidenceBundleBytes(archiveBytes: Uint8Array): VerifiedEvi
   ensure(recordCount(manifest, "transport/journal.json") === (journal.availability === "available" ? journal.journal.entries.length : 0), "SEMANTIC_MISMATCH", "Journal recordCount does not match its entries.", "transport/journal.json");
 
   const warnings: string[] = [];
+  const decoderPack = verifySchemaArtifact(entries, manifest, warnings);
   const rawRecords = parseRawRecords(entries, manifest);
   verifyCaptureReceipt(manifest, receipt, transportEventsDocument.events, rawRecords);
-  const decoded = verifyDecodedCsv(entries, manifest, rawRecords, warnings);
+  const decoded = verifyDecodedCsv(entries, manifest, rawRecords, decoderPack, warnings);
   const diagnostics = verifyDiagnostics(entries, manifest, decoded.frameIds);
   const markers = verifyMarkers(entries, manifest);
   const notes = verifyNotes(entries, manifest);
   verifyTransportEvidence(manifest, provenance, journal, receipt, rawRecords, warnings);
-  verifySchemaArtifact(entries, manifest, warnings);
   if (!manifest.inclusions.rawRecords) warnings.push("Raw source records were excluded from this bundle.");
   if (receipt.status === "incomplete") warnings.push(`Capture integrity is incomplete: ${receipt.issueCodes.join(", ") || "unspecified"}.`);
   if (receipt.status === "unknown") warnings.push("Capture integrity is unknown for this session format or source.");
@@ -1312,6 +1407,12 @@ export function verifyEvidenceBundleBytes(archiveBytes: Uint8Array): VerifiedEvi
       title: manifest.session.title,
       formatVersion: manifest.session.formatVersion,
       sourceId: manifest.session.sourceId,
+      decoderId: manifest.session.decoderId,
+      decoderRevision: manifest.session.decoderRevision,
+      schemaHash: manifest.session.schemaHash,
+      packHash: manifest.session.packHash ?? null,
+      runtimeId: manifest.session.runtimeId ?? null,
+      runtimeRevision: manifest.session.runtimeRevision ?? null,
     },
     artifacts: { count: artifactPaths.length, paths: artifactPaths },
     warnings,

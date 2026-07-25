@@ -4,6 +4,16 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 
 ## [Unreleased]
 
+### Added
+
+- Added bounded, content-addressed decoder packs with an allowlisted parser runtime, canonical pack and schema identities, production-path conformance fixtures, local operator loading, and packaged `decoder seal` and `decoder validate` commands; new captures persist the exact pack and runtime while legacy NSL-01 sessions remain compatible and unchanged.
+- Added the NMEA 0183 reference pack for checksummed GGA, RMC, and HDT sentences over one-sentence-per-datagram UDP or line-delimited serial input, including partial-tail retention, checksum diagnostics, real loopback UDP capture, local-library reopen, evidence export, and production receiver replay verification.
+
+### Changed
+
+- Defined NarrowsLink's product goal and success criteria around reproducible constrained-telemetry incidents and independently verified handoffs; retained the strategic product directions and moonshot opportunities while keeping delivered capabilities in the changelog and current-state docs.
+- Expanded UC-001 with supported radio transport capture topologies, including USB serial radio, UDP base-station output, forwarded UDP copies, and network multicast observer setup and test paths.
+
 ## [0.1.0] - 2026-07-24
 
 ### Added

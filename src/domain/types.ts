@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+import {
+  decoderDescriptorSchema,
+  decoderPackDocumentSchema,
+  type DecoderDescriptor,
+  type DecoderPackDocument,
+} from "./decoder-pack";
+
+export type { DecoderDescriptor, DecoderPackDocument } from "./decoder-pack";
+
 export type OffsetUs = number;
 
 export const MAX_SESSION_DURATION_US = 24 * 60 * 60 * 1_000_000;
@@ -17,12 +26,6 @@ export interface SourceDescriptor {
   label: string;
   address?: string;
   port?: number;
-}
-
-export interface DecoderDescriptor {
-  id: string;
-  revision: string;
-  schemaHash: string;
 }
 
 export type UdpAddressFamily = "IPv4" | "IPv6";
@@ -291,6 +294,7 @@ export type TransportProvenance = UdpTransportProvenance | SerialTransportProven
 
 export interface SessionDocumentV2 extends SessionDocumentBase {
   formatVersion: 2;
+  decoderPack?: DecoderPackDocument;
   transportEvents: TransportEvent[];
   captureIntegrity: CaptureIntegrityReceipt;
   transportProvenance?: TransportProvenance;
@@ -309,6 +313,7 @@ export interface DecodedField {
 export type IntegrityStatus =
   | { status: "valid"; checksum: number }
   | { status: "crc-failed"; expected: number; actual: number }
+  | { status: "checksum-failed"; algorithm: string; expected: number; actual: number }
   | { status: "truncated" | "invalid-length" | "unknown-family" | "unsupported-version"; reason: string };
 
 export interface DecodedFrame {
@@ -352,6 +357,7 @@ export interface DiagnosticEvent {
     | "recovery"
     | "decoder-locked"
     | "crc-failure"
+    | "checksum-failure"
     | "partial-frame"
     | "capture-path-event";
   domain: "link" | "decoder" | "capture-path" | "unknown";
@@ -390,6 +396,7 @@ export interface Marker {
 
 export interface ParsedSession {
   document: SessionDocument;
+  decoderPack: DecoderPackDocument;
   transportEvents: readonly TransportEvent[];
   captureIntegrity: CaptureIntegrityReceipt;
   transportProvenance?: TransportProvenance;
@@ -430,12 +437,6 @@ export const udpRemoteEndpointSchema = z.object({
   address: wellFormedText(z.string().min(1).max(253)),
   port: z.number().int().min(1).max(65_535),
   family: z.enum(["IPv4", "IPv6"]),
-}).strict();
-
-const decoderDescriptorSchema = z.object({
-  id: wellFormedText(z.string().min(1).max(128)),
-  revision: wellFormedText(z.string().min(1).max(64)),
-  schemaHash: z.string().regex(/^[0-9a-fA-F]{64}$/, "Schema hash must be a 64-character SHA-256 digest"),
 }).strict();
 
 const sourceRecordCoreShape = {
@@ -751,6 +752,7 @@ export const sessionDocumentV1Schema = z.object({
 export const sessionDocumentV2Schema = z.object({
   ...sessionDocumentBaseShape,
   formatVersion: z.literal(2),
+  decoderPack: decoderPackDocumentSchema.optional(),
   transportEvents: z.array(transportEventSchema).max(MAX_TRANSPORT_EVENTS),
   captureIntegrity: captureIntegrityReceiptSchema,
   transportProvenance: transportProvenanceSchema.optional(),

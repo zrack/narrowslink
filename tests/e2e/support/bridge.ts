@@ -87,6 +87,7 @@ export interface LoopbackBridge {
     startIndex?: number;
     intervalMs?: number;
   }): Promise<SentFixtureDatagram[]>;
+  sendDatagrams(dataHex: readonly string[], options?: { intervalMs?: number }): Promise<SentFixtureDatagram[]>;
   close(): Promise<void>;
 }
 
@@ -265,6 +266,33 @@ export async function startLoopbackBridge(token = DEFAULT_TOKEN): Promise<Loopba
     return value;
   };
 
+  const sendHexDatagrams = async (
+    dataHex: readonly string[],
+    intervalMs: number,
+  ): Promise<SentFixtureDatagram[]> => {
+    const bridgeStatus = await status();
+    const port = bridgeStatus.udp?.port;
+    if (bridgeStatus.state !== "capturing" || port == null || port <= 0) {
+      throw new Error("Loopback bridge does not have an active UDP socket.");
+    }
+    const datagrams = dataHex.map((value, index) => {
+      if (!/^(?:[0-9a-fA-F]{2})+$/.test(value)) {
+        throw new Error(`Datagram ${index} has invalid hexadecimal bytes.`);
+      }
+      return { dataHex: value.toLowerCase(), byteLength: value.length / 2 };
+    });
+    const socket = createSocket("udp4");
+    try {
+      for (const [index, datagram] of datagrams.entries()) {
+        await sendDatagram(socket, Buffer.from(datagram.dataHex, "hex"), port);
+        if (index + 1 < datagrams.length && intervalMs > 0) await delay(intervalMs);
+      }
+    } finally {
+      await new Promise<void>((resolve) => socket.close(() => resolve()));
+    }
+    return datagrams;
+  };
+
   return {
     controlUrl: ready.controlUrl,
     token,
@@ -288,11 +316,6 @@ export async function startLoopbackBridge(token = DEFAULT_TOKEN): Promise<Loopba
       throw new Error(`Loopback bridge did not reach the expected status: ${detail}`);
     },
     async sendFixtureDatagrams(options) {
-      const bridgeStatus = await status();
-      const port = bridgeStatus.udp?.port;
-      if (bridgeStatus.state !== "capturing" || port == null || port <= 0) {
-        throw new Error("Loopback bridge does not have an active UDP socket.");
-      }
       const fixture = JSON.parse(await readFile(FIXTURE_PATH, "utf8")) as FixtureDocument;
       if (!Array.isArray(fixture.records)) throw new Error("Bundled fixture records are unavailable.");
       const startIndex = options.startIndex ?? 0;
@@ -300,27 +323,17 @@ export async function startLoopbackBridge(token = DEFAULT_TOKEN): Promise<Loopba
       if (selected.length !== options.count) {
         throw new Error(`Fixture contains only ${selected.length} of ${options.count} requested records.`);
       }
-      const datagrams = selected.map((record, index) => {
+      const dataHex = selected.map((record, index) => {
         if (typeof record.dataHex !== "string" || !/^(?:[0-9a-fA-F]{2})+$/.test(record.dataHex)) {
           throw new Error(`Fixture record ${startIndex + index} has invalid hexadecimal bytes.`);
         }
-        return {
-          dataHex: record.dataHex.toLowerCase(),
-          byteLength: record.dataHex.length / 2,
-        };
+        return record.dataHex;
       });
-      const socket = createSocket("udp4");
-      try {
-        for (const [index, datagram] of datagrams.entries()) {
-          await sendDatagram(socket, Buffer.from(datagram.dataHex, "hex"), port);
-          if (index + 1 < datagrams.length && (options.intervalMs ?? 8) > 0) {
-            await delay(options.intervalMs ?? 8);
-          }
-        }
-      } finally {
-        await new Promise<void>((resolve) => socket.close(() => resolve()));
-      }
-      return datagrams;
+      return sendHexDatagrams(dataHex, options.intervalMs ?? 8);
+    },
+    async sendDatagrams(dataHex, options = {}) {
+      if (dataHex.length === 0) throw new Error("At least one datagram is required.");
+      return sendHexDatagrams(dataHex, options.intervalMs ?? 8);
     },
     async close() {
       if (closed) return;

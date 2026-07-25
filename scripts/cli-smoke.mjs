@@ -27,6 +27,7 @@ try {
       || !result.stdout.includes("Usage: narrowslink <command>")
       || !result.stdout.includes("serve")
       || !result.stdout.includes("verify")
+      || !result.stdout.includes("decoder")
     ) {
       throw new Error(`CLI entry smoke failed for ${invokedPath}: ${result.stderr || result.stdout}`);
     }

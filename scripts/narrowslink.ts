@@ -1,6 +1,16 @@
 import { realpathSync } from "node:fs";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
+import { verifyDecoderPackConformance } from "../src/domain/decoder-conformance";
+import {
+  DecoderPackValidationError,
+  MAX_DECODER_PACK_BYTES,
+  parseBoundedDecoderPackJson,
+  sealDecoderPack,
+  serializeDecoderPack,
+  type DecoderPackDocument,
+} from "../src/domain/decoder-pack";
 import {
   EvidenceVerificationError,
   verifyEvidenceBundleFile,
@@ -45,6 +55,23 @@ interface FailedVerificationReport {
   };
 }
 
+interface DecoderPackPassReport {
+  format: "narrowslink/decoder-pack-report";
+  formatVersion: 1;
+  status: "pass";
+  action: "validated" | "sealed";
+  pack: {
+    id: string;
+    revision: string;
+    displayName: string;
+    sha256: string;
+    runtimeId: string;
+    runtimeRevision: string;
+    fixtureCount: number;
+  };
+  outputPath?: string;
+}
+
 const DEFAULT_IO: CliIo = {
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
@@ -77,6 +104,8 @@ export function renderVerificationReport(report: EvidenceVerificationReport): st
     `Bundle bytes: ${report.bundle.bytes}`,
     `Session: ${cleanTerminalText(report.session.title)} [${cleanTerminalText(report.session.id)}]`,
     `Source: ${cleanTerminalText(report.session.sourceId)}; session format: v${report.session.formatVersion}`,
+    `Decoder: ${cleanTerminalText(report.session.decoderId)} ${cleanTerminalText(report.session.decoderRevision)}; schema ${report.session.schemaHash}`,
+    `Pack: ${report.session.packHash ?? "legacy descriptor"}${report.session.runtimeId == null ? "" : `; runtime ${report.session.runtimeId} r${report.session.runtimeRevision}`}`,
     `Selection: [${report.selection.startUs}, ${report.selection.endUs}) microseconds`,
     `Artifacts: ${report.artifacts.count}`,
     warnings,
@@ -105,9 +134,22 @@ function rootUsage(): string {
     "Commands:",
     "  serve                 Start the self-contained local operator application",
     "  verify <bundle.nlb>   Verify a NarrowsLink evidence bundle",
+    "  decoder <command>     Seal or validate a bounded decoder pack",
     "  version               Print the release identity",
     "",
     "Run `narrowslink <command> --help` for command-specific options.",
+    "",
+  ].join("\n");
+}
+
+function decoderUsage(): string {
+  return [
+    "Usage:",
+    "  narrowslink decoder validate <pack.nldecoder> [--json]",
+    "  narrowslink decoder seal <draft.json> --out <pack.nldecoder> [--json]",
+    "",
+    "Validates pack identity, runtime compatibility, and bundled conformance fixtures.",
+    "Sealing replaces any draft integrity field, validates the result, and refuses to overwrite the output path.",
     "",
   ].join("\n");
 }
@@ -146,6 +188,140 @@ function versionText(json: boolean): string {
   return json
     ? `${safeJson({ name: "narrowslink", ...NARROWSLINK_RELEASE })}\n`
     : `NarrowsLink ${NARROWSLINK_RELEASE.version} (${NARROWSLINK_RELEASE.commit})\n`;
+}
+
+function decoderPackReport(
+  action: "validated" | "sealed",
+  pack: DecoderPackDocument,
+  fixtureCount: number,
+  outputPath?: string,
+): DecoderPackPassReport {
+  return {
+    format: "narrowslink/decoder-pack-report",
+    formatVersion: 1,
+    status: "pass",
+    action,
+    pack: {
+      id: pack.id,
+      revision: pack.revision,
+      displayName: pack.displayName,
+      sha256: pack.integrity.canonicalSha256,
+      runtimeId: pack.runtime.id,
+      runtimeRevision: pack.runtime.revision,
+      fixtureCount,
+    },
+    ...(outputPath == null ? {} : { outputPath }),
+  };
+}
+
+function renderDecoderPackReport(report: ReturnType<typeof decoderPackReport>): string {
+  const pack = report.pack;
+  return [
+    `NarrowsLink decoder pack: PASS (${report.action})`,
+    `Pack: ${cleanTerminalText(pack.displayName)} [${cleanTerminalText(pack.id)} ${cleanTerminalText(pack.revision)}]`,
+    `Pack SHA-256: ${pack.sha256}`,
+    `Runtime: ${pack.runtimeId} r${pack.runtimeRevision}`,
+    `Fixtures: ${pack.fixtureCount}`,
+    ...("outputPath" in report ? [`Output: ${cleanTerminalText(String(report.outputPath))}`] : []),
+    "",
+  ].join("\n");
+}
+
+async function readDecoderPackInput(path: string): Promise<unknown> {
+  const metadata = await stat(path);
+  if (!metadata.isFile()) throw new Error("Decoder pack input must be a regular file.");
+  if (metadata.size > MAX_DECODER_PACK_BYTES) {
+    throw new DecoderPackValidationError(
+      `Decoder pack input exceeds the ${MAX_DECODER_PACK_BYTES}-byte file limit.`,
+    );
+  }
+  return parseBoundedDecoderPackJson(await readFile(path, "utf8"));
+}
+
+function decoderFailureText(error: DecoderPackValidationError): string {
+  const details = error.details.length > 0
+    ? `\n${error.details.map((detail) => `  - ${cleanTerminalText(detail)}`).join("\n")}`
+    : "";
+  return `NarrowsLink decoder pack: FAIL\n${cleanTerminalText(error.message)}${details}\n`;
+}
+
+async function runDecoder(argv: readonly string[], io: CliIo): Promise<number> {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    io.stdout(decoderUsage());
+    return 0;
+  }
+  const command = argv[0];
+  const json = argv.includes("--json");
+
+  if (command === "validate") {
+    const positional = argv.slice(1).filter((argument) => argument !== "--json");
+    if (positional.length !== 1 || positional[0] === "") {
+      io.stderr(decoderUsage());
+      return 2;
+    }
+    try {
+      const result = verifyDecoderPackConformance(await readDecoderPackInput(positional[0] ?? ""));
+      const report = decoderPackReport("validated", result.pack, result.fixtureIds.length);
+      io.stdout(json ? `${safeJson(report)}\n` : renderDecoderPackReport(report));
+      return 0;
+    } catch (error) {
+      if (error instanceof DecoderPackValidationError) {
+        if (json) {
+          io.stdout(`${safeJson({
+            format: "narrowslink/decoder-pack-report",
+            formatVersion: 1,
+            status: "fail",
+            error: { message: error.message, details: error.details },
+          })}\n`);
+        } else io.stderr(decoderFailureText(error));
+        return 1;
+      }
+      io.stderr(`NarrowsLink could not read the decoder pack: ${cleanTerminalText(error instanceof Error ? error.message : String(error))}\n`);
+      return 2;
+    }
+  }
+
+  if (command === "seal") {
+    const argumentsWithoutJson = argv.slice(1).filter((argument) => argument !== "--json");
+    const outputIndex = argumentsWithoutJson.indexOf("--out");
+    const input = argumentsWithoutJson[0];
+    const output = outputIndex >= 0 ? argumentsWithoutJson[outputIndex + 1] : undefined;
+    const validShape = input != null
+      && input !== ""
+      && outputIndex === 1
+      && output != null
+      && output !== ""
+      && argumentsWithoutJson.length === 3;
+    if (!validShape) {
+      io.stderr(decoderUsage());
+      return 2;
+    }
+    try {
+      const pack = sealDecoderPack(await readDecoderPackInput(input));
+      const result = verifyDecoderPackConformance(pack);
+      await writeFile(output, serializeDecoderPack(result.pack), { encoding: "utf8", flag: "wx" });
+      const report = decoderPackReport("sealed", result.pack, result.fixtureIds.length, output);
+      io.stdout(json ? `${safeJson(report)}\n` : renderDecoderPackReport(report));
+      return 0;
+    } catch (error) {
+      if (error instanceof DecoderPackValidationError) {
+        if (json) {
+          io.stdout(`${safeJson({
+            format: "narrowslink/decoder-pack-report",
+            formatVersion: 1,
+            status: "fail",
+            error: { message: error.message, details: error.details },
+          })}\n`);
+        } else io.stderr(decoderFailureText(error));
+        return 1;
+      }
+      io.stderr(`NarrowsLink could not seal the decoder pack: ${cleanTerminalText(error instanceof Error ? error.message : String(error))}\n`);
+      return 2;
+    }
+  }
+
+  io.stderr(decoderUsage());
+  return 2;
 }
 
 function readyDocument(runtime: OperatorRuntime): object {
@@ -332,6 +508,7 @@ export async function runCli(argv: readonly string[], io: CliIo = DEFAULT_IO): P
   }
   if (argv[0] === "serve") return runServe(argv.slice(1), io);
   if (argv[0] === "verify") return runVerify(argv.slice(1), io);
+  if (argv[0] === "decoder") return runDecoder(argv.slice(1), io);
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) {
     io.stdout(rootUsage());
     return 0;

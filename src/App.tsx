@@ -209,6 +209,7 @@ function shortDiagnosticTitle(event: DiagnosticEvent): string {
     recovery: "Recovered",
     "decoder-locked": "Decoder locked",
     "crc-failure": "CRC failure",
+    "checksum-failure": "Checksum failure",
     "partial-frame": "Partial frame",
     "capture-path-event": "Capture path",
   };
@@ -863,6 +864,7 @@ const NARRATIVE_SUMMARY_TYPES: DiagnosticEvent["type"][] = [
   "capture-path-event",
   "link-degraded",
   "crc-failure",
+  "checksum-failure",
   "decoder-resync",
   "loss-burst",
   "recovery",

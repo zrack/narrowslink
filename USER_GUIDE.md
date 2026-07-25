@@ -1,6 +1,8 @@
 # NarrowsLink user guide
 
-This guide covers the installed NarrowsLink v0.1.0 operator release. It takes an operator from installation through local capture, replay, incident authoring, evidence export, and receiver verification. Source contributors should use [CONTRIBUTING.md](CONTRIBUTING.md).
+This guide covers NarrowsLink operation from installation through local capture, replay, incident authoring, evidence export, and receiver verification. Source contributors should use [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The installation section remains specific to the tagged v0.1.0 package. Decoder-pack and NMEA procedures are available in the current repository under `[Unreleased]` and will require a later packaged release.
 
 NarrowsLink keeps telemetry, saved sessions, operator annotations, and evidence generation on the local machine. It does not provide accounts, cloud storage, hosted ingestion, or telemetry upload.
 
@@ -122,11 +124,25 @@ NarrowsLink accepts `.json` and `.nlsession` files using session format v1 or v2
 1. Select **Open replay**, **Open local replay**, or **Replace session**.
 2. Choose the local file.
 3. Wait for validation and decoding.
-4. Confirm the expected title, source, decoder, duration, and integrity state.
+4. Confirm the expected title, source, decoder pack and runtime identity, duration, and integrity state.
 
 A valid imported file becomes the active replay and NarrowsLink attempts to save its canonical bytes in the local library. A failed or oversized file does not replace a valid replay.
 
 Session format v1 is preserved unchanged and reports `unknown` legacy capture integrity. Earlier valid v2 sessions without current provenance remain valid and report the missing evidence as unavailable.
+
+## Choose or load a decoder pack
+
+Every new capture uses one decoder pack. The default is **NSL-01 v1.3.7**.
+
+1. Open **Live capture**.
+2. Under **Decoder pack**, choose the bundled NSL-01 or NMEA 0183 reference pack.
+3. To use a local pack, select **Load pack** and choose a `.nldecoder` or `.json` file.
+4. Wait for the loaded-pack notice. Do not begin a test if identity, compatibility, or fixture validation fails.
+5. Confirm the displayed runtime revision and first 12 characters of the pack SHA-256 against the expected pack identity.
+
+Pack selection is locked once capture setup begins. The resulting `.nlsession` embeds the exact pack, schema, runtime, and revision identities. NarrowsLink accepts only bounded declarative packs for its supported runtime allowlist and does not run pack-supplied JavaScript.
+
+For pack authoring, offline validation, NMEA record boundaries, and the trust model, use [DECODER_PACKS.md](DECODER_PACKS.md).
 
 ## Record live UDP
 
@@ -140,14 +156,17 @@ The installed release manages the authenticated bridge. The operator never copie
 4. Confirm **Managed local bridge · authenticated**. The installed release should not show manual **Bridge URL** or **Bridge token** fields.
 5. Enter a **Session title**.
 6. Confirm the **Display timezone** is a valid IANA name, such as `America/Los_Angeles`.
-7. Set **UDP bind host** and **UDP port**.
-8. For multicast, set **Multicast group** and, when needed, **Multicast interface**. The bind address and group must use the same IP family.
-9. Select **Start UDP capture**.
-10. Confirm the status is **Recording** and send telemetry to the exact address shown under **Source**.
-11. Watch **Datagrams received**, **Input bytes**, **Records retained**, **Bytes retained**, and **Bridge state**.
-12. Select **Stop, save & replay**.
+7. Select or load the decoder pack that matches the incoming datagrams.
+8. Set **UDP bind host** and **UDP port**.
+9. For multicast, set **Multicast group** and, when needed, **Multicast interface**. The bind address and group must use the same IP family.
+10. Select **Start UDP capture**.
+11. Confirm the status is **Recording** and send telemetry to the exact address shown under **Source**.
+12. Watch **Datagrams received**, **Input bytes**, **Records retained**, **Bytes retained**, and **Bridge state**.
+13. Select **Stop, save & replay**.
 
 Using UDP port `0` lets the bridge choose an available port. Read the actual bound port under **Source** before starting the sender.
+
+For NMEA 0183, send one complete `$...*HH` sentence per UDP datagram. Concatenating multiple sentences into one datagram is not split automatically.
 
 For traffic from another machine, bind the receiving computer's interface address or `0.0.0.0`. The latter listens on every local IPv4 interface, so prefer a narrower address when possible. Firewall and routing rules still apply.
 
@@ -171,14 +190,17 @@ Physical serial capture requires a browser with Web Serial support, normally a C
 1. Select **Live capture** or **Capture**.
 2. Select the **Serial port** tab.
 3. Enter a **Session title** and confirm the **Display timezone**.
-4. Set **Baud rate**, **Data bits**, **Stop bits**, **Parity**, and **Flow control**. The defaults are `115200`, `8`, `1`, `None`, and `None`.
-5. Select **Select port & start**.
-6. Choose the device in the browser's native prompt.
-7. Confirm **Serial state: open** and status **Recording**.
-8. Watch the serial reads, input bytes, retained records, and retained bytes.
-9. Select **Stop, save & replay**.
+4. Select or load the decoder pack that matches the serial stream.
+5. Set **Baud rate**, **Data bits**, **Stop bits**, **Parity**, and **Flow control**. The defaults are `115200`, `8`, `1`, `None`, and `None`.
+6. Select **Select port & start**.
+7. Choose the device in the browser's native prompt.
+8. Confirm **Serial state: open** and status **Recording**.
+9. Watch the serial reads, input bytes, retained records, and retained bytes.
+10. Select **Stop, save & replay**.
 
 Device selection and port setup happen before the capture clock starts. NarrowsLink retains undecodable and partial input as evidence. A disconnect or read failure produces an incomplete receipt and a capture-path diagnostic rather than silently claiming a clean capture.
+
+NSL-01 serial framing uses its sync word and declared binary length. NMEA serial framing uses line-feed boundaries, preserves CRLF, and retains overlong or unterminated tails as bounded partial records.
 
 The automated release gate exercises the serial application path with an injected standards-based API. It does not certify physical adapters, USB drivers, native device choosers, or operating-system disconnect behavior.
 
@@ -238,11 +260,12 @@ An incident must be selected before export.
    - **Decoder schema**
    - **Diagnostics**
    - **Operator context**
-3. Leave **Capture integrity** selected. It is required and cannot be removed.
-4. Confirm the displayed range and estimated size.
-5. Select **Create incident bundle**.
-6. In **Package this incident for handoff?**, select **Build and download**.
-7. Confirm **Handoff archive is ready** and retain the downloaded `.nlb`.
+3. Keep **Decoder schema** selected for a non-built-in or locally loaded pack so the receiving verifier can reproduce the interpretation.
+4. Leave **Capture integrity** selected. It is required and cannot be removed.
+5. Confirm the displayed range and estimated size.
+6. Select **Create incident bundle**.
+7. In **Package this incident for handoff?**, select **Build and download**.
+8. Confirm **Handoff archive is ready** and retain the downloaded `.nlb`.
 
 The preview size is an estimate. The archive manifest contains the actual artifact list, byte sizes, counts, selection, and SHA-256 hashes.
 
@@ -275,6 +298,7 @@ A passing human-readable report identifies:
 - Aggregate, capture, and provenance evidence states
 - Warnings
 - Authenticity status
+- Decoder-pack identity and whether selected raw records reproduced the exported decoded rows
 
 Exit statuses are:
 
@@ -355,6 +379,8 @@ To intentionally purge the browser-held library and workspace, preserve any requ
 | The managed capture status is missing or invalid | Start the installed package with `narrowslink serve`; do not serve the application directory as static files. |
 | UDP capture will not start | Confirm the bind address exists locally, the port is free, and multicast group and interface values use the same IP family. |
 | UDP counters remain at zero | Confirm status **Recording**, send to the exact address under **Source**, and check firewall, routing, and sender configuration. |
+| A decoder pack will not load | Confirm the file is at most 512 KiB, was sealed with `narrowslink decoder seal`, uses a supported runtime, and passes its bundled fixtures. |
+| NMEA records are partial or unknown | Send one sentence per UDP datagram, or terminate each serial sentence with LF; confirm `$` prefix and `*HH` checksum. |
 | Web Serial is unavailable | Use a supported Chromium browser at the loopback application URL, or use UDP capture. |
 | Status says **Recording with attention required** | Stop and preserve the retained records. Expect incomplete capture evidence and review its issue codes. |
 | The finalized session did not download | Select **Retry download**. The finalized session remains available until it is downloaded or explicitly discarded. |
@@ -385,7 +411,7 @@ Release checksums and bundle verification establish internal consistency. The v0
 ## Current operating limits
 
 - Live capture supports UDP and Web Serial, not TCP or other transports.
-- The built-in decoder supports NSL-01; external decoder schemas and protocol plug-ins are not supported.
+- Bundled packs support NSL-01 and checksummed NMEA 0183 GGA, RMC, and HDT. Local packs are limited to supported bounded runtimes; arbitrary code and automatic protocol detection are not supported.
 - Session import and canonical library files are limited to 32 MiB.
 - Capture documents are limited to 100,000 records and 24 hours.
 - Active parsing, decoding, indexing, and bundle construction happen in browser memory.
@@ -405,6 +431,8 @@ Release checksums and bundle verification establish internal consistency. The v0
 | `narrowslink serve --no-open` | Start without opening a browser |
 | `narrowslink verify incident.nlb` | Verify a received evidence bundle locally |
 | `narrowslink verify incident.nlb --json` | Emit the stable machine-readable verification report |
+| `narrowslink decoder seal draft.json --out pack.nldecoder` | Seal and conformance-test a decoder-pack draft without overwriting output |
+| `narrowslink decoder validate pack.nldecoder` | Validate pack identity, runtime compatibility, and fixtures offline |
 
 ## Get help
 

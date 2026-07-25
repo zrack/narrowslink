@@ -1,6 +1,5 @@
 import { zipSync, type Zippable } from "fflate";
 
-import { DECODER_SCHEMA } from "./decoder";
 import {
   EVIDENCE_ARCHIVE_LIMITS,
   EVIDENCE_BUNDLE_MEDIA_TYPE,
@@ -429,11 +428,20 @@ function transportEvidenceDocuments(session: ParsedSession): {
 }
 
 function schemaArtifact(session: ParsedSession): object {
+  const descriptor = session.document.decoder;
+  const hasPackIdentity = descriptor.packHash != null
+    && descriptor.runtimeId != null
+    && descriptor.runtimeRevision != null;
   return {
     schema: {
-      id: session.document.decoder.id,
-      revision: session.document.decoder.revision,
-      declaredSha256: session.document.decoder.schemaHash.toLowerCase(),
+      id: descriptor.id,
+      revision: descriptor.revision,
+      declaredSha256: descriptor.schemaHash.toLowerCase(),
+      ...(hasPackIdentity ? {
+        packSha256: descriptor.packHash?.toLowerCase(),
+        runtimeId: descriptor.runtimeId,
+        runtimeRevision: descriptor.runtimeRevision,
+      } : {}),
       artifactIntegrity: "The evidence manifest independently hashes this exported schema artifact.",
     },
     sessionFormat: {
@@ -453,7 +461,8 @@ function schemaArtifact(session: ParsedSession): object {
       provenanceScope: "whole session",
       bridgeJournalScope: "whole session when available; explicit unavailability otherwise",
     },
-    decoder: DECODER_SCHEMA,
+    decoder: session.decoderPack.schema,
+    ...(hasPackIdentity ? { decoderPack: session.decoderPack } : {}),
   };
 }
 
@@ -626,6 +635,11 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
       decoderId: session.document.decoder.id,
       decoderRevision: session.document.decoder.revision,
       schemaHash: session.document.decoder.schemaHash.toLowerCase(),
+      ...(session.document.decoder.packHash == null ? {} : {
+        packHash: session.document.decoder.packHash.toLowerCase(),
+        runtimeId: session.document.decoder.runtimeId,
+        runtimeRevision: session.document.decoder.runtimeRevision,
+      }),
       captureIntegrity: session.captureIntegrity,
     },
     provenance: transportEvidence.summary,

@@ -18,6 +18,7 @@
     "preview": "vite preview",
     "capture:bridge": "node scripts/capture-bridge.mjs",
     "capture:demo": "node scripts/send-demo-udp.mjs",
+    "capture:demo:nmea": "node scripts/send-demo-nmea.mjs",
     "fixture:generate": "node scripts/generate-demo-session.mjs",
     "verify:bundle": "npm run build:cli --silent && node dist-cli/narrowslink.mjs verify",
     "typecheck": "tsc -b --pretty false",

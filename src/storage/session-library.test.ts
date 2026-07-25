@@ -1,7 +1,8 @@
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 
-import { SUPPORTED_DECODER } from "../domain/decoder";
+import { NMEA0183_DECODER_PACK, SUPPORTED_DECODER } from "../domain/decoder";
+import { decoderDescriptorForPack } from "../domain/decoder-pack";
 import type { SessionDocument, SessionDocumentV2 } from "../domain/types";
 import {
   createSessionLibrary,
@@ -64,6 +65,54 @@ function version2Session(): SessionDocumentV2 {
       },
       retained: { records: 1, bytes: 1 },
       issueCodes: [],
+    },
+  };
+}
+
+function nmeaVersion2Session(): SessionDocumentV2 {
+  const fixture = NMEA0183_DECODER_PACK.fixtures[0];
+  const fixtureRecord = fixture?.records[0];
+  if (!fixtureRecord) throw new Error("Expected NMEA fixture record");
+  const bytes = fixtureRecord.dataHex.length / 2;
+  return {
+    format: "narrowslink/session",
+    formatVersion: 2,
+    id: "session-nmea",
+    title: "NMEA replay",
+    startedAt: "2026-07-16T04:38:12.000Z",
+    displayTimeZone: "America/Los_Angeles",
+    durationUs: fixtureRecord.offsetUs + 1,
+    source: { id: "nmea-file", kind: "file", label: "NMEA fixture" },
+    decoder: decoderDescriptorForPack(NMEA0183_DECODER_PACK),
+    decoderPack: NMEA0183_DECODER_PACK,
+    records: [{
+      id: "nmea-record-0",
+      index: 0,
+      sourceId: "nmea-file",
+      offsetUs: fixtureRecord.offsetUs,
+      dataHex: fixtureRecord.dataHex,
+      captureBytes: bytes,
+      wireBytes: bytes,
+      transport: { kind: "file" },
+    }],
+    incidents: [],
+    transportEvents: [],
+    captureIntegrity: {
+      schemaVersion: 1,
+      status: "unknown",
+      assessmentBasis: "file-source-unassessed",
+      stopDisposition: "not-observed",
+      stopOffsetUs: null,
+      eventLogComplete: false,
+      input: {
+        unit: "unknown",
+        observedUnits: null,
+        observedBytes: null,
+        transportReportedUnits: null,
+        transportReportedBytes: null,
+      },
+      retained: { records: 1, bytes },
+      issueCodes: ["file-source-unassessed"],
     },
   };
 }
@@ -183,6 +232,24 @@ describe("durable local session library", () => {
     expect(loaded.document.formatVersion).toBe(2);
     expect(loaded.transportEvents).toEqual([]);
     expect(loaded.captureIntegrity).toEqual(document.captureIntegrity);
+  });
+
+  it("persists and reopens the exact embedded decoder pack", async () => {
+    const library = createSessionLibrary({
+      indexedDB: new IDBFactory(),
+      databaseName: "session-library-nmea-pack",
+    });
+    const document = nmeaVersion2Session();
+
+    const saved = await library.save(document);
+    const loaded = await library.load(saved.identity);
+
+    expect(loaded.decoderPack.integrity.canonicalSha256).toBe(NMEA0183_DECODER_PACK.integrity.canonicalSha256);
+    expect(loaded.frames[0]).toMatchObject({
+      status: "complete",
+      familyName: "NMEA GGA · Global Positioning System Fix Data",
+    });
+    expect(loaded.document).toEqual(document);
   });
 
   it("validates a session document before any record is written", async () => {

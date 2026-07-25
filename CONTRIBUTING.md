@@ -72,6 +72,7 @@ Available commands:
 | `npm run check` | Run typecheck, Vitest, production build, source browser matrix, and unpacked release gate |
 | `npm run capture:bridge` | Start the manual bearer-token UDP bridge used for source development |
 | `npm run capture:demo` | Send checked-in fixture frames as real UDP datagrams |
+| `npm run capture:demo:nmea` | Send repeatable checksummed NMEA 0183 datagrams |
 | `npm run fixture:generate` | Regenerate the deterministic bundled replay |
 | `npm run verify:bundle -- incident.nlb` | Build the receiver CLI and verify a local version 3 evidence bundle; add `--json` for machine-readable output |
 
@@ -103,6 +104,27 @@ Review both the generator diff and the resulting fixture facts. Keep generation 
 
 The bundled session also carries visual and diagnostic regression intent. Preserve varied packet cadence and received packet rate, measurable fade shoulders versus the fade center, intentional sequence gaps, and enough valid post-failure traffic to exercise the sustained decoder-relock window. Assert those properties from decoded domain output rather than snapshotting decorative chart coordinates.
 
+## Decoder pack contributions
+
+Read [DECODER_PACKS.md](DECODER_PACKS.md) before changing a pack, runtime, or decoder identity. Packs are data, not executable plug-ins.
+
+For an NMEA schema or fixture contribution:
+
+1. Create a draft without relying on a hand-calculated integrity value.
+2. Include known-good records and representative checksum, framing, unknown-family, or field-quality failures.
+3. Seal and execute the production conformance path:
+
+   ```bash
+   narrowslink decoder seal draft.json --out protocol.nldecoder
+   narrowslink decoder validate protocol.nldecoder
+   ```
+
+4. Load the sealed file through **Live capture** and record repeatable real UDP or serial traffic.
+5. Reopen the saved `.nlsession`, isolate a half-open incident, export an `.nlb` with the decoder schema included, and verify it through the production receiver.
+6. Add focused unit coverage plus the real capture-to-handoff acceptance path before documenting the pack as supported.
+
+Changing a description, schema, fixture, or expected result changes pack identity. Do not preserve the old hash or rewrite sessions that reference it. A new wire protocol outside the runtime allowlist requires a bounded reviewed runtime and adversarial resource-limit coverage; arbitrary JavaScript, automatic protocol detection, and multiple competing decoders remain out of scope.
+
 ## Engineering invariants
 
 - Treat raw `SourceRecord` values as immutable input. Derive frames, decoded fields, metrics, diagnostics, incidents, and archives from them.
@@ -121,6 +143,7 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 - Classify observed capture failures as `capture-path` evidence; CRC or partial-frame detection alone does not prove whether the source, link, decoder, or local capture path caused the corruption.
 - Bound live recording by the serialized `.nlsession` size, not only the binary payload size, so every accepted capture remains importable.
 - Preserve malformed, partial, checksum-failed, and unknown frames with explicit integrity status and source linkage.
+- Bind every new capture to the exact validated decoder pack, schema hash, pack hash, runtime ID, and runtime revision. Run pack fixtures through the production session and diagnostic path; never execute pack-supplied code.
 - Keep decoder, replay, range, incident, and bundle behavior pure where practical and add automated tests for changes.
 - Make evidence manifests truthful: every listed file must exist, every inclusion toggle must be honored, and hashes must cover the exact emitted bytes.
 - Always emit and hash `transport/events.json`, `transport/provenance.json`, `transport/journal.json`, and `transport/integrity-receipt.json`; transport evidence is a mandatory bundle baseline, not an optional group.
@@ -134,14 +157,15 @@ The bundled session also carries visual and diagnostic regression intent. Preser
 | Area | Files |
 | --- | --- |
 | Session schema and telemetry types | `src/domain/types.ts` |
-| Frame integrity and family decoding | `src/domain/decoder.ts` |
+| Decoder-pack contract, identity, and conformance | `src/domain/decoder-pack.ts`, `src/domain/decoder-conformance.ts` |
+| Runtime registry, frame integrity, and field decoding | `src/domain/decoder.ts` |
 | Validation, metrics, diagnostics, and incidents | `src/domain/session.ts` |
 | Replay timing | `src/replay/` |
 | Evidence archive contract and generation | `src/domain/evidence-contract.ts`, `src/domain/bundle.ts` |
 | Evidence receiver verification and CLI | `verifier/`, `scripts/narrowslink.ts`, `vite.cli.config.ts` |
 | Session serialization and import behavior | `src/data/session-file.ts`, `src/data/load-session.ts` |
 | Capture lifecycle and session finalization | `src/capture/CaptureDialog.tsx`, `src/capture/recorder.ts` |
-| Serial capture and NSL-01 assembly | `src/capture/web-serial.ts`, `src/capture/nsl01-serial-assembler.ts` |
+| Serial capture and runtime-selected assembly | `src/capture/web-serial.ts`, `src/capture/serial-assembler.ts`, `src/capture/nsl01-serial-assembler.ts`, `src/capture/nmea0183-serial-assembler.ts` |
 | UDP browser protocol and local bridge | `src/capture/udp-bridge.ts`, `scripts/capture-bridge.mjs` |
 | Durable session-document library | `src/storage/session-library.ts` |
 | Marker, note, and authored-range persistence | `src/storage/session-storage.ts` |

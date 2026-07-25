@@ -128,6 +128,7 @@ export const evidenceDiagnosticSchema = z.object({
     "recovery",
     "decoder-locked",
     "crc-failure",
+    "checksum-failure",
     "partial-frame",
     "capture-path-event",
   ]),
@@ -307,8 +308,20 @@ export const evidenceBundleManifestSchema = z.object({
     decoderId: boundedText(128),
     decoderRevision: boundedText(64),
     schemaHash: sha256Schema,
+    packHash: sha256Schema.optional(),
+    runtimeId: z.enum(["nsl01-binary-v1", "nmea0183-line-v1"]).optional(),
+    runtimeRevision: z.literal("1").optional(),
     captureIntegrity: captureIntegrityReceiptSchema,
-  }).strict(),
+  }).strict().superRefine((session, context) => {
+    const identityFields = [session.packHash, session.runtimeId, session.runtimeRevision];
+    const present = identityFields.filter((value) => value != null).length;
+    if (present !== 0 && present !== identityFields.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Decoder pack and runtime identity fields must be declared together.",
+      });
+    }
+  }),
   provenance: evidenceBundleProvenanceSummarySchema,
   selection: z.object({
     id: boundedText(128).nullable(),
