@@ -521,6 +521,12 @@ function ReceiverInspector({ document, playheadUs }: InspectorProps) {
       return diagnostic.startUs <= playheadUs && endUs > playheadUs;
     })
     .slice(0, 8);
+  const transportProvenance = document.evidence.transportProvenance.availability === "available"
+    ? document.evidence.transportProvenance.provenance
+    : null;
+  const udpProvenance = transportProvenance?.transport === "udp" ? transportProvenance : null;
+  const udpAccounting = udpProvenance?.schemaVersion === 2 ? udpProvenance.byteAccounting : null;
+  const udpJournal = udpProvenance?.journal ?? null;
 
   const changeNotes = (value: string) => {
     setReceiverNotes(value);
@@ -616,6 +622,23 @@ function ReceiverInspector({ document, playheadUs }: InspectorProps) {
             <span>Capture evidence</span>
             <strong>{claimLabel(document.claims.captureEvidence)}</strong>
             <p>{document.evidence.integrityReceipt.issueCodes.join(", ") || "No capture-integrity issue codes."}</p>
+          </section>
+          <section>
+            <span>Transport provenance</span>
+            {transportProvenance ? (
+              <>
+                <strong>{transportProvenance.transport.toUpperCase()} · {transportProvenance.status}</strong>
+                <dl>
+                  <div><dt>Source</dt><dd>{transportProvenance.sourceId}</dd></div>
+                  {udpProvenance && <div><dt>Kernel drops</dt><dd>{udpJournal?.kernelDroppedDatagrams == null ? `Unavailable · ${udpJournal?.kernelDroppedDatagramsSource ?? "no journal"}` : `${udpJournal.kernelDroppedDatagrams.toLocaleString()} datagrams · Linux socket counter`}</dd></div>}
+                  {udpProvenance && <div><dt>Payload</dt><dd>{udpAccounting ? `${formatBytes(udpAccounting.payload.bytes)} · observed` : "Unavailable"}</dd></div>}
+                  {udpProvenance && <div><dt>UDP estimate</dt><dd>{udpAccounting ? formatBytes(udpAccounting.udp.bytes) : "Unavailable"}</dd></div>}
+                  {udpProvenance && <div><dt>IP minimum</dt><dd>{udpAccounting ? `${formatBytes(udpAccounting.ip.bytes)} · ${udpAccounting.ip.family}` : "Unavailable"}</dd></div>}
+                  {udpProvenance && <div><dt>Link / radio</dt><dd>{udpAccounting ? "Unavailable · not observed at UDP socket" : "Unavailable"}</dd></div>}
+                </dl>
+                <p>{transportProvenance.issueCodes.join(", ") || "No provenance reconciliation issues."}</p>
+              </>
+            ) : <p>Structured transport provenance is unavailable for this source session.</p>}
           </section>
           <section>
             <span>Known limitations</span>

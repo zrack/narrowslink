@@ -29,6 +29,15 @@ export interface CaptureBridgeStatus {
   captureJournal: {
     captureId: string;
     state: "active" | "clean" | "incomplete";
+    kernelDroppedDatagrams: number | null;
+    kernelDroppedDatagramsSource:
+      | "linux-proc-net-udp-socket"
+      | "unavailable"
+      | "unavailable-capture-active"
+      | "unavailable-unsupported-platform"
+      | "unavailable-procfs"
+      | "unavailable-socket-identity"
+      | "unavailable-counter-regression";
     entries: Array<{ type: string; code?: string }>;
   } | null;
 }

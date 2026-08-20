@@ -96,4 +96,4 @@ Expected field maps may be partial: include the values that define the behavior 
 
 Pack identity proves that two installations have the same canonical pack contents. Conformance proves that the receiving runtime produces the pack's declared fixture results. The evidence verifier also checks that selected raw records reproduce the exported decoded rows.
 
-Those checks do not prove who authored the pack, whether its schema is semantically correct, whether the source emitted truthful data, or whether the bundle came through an authentic channel. Decoder packs and version 3 evidence bundles are unsigned. Exchange their SHA-256 identities through a separately trusted channel when authorship or source authenticity matters.
+Those checks do not prove who authored the pack, whether its schema is semantically correct, whether the source emitted truthful data, or whether the bundle came through an authentic channel. Decoder packs and version 3 or 4 evidence bundles are unsigned. Exchange their SHA-256 identities through a separately trusted channel when authorship or source authenticity matters.

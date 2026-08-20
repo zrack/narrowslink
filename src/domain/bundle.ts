@@ -2,6 +2,7 @@ import { zipSync, type Zippable } from "fflate";
 
 import {
   EVIDENCE_ARCHIVE_LIMITS,
+  EVIDENCE_BUNDLE_FORMAT_VERSION,
   EVIDENCE_BUNDLE_MEDIA_TYPE,
   evidenceBundleManifestSchema,
   evidenceDiagnosticsDocumentSchema,
@@ -334,7 +335,7 @@ function transportEvidenceDocuments(session: ParsedSession): {
 
   const provenanceDocument: EvidenceTransportProvenanceDocument = {
     format: "narrowslink/transport-provenance",
-    formatVersion: 1,
+    formatVersion: provenance.transport === "udp" && provenance.schemaVersion === 2 ? 2 : 1,
     availability: "available",
     sessionFormatVersion: 2,
     sourceId: provenance.sourceId,
@@ -549,7 +550,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     const diagnosticsDocument = { range: { startUs: range.startUs, endUs: range.endUs }, diagnostics };
     const diagnosticsValidation = evidenceDiagnosticsDocumentSchema.safeParse(diagnosticsDocument);
     if (!diagnosticsValidation.success) {
-      throw new TypeError(`Evidence diagnostics artifact violates the version 3 receiver contract: ${diagnosticsValidation.error.issues[0]?.message ?? "invalid diagnostics"}.`);
+      throw new TypeError(`Evidence diagnostics artifact violates the current receiver contract: ${diagnosticsValidation.error.issues[0]?.message ?? "invalid diagnostics"}.`);
     }
     addTextArtifact(
       pendingArtifacts,
@@ -570,7 +571,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     const markerDocument = { range: { startUs: range.startUs, endUs: range.endUs }, markers };
     const markerValidation = evidenceMarkersDocumentSchema.safeParse(markerDocument);
     if (!markerValidation.success) {
-      throw new TypeError(`Evidence markers artifact violates the version 3 receiver contract: ${markerValidation.error.issues[0]?.message ?? "invalid markers"}.`);
+      throw new TypeError(`Evidence markers artifact violates the current receiver contract: ${markerValidation.error.issues[0]?.message ?? "invalid markers"}.`);
     }
     addTextArtifact(
       pendingArtifacts,
@@ -584,7 +585,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
     const noteDocument = { range: { startUs: range.startUs, endUs: range.endUs }, notes };
     const noteValidation = evidenceNotesDocumentSchema.safeParse(noteDocument);
     if (!noteValidation.success) {
-      throw new TypeError(`Evidence notes artifact violates the version 3 receiver contract: ${noteValidation.error.issues[0]?.message ?? "invalid notes"}.`);
+      throw new TypeError(`Evidence notes artifact violates the current receiver contract: ${noteValidation.error.issues[0]?.message ?? "invalid notes"}.`);
     }
     addTextArtifact(
       pendingArtifacts,
@@ -622,7 +623,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
   ] as Array<"manifest.json" | EvidenceArtifactPath>).sort((left, right) => compareText(left, right));
   const manifest: EvidenceBundleManifest = {
     format: "narrowslink/evidence-bundle",
-    formatVersion: 3,
+    formatVersion: EVIDENCE_BUNDLE_FORMAT_VERSION,
     generatedAt,
     session: {
       id: session.document.id,
@@ -661,7 +662,7 @@ export async function buildEvidenceBundle(options: BuildEvidenceBundleOptions): 
   };
   const manifestValidation = evidenceBundleManifestSchema.safeParse(manifest);
   if (!manifestValidation.success) {
-    throw new TypeError(`Evidence manifest violates the version 3 receiver contract: ${manifestValidation.error.issues[0]?.message ?? "invalid manifest"}.`);
+    throw new TypeError(`Evidence manifest violates the version ${EVIDENCE_BUNDLE_FORMAT_VERSION} receiver contract: ${manifestValidation.error.issues[0]?.message ?? "invalid manifest"}.`);
   }
   const manifestBytes = textBytes(canonicalJson(manifest, true));
   const checksumsByPath = new Map<string, string>(artifacts.map((artifact) => [artifact.path, artifact.sha256]));

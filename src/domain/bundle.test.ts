@@ -497,7 +497,7 @@ describe("buildEvidenceBundle", () => {
 
     const manifest = JSON.parse(decodeText(archive, "manifest.json")) as EvidenceBundleManifest;
     expect(manifest.format).toBe("narrowslink/evidence-bundle");
-    expect(manifest.formatVersion).toBe(3);
+    expect(manifest.formatVersion).toBe(4);
     expect(manifest.session.captureIntegrity).toEqual(session.captureIntegrity);
     expect(manifest.provenance).toEqual({
       availability: "available",
@@ -562,7 +562,7 @@ describe("buildEvidenceBundle", () => {
     try {
       await writeFile(bundlePath, bytes);
       const verified = await verifyEvidenceBundle(bundlePath);
-      expect(verified.manifest.formatVersion).toBe(3);
+      expect(verified.manifest.formatVersion).toBe(4);
       expect(verified.transportProvenance.availability).toBe("available");
       expect(verified.transportJournal).toMatchObject({
         availability: "available",

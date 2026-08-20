@@ -55,8 +55,15 @@ export interface BridgeCaptureJournal {
   } | null;
   datagrams: number;
   bytes: number;
-  kernelDroppedDatagrams: null;
-  kernelDroppedDatagramsSource: "unavailable";
+  kernelDroppedDatagrams: number | null;
+  kernelDroppedDatagramsSource:
+    | "linux-proc-net-udp-socket"
+    | "unavailable"
+    | "unavailable-capture-active"
+    | "unavailable-unsupported-platform"
+    | "unavailable-procfs"
+    | "unavailable-socket-identity"
+    | "unavailable-counter-regression";
   entriesComplete: boolean;
   omittedEntries: number;
   entries: BridgeCaptureJournalEntry[];
@@ -144,6 +151,22 @@ async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 function validStatus(value: unknown): value is BridgeStatus {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<BridgeStatus>;
+  const journal = candidate.captureJournal;
+  const kernelDropSources = new Set([
+    "linux-proc-net-udp-socket",
+    "unavailable",
+    "unavailable-capture-active",
+    "unavailable-unsupported-platform",
+    "unavailable-procfs",
+    "unavailable-socket-identity",
+    "unavailable-counter-regression",
+  ]);
+  const kernelDropEvidenceValid = journal === null || journal === undefined || (
+    kernelDropSources.has(journal.kernelDroppedDatagramsSource)
+    && (journal.kernelDroppedDatagramsSource === "linux-proc-net-udp-socket"
+      ? Number.isSafeInteger(journal.kernelDroppedDatagrams) && (journal.kernelDroppedDatagrams ?? -1) >= 0
+      : journal.kernelDroppedDatagrams === null)
+  );
   return typeof candidate.state === "string"
     && (candidate.udp === null || (
       typeof candidate.udp === "object"
@@ -166,8 +189,7 @@ function validStatus(value: unknown): value is BridgeStatus {
       && typeof candidate.captureJournal.state === "string"
       && Number.isInteger(candidate.captureJournal.datagrams)
       && Number.isInteger(candidate.captureJournal.bytes)
-      && candidate.captureJournal.kernelDroppedDatagrams === null
-      && candidate.captureJournal.kernelDroppedDatagramsSource === "unavailable"
+      && kernelDropEvidenceValid
       && Array.isArray(candidate.captureJournal.entries)
     ));
 }

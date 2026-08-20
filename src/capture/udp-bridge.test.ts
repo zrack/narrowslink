@@ -241,7 +241,7 @@ describe("UDP bridge browser protocol", () => {
         kernelDroppedDatagrams: 0,
         kernelDroppedDatagramsSource: "estimated",
       }),
-    }))).toThrow("must remain null with an unavailable source");
+    }))).toThrow("kernel drop counter source is unsupported");
 
     const endedAt = "2026-07-16T00:00:01.000Z";
     expect(() => parseUdpBridgeStatus(statusPayload({
@@ -883,12 +883,12 @@ describe("local UDP capture bridge", () => {
       multicast: null,
       datagrams: 0,
       bytes: 0,
-      kernelDroppedDatagrams: null,
-      kernelDroppedDatagramsSource: "unavailable",
       entriesComplete: true,
       omittedEntries: 0,
       entries: [{ type: "capture-started", sequence: 0, offsetUs: 0, datagrams: 0, bytes: 0 }],
     });
+    expect(captureBeforeRecovery.captureJournal?.kernelDroppedDatagrams).toBeNull();
+    expect(captureBeforeRecovery.captureJournal?.kernelDroppedDatagramsSource).toMatch(/^unavailable-/);
     expect(JSON.stringify(captureBeforeRecovery)).not.toContain(startRequestNonce);
 
     const recoveredStartResponse = await fetch(`${ready.controlUrl}/v1/start`, {
@@ -983,8 +983,6 @@ describe("local UDP capture bridge", () => {
         state: "clean",
         datagrams: 1,
         bytes: 0,
-        kernelDroppedDatagrams: null,
-        kernelDroppedDatagramsSource: "unavailable",
         entriesComplete: true,
         omittedEntries: 0,
         entries: [
@@ -993,6 +991,11 @@ describe("local UDP capture bridge", () => {
         ],
       },
     });
+    if (stopped.captureJournal?.kernelDroppedDatagrams === null) {
+      expect(stopped.captureJournal.kernelDroppedDatagramsSource).toMatch(/^unavailable-/);
+    } else {
+      expect(stopped.captureJournal?.kernelDroppedDatagramsSource).toBe("linux-proc-net-udp-socket");
+    }
     expect(stopped.captureJournal?.endedAt).toBe(stopped.capture?.endedAt);
     expect(stopped.capture?.durationUs).toBeGreaterThan(received.offsetUs);
     abortController.abort();
@@ -1076,7 +1079,8 @@ describe("local UDP capture bridge", () => {
         body: JSON.stringify({ captureId: started.capture?.id, lease: ownedStart.lease }),
       });
       expect(stopResponse.status).toBe(200);
-      expect(parseUdpBridgeStatus(await stopResponse.json())).toMatchObject({
+      const stopped = parseUdpBridgeStatus(await stopResponse.json());
+      expect(stopped).toMatchObject({
         state: "stopped",
         multicast: null,
         capture: { datagrams: 1, bytes: payload.length },
@@ -1089,10 +1093,13 @@ describe("local UDP capture bridge", () => {
           },
           datagrams: 1,
           bytes: payload.length,
-          kernelDroppedDatagrams: null,
-          kernelDroppedDatagramsSource: "unavailable",
         },
       });
+      if (stopped.captureJournal?.kernelDroppedDatagrams === null) {
+        expect(stopped.captureJournal.kernelDroppedDatagramsSource).toMatch(/^unavailable-/);
+      } else {
+        expect(stopped.captureJournal?.kernelDroppedDatagramsSource).toBe("linux-proc-net-udp-socket");
+      }
     } finally {
       abortController.abort();
       try {

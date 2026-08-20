@@ -31,6 +31,18 @@ export interface SourceDescriptor {
 
 export type UdpAddressFamily = "IPv4" | "IPv6";
 
+export const udpKernelDropCounterSources = [
+  "linux-proc-net-udp-socket",
+  "unavailable",
+  "unavailable-capture-active",
+  "unavailable-unsupported-platform",
+  "unavailable-procfs",
+  "unavailable-socket-identity",
+  "unavailable-counter-regression",
+] as const;
+
+export type UdpKernelDropCounterSource = (typeof udpKernelDropCounterSources)[number];
+
 export interface UdpRemoteEndpoint {
   address: string;
   port: number;
@@ -121,6 +133,13 @@ export type TransportEvent =
       retainedBytes: number;
     })
   | (TransportEventBase & {
+      type: "udp-kernel-drops-observed";
+      transport: "udp";
+      scope: { kind: "session" };
+      kernelDroppedDatagrams: number;
+      counterSource: "linux-proc-net-udp-socket";
+    })
+  | (TransportEventBase & {
       type: "udp-bridge-error" | "udp-event-stream-disconnected";
       transport: "udp";
       code: string;
@@ -156,6 +175,7 @@ export type TransportEvent =
 export const captureIntegrityIssueCodes = [
   "udp-event-sequence-discontinuity",
   "udp-counter-mismatch",
+  "udp-kernel-drops-observed",
   "udp-bridge-error",
   "udp-event-stream-disconnected",
   "capture-backpressure",
@@ -247,8 +267,8 @@ export interface UdpBridgeJournal {
   multicast: UdpMulticastProvenance | null;
   datagrams: number;
   bytes: number;
-  kernelDroppedDatagrams: null;
-  kernelDroppedDatagramsSource: "unavailable";
+  kernelDroppedDatagrams: number | null;
+  kernelDroppedDatagramsSource: UdpKernelDropCounterSource;
   entriesComplete: boolean;
   omittedEntries: number;
   entries: readonly UdpBridgeJournalEntry[];
@@ -261,20 +281,72 @@ export interface UdpEndpointAttributionSummary {
   distinctEndpoints: UdpRemoteEndpoint[];
 }
 
-interface TransportProvenanceBase {
+export interface UdpByteAccounting {
   schemaVersion: 1;
+  scope: "whole-session";
+  datagrams: number;
+  payload: {
+    bytes: number;
+    basis: "observed";
+    source: "udp-bridge-payload-counter";
+    confidence: "exact";
+  };
+  udp: {
+    bytes: number;
+    basis: "estimated";
+    source: "payload-plus-fixed-udp-header";
+    confidence: "deterministic";
+    headerBytesPerDatagram: 8;
+  };
+  ip: {
+    bytes: number;
+    basis: "minimum-estimate";
+    source: "payload-plus-fixed-udp-and-ip-headers";
+    confidence: "bounded-assumption";
+    family: UdpAddressFamily;
+    headerBytesPerDatagram: 20 | 40;
+    assumptions: readonly [
+      "no-ip-options-or-extension-headers",
+      "no-fragmentation",
+    ];
+  };
+  linkLayer: {
+    bytes: null;
+    basis: "unavailable";
+    reason: "not-observed-at-udp-socket";
+  };
+  radioLayer: {
+    bytes: null;
+    basis: "unavailable";
+    reason: "not-observed-at-udp-socket";
+  };
+}
+
+interface TransportProvenanceBase {
   sourceId: string;
   status: "verified" | "incomplete";
   issueCodes: TransportProvenanceIssueCode[];
 }
 
-export interface UdpTransportProvenance extends TransportProvenanceBase {
+export interface UdpTransportProvenanceV1 extends TransportProvenanceBase {
+  schemaVersion: 1;
   transport: "udp";
   journal: UdpBridgeJournal | null;
   endpointAttribution: UdpEndpointAttributionSummary;
 }
 
+export interface UdpTransportProvenanceV2 extends TransportProvenanceBase {
+  schemaVersion: 2;
+  transport: "udp";
+  journal: UdpBridgeJournal | null;
+  endpointAttribution: UdpEndpointAttributionSummary;
+  byteAccounting: UdpByteAccounting | null;
+}
+
+export type UdpTransportProvenance = UdpTransportProvenanceV1 | UdpTransportProvenanceV2;
+
 export interface SerialTransportProvenance extends TransportProvenanceBase {
+  schemaVersion: 1;
   transport: "serial";
   device: {
     usbVendorId: number | null;
@@ -582,6 +654,14 @@ export const transportEventSchema = z.discriminatedUnion("type", [
     retainedRecords: safeNonnegativeInteger,
     retainedBytes: safeNonnegativeInteger,
   }).strict(),
+  z.object({
+    ...transportEventBaseShape,
+    type: z.literal("udp-kernel-drops-observed"),
+    transport: z.literal("udp"),
+    scope: z.object({ kind: z.literal("session") }).strict(),
+    kernelDroppedDatagrams: z.number().int().positive().safe(),
+    counterSource: z.literal("linux-proc-net-udp-socket"),
+  }).strict(),
   z.object({ ...udpErrorShape, type: z.literal("udp-bridge-error") }).strict(),
   z.object({ ...udpErrorShape, type: z.literal("udp-event-stream-disconnected") }).strict(),
   z.object({ ...captureLimitShape, type: z.literal("capture-backpressure") }).strict(),
@@ -661,7 +741,7 @@ const udpBridgeJournalEntrySchema = z.object({
   fatal: z.boolean().optional(),
 }).strict();
 
-export const udpBridgeJournalSchema = z.object({
+const udpBridgeJournalBaseShape = {
   captureId: wellFormedText(z.string().min(1).max(128)),
   startedAt: wellFormedText(z.string().max(64).datetime({ offset: true })),
   endedAt: wellFormedText(z.string().max(64).datetime({ offset: true })).nullable(),
@@ -670,12 +750,30 @@ export const udpBridgeJournalSchema = z.object({
   multicast: udpMulticastProvenanceSchema.nullable(),
   datagrams: safeNonnegativeInteger,
   bytes: safeNonnegativeInteger,
-  kernelDroppedDatagrams: z.null(),
-  kernelDroppedDatagramsSource: z.literal("unavailable"),
   entriesComplete: z.boolean(),
   omittedEntries: safeNonnegativeInteger,
   entries: z.array(udpBridgeJournalEntrySchema).min(1).max(MAX_UDP_BRIDGE_JOURNAL_ENTRIES),
-}).strict();
+};
+
+export const udpBridgeJournalSchema = z.union([
+  z.object({
+    ...udpBridgeJournalBaseShape,
+    kernelDroppedDatagrams: safeNonnegativeInteger,
+    kernelDroppedDatagramsSource: z.literal("linux-proc-net-udp-socket"),
+  }).strict(),
+  z.object({
+    ...udpBridgeJournalBaseShape,
+    kernelDroppedDatagrams: z.null(),
+    kernelDroppedDatagramsSource: z.enum([
+      "unavailable",
+      "unavailable-capture-active",
+      "unavailable-unsupported-platform",
+      "unavailable-procfs",
+      "unavailable-socket-identity",
+      "unavailable-counter-regression",
+    ]),
+  }).strict(),
+]);
 
 const udpEndpointAttributionSummarySchema = z.object({
   totalRecords: safeNonnegativeInteger,
@@ -684,22 +782,74 @@ const udpEndpointAttributionSummarySchema = z.object({
   distinctEndpoints: z.array(udpRemoteEndpointSchema).max(MAX_UDP_DISTINCT_ENDPOINTS),
 }).strict();
 
-const transportProvenanceBaseShape = {
+const udpByteAccountingSchema = z.object({
   schemaVersion: z.literal(1),
+  scope: z.literal("whole-session"),
+  datagrams: safeNonnegativeInteger,
+  payload: z.object({
+    bytes: safeNonnegativeInteger,
+    basis: z.literal("observed"),
+    source: z.literal("udp-bridge-payload-counter"),
+    confidence: z.literal("exact"),
+  }).strict(),
+  udp: z.object({
+    bytes: safeNonnegativeInteger,
+    basis: z.literal("estimated"),
+    source: z.literal("payload-plus-fixed-udp-header"),
+    confidence: z.literal("deterministic"),
+    headerBytesPerDatagram: z.literal(8),
+  }).strict(),
+  ip: z.object({
+    bytes: safeNonnegativeInteger,
+    basis: z.literal("minimum-estimate"),
+    source: z.literal("payload-plus-fixed-udp-and-ip-headers"),
+    confidence: z.literal("bounded-assumption"),
+    family: udpAddressFamilySchema,
+    headerBytesPerDatagram: z.union([z.literal(20), z.literal(40)]),
+    assumptions: z.tuple([
+      z.literal("no-ip-options-or-extension-headers"),
+      z.literal("no-fragmentation"),
+    ]),
+  }).strict(),
+  linkLayer: z.object({
+    bytes: z.null(),
+    basis: z.literal("unavailable"),
+    reason: z.literal("not-observed-at-udp-socket"),
+  }).strict(),
+  radioLayer: z.object({
+    bytes: z.null(),
+    basis: z.literal("unavailable"),
+    reason: z.literal("not-observed-at-udp-socket"),
+  }).strict(),
+}).strict();
+
+const transportProvenanceBaseShape = {
   sourceId: wellFormedText(z.string().min(1).max(128)),
   status: z.enum(["verified", "incomplete"]),
   issueCodes: z.array(z.enum(transportProvenanceIssueCodes)).max(transportProvenanceIssueCodes.length),
 };
 
-export const udpTransportProvenanceSchema = z.object({
-  ...transportProvenanceBaseShape,
-  transport: z.literal("udp"),
-  journal: udpBridgeJournalSchema.nullable(),
-  endpointAttribution: udpEndpointAttributionSummarySchema,
-}).strict();
+export const udpTransportProvenanceSchema = z.discriminatedUnion("schemaVersion", [
+  z.object({
+    ...transportProvenanceBaseShape,
+    schemaVersion: z.literal(1),
+    transport: z.literal("udp"),
+    journal: udpBridgeJournalSchema.nullable(),
+    endpointAttribution: udpEndpointAttributionSummarySchema,
+  }).strict(),
+  z.object({
+    ...transportProvenanceBaseShape,
+    schemaVersion: z.literal(2),
+    transport: z.literal("udp"),
+    journal: udpBridgeJournalSchema.nullable(),
+    endpointAttribution: udpEndpointAttributionSummarySchema,
+    byteAccounting: udpByteAccountingSchema.nullable(),
+  }).strict(),
+]);
 
 export const serialTransportProvenanceSchema = z.object({
   ...transportProvenanceBaseShape,
+  schemaVersion: z.literal(1),
   transport: z.literal("serial"),
   device: z.object({
     usbVendorId: z.number().int().min(0).max(65_535).nullable(),
@@ -716,7 +866,7 @@ export const serialTransportProvenanceSchema = z.object({
   }).strict(),
 }).strict();
 
-export const transportProvenanceSchema = z.discriminatedUnion("transport", [
+export const transportProvenanceSchema = z.union([
   udpTransportProvenanceSchema,
   serialTransportProvenanceSchema,
 ]);

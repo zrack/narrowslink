@@ -304,7 +304,7 @@ test("records fragmented serial input and carries it through durable verified ev
   });
   expect(archive.manifest).toMatchObject({
     format: "narrowslink/evidence-bundle",
-    formatVersion: 3,
+    formatVersion: 4,
     session: {
       id: document.id,
       title: CAPTURE_TITLE,

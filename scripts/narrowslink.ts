@@ -158,7 +158,7 @@ function verifyUsage(): string {
   return [
     "Usage: narrowslink verify <bundle.nlb> [--json]",
     "",
-    "Verifies a NarrowsLink v3 evidence bundle locally without network access.",
+    "Verifies a NarrowsLink v3 or v4 evidence bundle locally without network access.",
     "Exit 0: internally consistent; exit 1: invalid or tampered; exit 2: usage or file I/O failure.",
     "",
   ].join("\n");

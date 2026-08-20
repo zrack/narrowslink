@@ -2445,6 +2445,10 @@ select:focus-visible {
   line-height: 26px;
 }
 
+.bundle-dialog .bundle-progress-title {
+  min-height: 52px;
+}
+
 .bundle-dialog > p,
 .dialog-success > p {
   margin: 0;

@@ -12,6 +12,8 @@ export const LARGE_SESSION_SUPPORT_TIER = Object.freeze({
   maxCanonicalBytes: MAX_SESSION_FILE_BYTES,
   maxRecords: MAX_SESSION_RECORDS,
   maxDurationHours: 24,
-  maxMainThreadHeartbeatGapMs: 1_000,
+  heartbeatIntervalMs: 25,
+  maxMainThreadHeartbeatGapMs: 5_000,
+  maxMainThreadDelayRatio: 0.5,
   maxChromiumHeapGrowthBytes: 768 * MEBIBYTE,
 });

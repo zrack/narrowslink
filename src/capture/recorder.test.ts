@@ -194,6 +194,7 @@ describe("CaptureRecorder", () => {
 
     expect(document.captureIntegrity).toMatchObject({ status: "verified", issueCodes: [] });
     expect(document.transportProvenance).toMatchObject({
+      schemaVersion: 2,
       transport: "udp",
       status: "verified",
       issueCodes: ["udp-kernel-drop-counter-unavailable"],
@@ -202,6 +203,14 @@ describe("CaptureRecorder", () => {
         attributedRecords: 2,
         unattributedRecords: 0,
         distinctEndpoints: [{ address: "192.0.2.44", port: 55_555, family: "IPv4" }],
+      },
+      byteAccounting: {
+        datagrams: 2,
+        payload: { bytes: 3, basis: "observed", confidence: "exact" },
+        udp: { bytes: 19, headerBytesPerDatagram: 8 },
+        ip: { bytes: 59, family: "IPv4", headerBytesPerDatagram: 20 },
+        linkLayer: { bytes: null, basis: "unavailable" },
+        radioLayer: { bytes: null, basis: "unavailable" },
       },
     });
     expect(document.records[0]?.transport).toMatchObject({
@@ -212,6 +221,51 @@ describe("CaptureRecorder", () => {
     expect(Object.isFrozen(document.transportProvenance?.transport === "udp"
       ? document.transportProvenance.journal?.entries
       : null)).toBe(true);
+  });
+
+  it("turns measured host UDP socket drops into terminal capture-path evidence", () => {
+    const recorder = udpRecorder();
+    const endpoint = remoteEndpoint();
+    recorder.append({ offsetUs: 0, bytes: new Uint8Array([1, 2]), remoteEndpoint: endpoint });
+    const journal = cleanUdpJournal(1, 2, 5);
+    journal.kernelDroppedDatagrams = 3;
+    journal.kernelDroppedDatagramsSource = "linux-proc-net-udp-socket";
+
+    const document = recorder.finalize(5, {
+      stopDisposition: "confirmed",
+      stopOffsetUs: 5,
+      eventLogComplete: true,
+      observedUnits: 1,
+      observedBytes: 2,
+      transportProvenance: { transport: "udp", journal },
+    });
+    if (document.formatVersion !== 2 || document.transportProvenance?.transport !== "udp") {
+      throw new Error("Expected UDP provenance");
+    }
+
+    expect(document.transportEvents).toEqual([expect.objectContaining({
+      type: "udp-kernel-drops-observed",
+      kernelDroppedDatagrams: 3,
+      counterSource: "linux-proc-net-udp-socket",
+    })]);
+    expect(document.captureIntegrity).toMatchObject({
+      status: "incomplete",
+      issueCodes: ["udp-kernel-drops-observed"],
+    });
+    expect(document.transportProvenance).toMatchObject({
+      schemaVersion: 2,
+      status: "verified",
+      issueCodes: [],
+      journal: {
+        kernelDroppedDatagrams: 3,
+        kernelDroppedDatagramsSource: "linux-proc-net-udp-socket",
+      },
+    });
+    expect(parseSession(document).diagnostics).toContainEqual(expect.objectContaining({
+      type: "capture-path-event",
+      domain: "capture-path",
+      title: "Host UDP socket reported dropped datagrams",
+    }));
   });
 
   it("marks explicitly unavailable UDP provenance incomplete without changing legacy callers", () => {

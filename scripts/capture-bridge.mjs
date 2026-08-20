@@ -7,6 +7,8 @@ import { isIP } from "node:net";
 import { basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { createUdpKernelDropCounter } from "./udp-kernel-drop-counter.mjs";
+
 const PROTOCOL_VERSION = 1;
 const CONTROL_HOST = "127.0.0.1";
 const DEFAULT_CONTROL_PORT = 47_891;
@@ -244,6 +246,7 @@ export function createCaptureBridge(options) {
     multicastInterface: configuredMulticast?.interface ?? undefined,
     token: validateToken(options.token),
   };
+  const udpKernelDropCounterFactory = options.udpKernelDropCounterFactory ?? createUdpKernelDropCounter;
   const subscribers = new Set();
   let controlPort = config.controlPort;
   let state = "idle";
@@ -256,6 +259,11 @@ export function createCaptureBridge(options) {
   let captureRequestNonce = null;
   let captureRequestKey = null;
   let captureStartMonotonicNs = null;
+  let udpKernelDropCounter = null;
+  let kernelDropEvidence = {
+    kernelDroppedDatagrams: null,
+    kernelDroppedDatagramsSource: "unavailable",
+  };
   let lastError = null;
   let startPromise = null;
   let activeStartNonce = null;
@@ -351,8 +359,7 @@ export function createCaptureBridge(options) {
       multicast: captureJournal.multicast ? { ...captureJournal.multicast } : null,
       datagrams: capture.datagrams,
       bytes: capture.bytes,
-      kernelDroppedDatagrams: null,
-      kernelDroppedDatagramsSource: "unavailable",
+      ...kernelDropEvidence,
       entriesComplete: captureJournal.entriesComplete,
       omittedEntries: captureJournal.omittedEntries,
       entries: captureJournal.entries.map((entry) => ({ ...entry })),
@@ -475,6 +482,10 @@ export function createCaptureBridge(options) {
       capture.durationUs = captureDurationUs();
       capture.endedAt = new Date().toISOString();
     }
+    kernelDropEvidence = {
+      kernelDroppedDatagrams: null,
+      kernelDroppedDatagramsSource: "unavailable-socket-identity",
+    };
     const failedSocket = udpSocket;
     udpSocket = null;
     if (failedSocket) {
@@ -606,7 +617,7 @@ export function createCaptureBridge(options) {
           `Could not bind UDP ${request.host}:${request.port}: ${error.message}`,
         ));
       };
-      const onListening = () => {
+      const onListening = async () => {
         socket.off("error", onInitialError);
         const address = socket.address();
         udpAddress = { host: address.address, port: address.port, family: address.family };
@@ -632,6 +643,15 @@ export function createCaptureBridge(options) {
         }
         socket.on("error", markSocketFailure);
         socket.on("message", handleDatagram);
+        udpKernelDropCounter = udpKernelDropCounterFactory();
+        try {
+          kernelDropEvidence = await udpKernelDropCounter.start(udpAddress);
+        } catch {
+          kernelDropEvidence = {
+            kernelDroppedDatagrams: null,
+            kernelDroppedDatagramsSource: "unavailable-procfs",
+          };
+        }
         captureStartMonotonicNs = process.hrtime.bigint();
         const startedAt = new Date().toISOString();
         capture = {
@@ -717,6 +737,16 @@ export function createCaptureBridge(options) {
     const socket = udpSocket;
     udpSocket = null;
     leaveMulticast(socket);
+    if (udpKernelDropCounter) {
+      try {
+        kernelDropEvidence = await udpKernelDropCounter.finish();
+      } catch {
+        kernelDropEvidence = {
+          kernelDroppedDatagrams: null,
+          kernelDroppedDatagramsSource: "unavailable-procfs",
+        };
+      }
+    }
     await new Promise((resolve) => {
       socket.once("close", resolve);
       socket.close();

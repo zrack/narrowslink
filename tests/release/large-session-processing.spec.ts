@@ -42,7 +42,7 @@ test.beforeAll(async () => {
 });
 
 async function armHeartbeatForReplayImport(page: Page): Promise<void> {
-  await page.evaluate(() => {
+  await page.evaluate((heartbeatIntervalMs) => {
     const input = document.querySelector<HTMLInputElement>(
       "input[aria-label='Choose a local NarrowsLink replay']",
     );
@@ -52,58 +52,76 @@ async function armHeartbeatForReplayImport(page: Page): Promise<void> {
         __narrowslinkReleaseHeartbeat?: {
           timer: number;
           previousAt: number;
+          startedAt: number;
           ticks: number;
           maximumGapMs: number;
+          delayedMs: number;
         };
       };
-      const previousAt = performance.now();
+      const startedAt = performance.now();
       const heartbeat = {
         timer: 0,
-        previousAt,
+        startedAt,
+        previousAt: startedAt,
         ticks: 0,
         maximumGapMs: 0,
+        delayedMs: 0,
       };
       heartbeat.timer = window.setInterval(() => {
         const now = performance.now();
+        const gapMs = now - heartbeat.previousAt;
         heartbeat.maximumGapMs = Math.max(
           heartbeat.maximumGapMs,
-          now - heartbeat.previousAt,
+          gapMs,
+        );
+        heartbeat.delayedMs += Math.max(
+          0,
+          gapMs - heartbeatIntervalMs,
         );
         heartbeat.previousAt = now;
         heartbeat.ticks += 1;
-      }, 25);
+      }, heartbeatIntervalMs);
       scope.__narrowslinkReleaseHeartbeat = heartbeat;
     }, { capture: true, once: true });
-  });
+  }, LARGE_SESSION_SUPPORT_TIER.heartbeatIntervalMs);
 }
 
 async function stopHeartbeat(page: Page): Promise<{
   ticks: number;
   maximumGapMs: number;
+  delayedMs: number;
+  delayRatio: number;
 }> {
-  return page.evaluate(() => {
+  return page.evaluate((heartbeatIntervalMs) => {
     const scope = globalThis as typeof globalThis & {
       __narrowslinkReleaseHeartbeat?: {
         timer: number;
+        startedAt: number;
         previousAt: number;
         ticks: number;
         maximumGapMs: number;
+        delayedMs: number;
       };
     };
     const heartbeat = scope.__narrowslinkReleaseHeartbeat;
     if (!heartbeat) throw new Error("The packaged large-session heartbeat was not started.");
     window.clearInterval(heartbeat.timer);
     const now = performance.now();
+    const finalGapMs = now - heartbeat.previousAt;
+    const delayedMs = heartbeat.delayedMs + Math.max(0, finalGapMs - heartbeatIntervalMs);
+    const elapsedMs = now - heartbeat.startedAt;
     const report = {
       ticks: heartbeat.ticks,
       maximumGapMs: Math.max(
         heartbeat.maximumGapMs,
-        now - heartbeat.previousAt,
+        finalGapMs,
       ),
+      delayedMs,
+      delayRatio: elapsedMs === 0 ? 0 : Math.min(1, delayedMs / elapsedMs),
     };
     delete scope.__narrowslinkReleaseHeartbeat;
     return report;
-  });
+  }, LARGE_SESSION_SUPPORT_TIER.heartbeatIntervalMs);
 }
 
 test("unpacked release processes and persists the maximum replay tier", async ({ page }) => {
@@ -134,6 +152,9 @@ test("unpacked release processes and persists the maximum replay tier", async ({
     expect(heartbeat.ticks).toBeGreaterThan(0);
     expect(heartbeat.maximumGapMs).toBeLessThanOrEqual(
       LARGE_SESSION_SUPPORT_TIER.maxMainThreadHeartbeatGapMs,
+    );
+    expect(heartbeat.delayRatio).toBeLessThanOrEqual(
+      LARGE_SESSION_SUPPORT_TIER.maxMainThreadDelayRatio,
     );
     await expect(page.locator(".session-info").getByText("200,000", { exact: true }))
       .toBeVisible();
