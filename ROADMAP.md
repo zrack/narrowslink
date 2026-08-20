@@ -38,26 +38,28 @@ The product can move in five useful directions:
 
 The near-term roadmap should keep serving those directions. Work that does not improve replayability, decoder portability, incident evidence, local trust, or operator review should be treated as secondary.
 
-## Next milestone: Transport evidence and authenticity
+## Next milestone: Independent field proof
 
-Strengthen the claims NarrowsLink can make about where loss occurred and who or what produced an evidence artifact without weakening its explicit unknown and unavailable states.
+Prove the complete product outcome outside the controlled loopback and simulated-device gates. The purpose is not another parser demo; it is a handoff that remains useful after the source system and capture laptop are gone.
 
 Planned work:
 
-- Add operating-system UDP drop counters on host and runtime combinations that expose a trustworthy capture-scoped value, with an explicit adapter and observation source for every platform.
-- Distinguish observed payload bytes from measured or estimated IP, UDP, radio, and link-layer wire bytes without presenting an estimate as an observation.
-- Define optional signing or trusted-channel anchoring for bridge journals, session files, release identity, decoder packs, and bundle identities.
-- Preserve the current boundary clearly: checksums prove internal consistency, not author, source channel, capture hardware, or build-environment authenticity.
+- Capture a real non-demo telemetry source through a documented UDP or physical serial topology, using a decoder pack whose immutable identity is preserved in the session.
+- Record the source, receiver, laptop, operating system, NarrowsLink build, decoder identity, capture settings, observation point, and every known capture-path limitation.
+- Isolate one exact incident, export the unchanged `.nlb`, and transfer it to a second NarrowsLink installation without sharing the original source or session workspace.
+- Have an engineer who was not present verify the archive, reproduce its raw and decoded evidence and diagnostics, and record what they could and could not conclude.
+- Preserve the session, bundle SHA-256, verification report, topology notes, and recipient result as a durable field-proof record.
 
-Immediate next moves:
+Exit criteria: one independently verified incident handoff created from a real non-NSL-01 capture, opened on a second installation by a person who was not present, with matching evidence and explicit limitations.
 
-- Survey macOS, Linux, and Windows socket-counter APIs and prove which values can be scoped to one NarrowsLink capture instead of a host, interface, or process lifetime.
-- Write the platform-adapter contract before implementation: observation source, scope, units, sampling boundaries, unavailable reason, and reconciliation rules must be explicit.
-- Separate payload, UDP/IP overhead, radio framing, and link-layer estimates in the evidence schema; require a provenance method and confidence class for every non-observed value.
-- Produce a signing threat model and key-lifecycle decision covering local keys, team keys, revocation, clock assumptions, offline receipt, and the separately trusted channel needed to establish identity.
-- Add synthetic counter-mismatch and signature-tampering fixtures plus one real platform adapter acceptance case without changing evidence semantics on unsupported hosts.
+## Authenticity and trusted identity
 
-Exit criteria: supported host adapters can add independently sourced platform counters and optional authenticity evidence without weakening the explicit unavailable state on other platforms.
+- Produce a threat model before adding signatures: identify which actors, artifacts, source channels, capture devices, and build environments a signature is intended to authenticate.
+- Decide key ownership, rotation, revocation, offline verification, clock assumptions, and recovery for individual and team use.
+- Define optional signing or trusted-channel anchoring for release identity, decoder packs, session files, bridge journals, bundles, and comparison findings without making local capture depend on a hosted service.
+- Add tampering, wrong-key, revoked-key, and unavailable-trust fixtures while continuing to report internal consistency, evidence completeness, and source authenticity as separate claims.
+
+Exit criteria: a receiving engineer can establish a named artifact identity through an independently trusted key or channel, while unsigned and unsupported evidence remains valid but explicitly unauthenticated.
 
 ## Assistive-technology and hardware certification
 

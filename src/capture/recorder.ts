@@ -34,6 +34,7 @@ import {
   type TransportEvent,
   type TransportProvenance,
   type TransportProvenanceIssueCode,
+  type UdpByteAccounting,
   type UdpBridgeJournal,
   type UdpRemoteEndpoint,
 } from "../domain/types";
@@ -239,6 +240,53 @@ function orderedTransportProvenanceIssueCodes(
 
 function udpEndpointKey(endpoint: UdpRemoteEndpoint): string {
   return JSON.stringify([endpoint.family, endpoint.address, endpoint.port]);
+}
+
+function udpByteAccounting(journal: UdpBridgeJournal | null): UdpByteAccounting | null {
+  if (!journal) return null;
+  const udpHeaderBytes = 8;
+  const ipHeaderBytes = journal.bind.family === "IPv4" ? 20 : 40;
+  const udpBytes = journal.bytes + (journal.datagrams * udpHeaderBytes);
+  return {
+    schemaVersion: 1,
+    scope: "whole-session",
+    datagrams: journal.datagrams,
+    payload: {
+      bytes: journal.bytes,
+      basis: "observed",
+      source: "udp-bridge-payload-counter",
+      confidence: "exact",
+    },
+    udp: {
+      bytes: udpBytes,
+      basis: "estimated",
+      source: "payload-plus-fixed-udp-header",
+      confidence: "deterministic",
+      headerBytesPerDatagram: udpHeaderBytes,
+    },
+    ip: {
+      bytes: udpBytes + (journal.datagrams * ipHeaderBytes),
+      basis: "minimum-estimate",
+      source: "payload-plus-fixed-udp-and-ip-headers",
+      confidence: "bounded-assumption",
+      family: journal.bind.family,
+      headerBytesPerDatagram: ipHeaderBytes,
+      assumptions: [
+        "no-ip-options-or-extension-headers",
+        "no-fragmentation",
+      ],
+    },
+    linkLayer: {
+      bytes: null,
+      basis: "unavailable",
+      reason: "not-observed-at-udp-socket",
+    },
+    radioLayer: {
+      bytes: null,
+      basis: "unavailable",
+      reason: "not-observed-at-udp-socket",
+    },
+  };
 }
 
 /**
@@ -607,10 +655,29 @@ export class CaptureRecorder {
         `UDP bridge provenance journal is invalid: ${parsedJournal.error.issues[0]?.message ?? "unknown validation error"}`,
       );
     }
+    const kernelDroppedDatagrams = parsedJournal.data.kernelDroppedDatagrams;
+    const kernelDropsObserved = kernelDroppedDatagrams != null && kernelDroppedDatagrams > 0;
+    if (
+      kernelDropsObserved
+      && !this.capturedTransportEvents.some((event) => event.type === "udp-kernel-drops-observed")
+    ) {
+      this.appendTerminalTransportEvent({
+        type: "udp-kernel-drops-observed",
+        transport: "udp",
+        scope: { kind: "session" },
+        severity: "critical",
+        message: `The host UDP socket reported ${kernelDroppedDatagrams} dropped datagrams during the capture sample window.`,
+        kernelDroppedDatagrams,
+        counterSource: "linux-proc-net-udp-socket",
+      });
+    }
     return {
       ...evidence,
       transportReportedUnits: evidence.transportReportedUnits ?? parsedJournal.data.datagrams,
       transportReportedBytes: evidence.transportReportedBytes ?? parsedJournal.data.bytes,
+      issueCodes: kernelDropsObserved
+        ? orderedIssueCodes([...(evidence.issueCodes ?? []), "udp-kernel-drops-observed"])
+        : evidence.issueCodes,
       transportProvenance: { transport: "udp", journal: parsedJournal.data },
     };
   }
@@ -662,7 +729,9 @@ export class CaptureRecorder {
       }
       // The current bridge states this platform boundary explicitly. It remains
       // inspectable provenance, but does not by itself make the capture incomplete.
-      issueValues.add("udp-kernel-drop-counter-unavailable");
+      if (journal.kernelDroppedDatagrams === null) {
+        issueValues.add("udp-kernel-drop-counter-unavailable");
+      }
     }
     const unattributedRecords = this.recordCount - attributedRecords;
     if (unattributedRecords > 0) issueValues.add("udp-endpoint-attribution-incomplete");
@@ -672,12 +741,13 @@ export class CaptureRecorder {
       || issueValues.has("udp-bridge-journal-counter-mismatch")
       || issueValues.has("udp-endpoint-attribution-incomplete");
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       transport: "udp",
       sourceId: this.options.source.id,
       status: incomplete ? "incomplete" : "verified",
       issueCodes,
       journal,
+      byteAccounting: udpByteAccounting(journal),
       endpointAttribution: {
         totalRecords: this.recordCount,
         attributedRecords,

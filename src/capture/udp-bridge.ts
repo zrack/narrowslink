@@ -53,6 +53,14 @@ export interface UdpCaptureProgress {
 }
 
 export type UdpCaptureJournalState = "active" | "clean" | "incomplete";
+export type UdpKernelDropCounterSource =
+  | "linux-proc-net-udp-socket"
+  | "unavailable"
+  | "unavailable-capture-active"
+  | "unavailable-unsupported-platform"
+  | "unavailable-procfs"
+  | "unavailable-socket-identity"
+  | "unavailable-counter-regression";
 export type UdpCaptureJournalEntryType =
   | "capture-started"
   | "bridge-error"
@@ -88,8 +96,8 @@ export interface UdpCaptureLifecycleJournal {
   readonly multicast: Readonly<UdpMulticastMembership> | null;
   readonly datagrams: number;
   readonly bytes: number;
-  readonly kernelDroppedDatagrams: null;
-  readonly kernelDroppedDatagramsSource: "unavailable";
+  readonly kernelDroppedDatagrams: number | null;
+  readonly kernelDroppedDatagramsSource: UdpKernelDropCounterSource;
   readonly entriesComplete: boolean;
   readonly omittedEntries: number;
   readonly entries: readonly UdpCaptureJournalEntry[];
@@ -364,8 +372,27 @@ function parseCaptureJournal(
   if (endedAt !== null && (typeof endedAt !== "string" || !Number.isFinite(Date.parse(endedAt)))) {
     throw new UdpBridgeProtocolError("Capture journal endedAt must be an ISO timestamp or null.");
   }
-  if (input.kernelDroppedDatagrams !== null || input.kernelDroppedDatagramsSource !== "unavailable") {
-    throw new UdpBridgeProtocolError("Kernel drop evidence must remain null with an unavailable source until the host reports it.");
+  const kernelDropSources: readonly UdpKernelDropCounterSource[] = [
+    "linux-proc-net-udp-socket",
+    "unavailable",
+    "unavailable-capture-active",
+    "unavailable-unsupported-platform",
+    "unavailable-procfs",
+    "unavailable-socket-identity",
+    "unavailable-counter-regression",
+  ];
+  if (!kernelDropSources.includes(input.kernelDroppedDatagramsSource as UdpKernelDropCounterSource)) {
+    throw new UdpBridgeProtocolError("The kernel drop counter source is unsupported.");
+  }
+  const kernelDroppedDatagramsSource = input.kernelDroppedDatagramsSource as UdpKernelDropCounterSource;
+  const kernelDroppedDatagrams = kernelDroppedDatagramsSource === "linux-proc-net-udp-socket"
+    ? integer(input, "kernelDroppedDatagrams", 0, Number.MAX_SAFE_INTEGER)
+    : null;
+  if (
+    (kernelDroppedDatagramsSource === "linux-proc-net-udp-socket" && input.kernelDroppedDatagrams === null)
+    || (kernelDroppedDatagramsSource !== "linux-proc-net-udp-socket" && input.kernelDroppedDatagrams !== null)
+  ) {
+    throw new UdpBridgeProtocolError("Kernel drop evidence conflicts with its source.");
   }
   if (typeof input.entriesComplete !== "boolean" || !Array.isArray(input.entries)) {
     throw new UdpBridgeProtocolError("The capture journal completeness or entries payload is malformed.");
@@ -452,8 +479,8 @@ function parseCaptureJournal(
     multicast,
     datagrams,
     bytes,
-    kernelDroppedDatagrams: null,
-    kernelDroppedDatagramsSource: "unavailable",
+    kernelDroppedDatagrams,
+    kernelDroppedDatagramsSource,
     entriesComplete,
     omittedEntries,
     entries,

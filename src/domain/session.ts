@@ -37,6 +37,7 @@ const DECODER_RELOCK_MIN_VALID_FRAMES = 3;
 const TRANSPORT_EVENT_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new Set([
   "udp-event-sequence-discontinuity",
   "udp-counter-mismatch",
+  "udp-kernel-drops-observed",
   "udp-bridge-error",
   "udp-event-stream-disconnected",
   "capture-backpressure",
@@ -51,6 +52,7 @@ const TRANSPORT_EVENT_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new 
 const UDP_CAPTURE_ISSUE_CODES: ReadonlySet<CaptureIntegrityIssueCode> = new Set([
   "udp-event-sequence-discontinuity",
   "udp-counter-mismatch",
+  "udp-kernel-drops-observed",
   "udp-bridge-error",
   "udp-event-stream-disconnected",
   "capture-backpressure",
@@ -259,6 +261,30 @@ function assertUdpJournalStructure(document: SessionDocumentV2, journal: UdpBrid
   }
 }
 
+function assertUdpByteAccounting(
+  provenance: Extract<TransportProvenance, { transport: "udp" }>,
+): void {
+  if (provenance.schemaVersion === 1) return;
+  const { journal, byteAccounting } = provenance;
+  if ((journal === null) !== (byteAccounting === null)) {
+    throw new SessionValidationError("UDP byte accounting availability does not match its bridge journal.");
+  }
+  if (!journal || !byteAccounting) return;
+  const expectedUdpBytes = journal.bytes + (journal.datagrams * 8);
+  const expectedIpHeaderBytes = journal.bind.family === "IPv4" ? 20 : 40;
+  const expectedIpBytes = expectedUdpBytes + (journal.datagrams * expectedIpHeaderBytes);
+  if (
+    byteAccounting.datagrams !== journal.datagrams
+    || byteAccounting.payload.bytes !== journal.bytes
+    || byteAccounting.udp.bytes !== expectedUdpBytes
+    || byteAccounting.ip.bytes !== expectedIpBytes
+    || byteAccounting.ip.family !== journal.bind.family
+    || byteAccounting.ip.headerBytesPerDatagram !== expectedIpHeaderBytes
+  ) {
+    throw new SessionValidationError("UDP byte accounting does not reconcile with immutable bridge counters.");
+  }
+}
+
 function assertTransportProvenance(document: SessionDocumentV2): void {
   const provenance = document.transportProvenance;
   const receiptHasIncompleteCode = document.captureIntegrity.issueCodes.includes("transport-provenance-incomplete");
@@ -326,8 +352,26 @@ function assertTransportProvenance(document: SessionDocumentV2): void {
       "UDP provenance journal counters and issue codes are inconsistent.");
     assertProvenanceIssue(issueCodes, "udp-endpoint-attribution-incomplete", endpointAttributionIncomplete,
       "UDP endpoint attribution and issue codes are inconsistent.");
-    assertProvenanceIssue(issueCodes, "udp-kernel-drop-counter-unavailable", provenance.journal !== null,
+    assertProvenanceIssue(issueCodes, "udp-kernel-drop-counter-unavailable", provenance.journal !== null
+      && provenance.journal.kernelDroppedDatagrams === null,
       "UDP kernel-drop availability and provenance issue codes are inconsistent.");
+    assertUdpByteAccounting(provenance);
+
+    const kernelDrops = provenance.journal?.kernelDroppedDatagrams ?? 0;
+    const dropEvents = document.transportEvents.filter((event) => event.type === "udp-kernel-drops-observed");
+    const receiptHasDropCode = document.captureIntegrity.issueCodes.includes("udp-kernel-drops-observed");
+    if (
+      receiptHasDropCode !== (kernelDrops > 0)
+      || dropEvents.length > 1
+      || (kernelDrops === 0 && dropEvents.length > 0)
+      || (kernelDrops > 0 && document.captureIntegrity.eventLogComplete && dropEvents.length !== 1)
+      || dropEvents.some((event) => (
+        event.kernelDroppedDatagrams !== kernelDrops
+        || event.counterSource !== provenance.journal?.kernelDroppedDatagramsSource
+      ))
+    ) {
+      throw new SessionValidationError("UDP kernel-drop evidence does not reconcile across the journal, event log, and receipt.");
+    }
 
     const incomplete = journalUnavailable || journalIncomplete || journalCounterMismatch || endpointAttributionIncomplete;
     if ((provenance.status === "incomplete") !== incomplete) {
@@ -934,6 +978,7 @@ function makeDiagnostic(
 const TRANSPORT_EVENT_TITLES: Record<TransportEvent["type"], string> = {
   "udp-event-sequence-discontinuity": "UDP event-stream sequence discontinuity",
   "udp-counter-mismatch": "UDP capture counters did not reconcile",
+  "udp-kernel-drops-observed": "Host UDP socket reported dropped datagrams",
   "udp-bridge-error": "UDP bridge error",
   "udp-event-stream-disconnected": "UDP event stream disconnected",
   "capture-backpressure": "Capture backpressure",

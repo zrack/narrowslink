@@ -57,6 +57,7 @@ interface CapturedSessionDocument {
       unattributedRecords: number;
       distinctEndpoints: CapturedUdpEndpoint[];
     };
+    byteAccounting: unknown;
   };
 }
 
@@ -440,11 +441,15 @@ test("records UDP, replays and investigates it, then exports independently verif
     multicast: null,
     datagrams: sent.length,
     bytes: sentBytes,
-    kernelDroppedDatagrams: null,
-    kernelDroppedDatagramsSource: "unavailable",
     entriesComplete: true,
     omittedEntries: 0,
   });
+  if (terminalJournal.kernelDroppedDatagrams === null) {
+    expect(terminalJournal.kernelDroppedDatagramsSource).toMatch(/^unavailable(?:-|$)/);
+  } else {
+    expect(terminalJournal.kernelDroppedDatagramsSource).toBe("linux-proc-net-udp-socket");
+    expect(terminalJournal.kernelDroppedDatagrams).toBeGreaterThanOrEqual(0);
+  }
   expect(terminalJournal.entries.map((entry) => entry.type)).toEqual(["capture-started", "capture-stopped"]);
   expect(terminalJournal.entries.at(-1)).toMatchObject({
     datagrams: sent.length,
@@ -474,12 +479,45 @@ test("records UDP, replays and investigates it, then exports independently verif
   expect(remoteEndpoint).toMatchObject({ address: "127.0.0.1", family: "IPv4" });
   expect(remoteEndpoint.port).toBeGreaterThan(0);
   expect(endpoints).toEqual(Array.from({ length: sent.length }, () => remoteEndpoint));
-  expect(document.transportProvenance).toEqual({
+  const kernelCounterUnavailable = terminalJournal.kernelDroppedDatagrams === null;
+  const expectedProvenanceIssueCodes = kernelCounterUnavailable
+    ? ["udp-kernel-drop-counter-unavailable"]
+    : [];
+  const expectedByteAccounting = {
     schemaVersion: 1,
+    scope: "whole-session",
+    datagrams: sent.length,
+    payload: {
+      bytes: sentBytes,
+      basis: "observed",
+      source: "udp-bridge-payload-counter",
+      confidence: "exact",
+    },
+    udp: {
+      bytes: sentBytes + (sent.length * 8),
+      basis: "estimated",
+      source: "payload-plus-fixed-udp-header",
+      confidence: "deterministic",
+      headerBytesPerDatagram: 8,
+    },
+    ip: {
+      bytes: sentBytes + (sent.length * 28),
+      basis: "minimum-estimate",
+      source: "payload-plus-fixed-udp-and-ip-headers",
+      confidence: "bounded-assumption",
+      family: "IPv4",
+      headerBytesPerDatagram: 20,
+      assumptions: ["no-ip-options-or-extension-headers", "no-fragmentation"],
+    },
+    linkLayer: { bytes: null, basis: "unavailable", reason: "not-observed-at-udp-socket" },
+    radioLayer: { bytes: null, basis: "unavailable", reason: "not-observed-at-udp-socket" },
+  };
+  expect(document.transportProvenance).toEqual({
+    schemaVersion: 2,
     sourceId: document.source.id,
     transport: "udp",
     status: "verified",
-    issueCodes: ["udp-kernel-drop-counter-unavailable"],
+    issueCodes: expectedProvenanceIssueCodes,
     journal: terminalJournal,
     endpointAttribution: {
       totalRecords: sent.length,
@@ -487,6 +525,7 @@ test("records UDP, replays and investigates it, then exports independently verif
       unattributedRecords: 0,
       distinctEndpoints: [remoteEndpoint],
     },
+    byteAccounting: expectedByteAccounting,
   });
 
   const startRecord = document.records[2];
@@ -534,7 +573,9 @@ test("records UDP, replays and investigates it, then exports independently verif
   await expect(provenancePanel).toContainText(terminalJournal.captureId);
   await expect(provenancePanel).toContainText(`${sent.length} / ${sent.length} records · 1 endpoint`);
   await expect(provenancePanel).toContainText(`${sent.length} datagrams`);
-  await expect(provenancePanel).toContainText("Unavailable · bridge API");
+  await expect(provenancePanel).toContainText(kernelCounterUnavailable ? "Unavailable" : `${terminalJournal.kernelDroppedDatagrams} datagrams`);
+  await expect(provenancePanel).toContainText("payload + 8 B/datagram");
+  await expect(provenancePanel).toContainText("not observed at UDP socket");
   await expect(provenancePanel).toContainText("clean · 2 entries");
   const endpointEvidence = provenancePanel.getByRole("region", { name: "Remote endpoints in selected incident" });
   await expect(endpointEvidence).toContainText(`127.0.0.1:${remoteEndpoint.port}`);
@@ -542,7 +583,7 @@ test("records UDP, replays and investigates it, then exports independently verif
   await expect(provenancePanel.getByRole("region", { name: "Bridge journal entries in selected incident" }))
     .toContainText("Whole-session state: clean");
   await expect(provenancePanel.getByRole("region", { name: "UDP provenance boundaries" }))
-    .toContainText("udp-kernel-drop-counter-unavailable");
+    .toContainText(kernelCounterUnavailable ? "udp-kernel-drop-counter-unavailable" : "No provenance reconciliation issues.");
 
   const markerOffsetUs = Math.floor(((startRecord.offsetUs + endRecord.offsetUs) / 2) / 1_000) * 1_000;
   expect(markerOffsetUs).toBeGreaterThan(startRecord.offsetUs);
@@ -609,7 +650,7 @@ test("records UDP, replays and investigates it, then exports independently verif
   expect(archive.paths).toEqual(EXPECTED_ARCHIVE_PATHS);
   expect(manifest).toMatchObject({
     format: "narrowslink/evidence-bundle",
-    formatVersion: 3,
+    formatVersion: 4,
     session: {
       id: document.id,
       title: CAPTURE_TITLE,
@@ -620,7 +661,7 @@ test("records UDP, replays and investigates it, then exports independently verif
       status: "verified",
       sourceId: document.source.id,
       transport: "udp",
-      issueCodes: ["udp-kernel-drop-counter-unavailable"],
+      issueCodes: expectedProvenanceIssueCodes,
       captureId: terminalJournal.captureId,
       endpointAttribution: {
         totalRecords: sent.length,
@@ -657,7 +698,7 @@ test("records UDP, replays and investigates it, then exports independently verif
   });
   expect(provenanceDocument).toEqual({
     format: "narrowslink/transport-provenance",
-    formatVersion: 1,
+    formatVersion: 2,
     availability: "available",
     sessionFormatVersion: 2,
     sourceId: document.source.id,

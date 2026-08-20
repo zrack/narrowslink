@@ -225,11 +225,13 @@ The automated release gate exercises the serial application path with an injecte
 3. Correlate the same moment across the timeline lanes.
 4. Use **Narrative** for ordered evidence-backed events.
 5. Use **Details** for capture integrity and evidence-domain facts.
-6. Use **Provenance** for UDP endpoint and bridge-journal evidence or serial device and negotiated-setting evidence.
+6. Use **Provenance** for UDP endpoint and bridge-journal evidence, measured or explicitly unavailable host socket drops, layered UDP byte accounting, or serial device and negotiated-setting evidence.
 7. Use **Stats** for range-level measures.
 8. Inspect malformed, checksum-failed, partial, and unknown frames instead of treating them as absent.
 
 Capture-path diagnostics describe local collection failures. Keep them distinct from source-link and decoder failures when writing an incident conclusion.
+
+For UDP, **Payload** is an exact bridge observation. **UDP** adds the fixed eight-byte datagram header, and **IP minimum** adds the fixed IPv4 or IPv6 header under stated no-fragmentation and no-options assumptions. **Link** and **Radio** remain unavailable because a UDP socket does not observe those layers. On Linux, NarrowsLink can report a capture-scoped socket-drop delta when procfs exposes one unique socket. Other platforms and ambiguous or unreadable sockets remain explicitly unavailable; that state is not zero.
 
 ## Create an exact incident range
 
@@ -285,13 +287,13 @@ The preview size is an estimate. The archive manifest contains the actual artifa
 
 Every bundle includes range-filtered transport events and whole-session provenance, bridge-journal, and integrity-receipt artifacts. Optional source, decoded, diagnostic, schema, marker, and note artifacts follow the selected incident and inclusion controls.
 
-Version 3 raw and decoded artifacts are each limited to 100,000 rows. When investigating a larger replay, select a narrower incident before including those groups. The maximum-record release case uses an exact 10,000-record incident rather than exporting the full 200,000-record session.
+Version 3 and 4 raw and decoded artifacts are each limited to 100,000 rows. Current source creates version 4 bundles; the published v0.2.0 application creates version 3. When investigating a larger replay, select a narrower incident before including those groups. The maximum-record release case uses an exact 10,000-record incident rather than exporting the full 200,000-record session.
 
 ## Verify a received bundle
 
 Treat received `.nlb` bytes as untrusted.
 
-The v0.2.0 application can verify and open the incident directly:
+The v0.2.0 application verifies version 3 bundles. Current source verifies versions 3 and 4. Open the incident directly:
 
 1. Start NarrowsLink on the receiving machine.
 2. Select **Open evidence** in the Sessions rail or top bar.
@@ -331,13 +333,15 @@ Exit statuses are:
 
 | Status | Meaning |
 | --- | --- |
-| `0` | The version 3 archive is internally consistent |
+| `0` | The supported version 3 or 4 archive is internally consistent |
 | `1` | The archive is invalid, tampered, unsafe, or unsupported |
 | `2` | Command usage or local file I/O failed |
 
 Do not extract a bundle that exits `1`. Correct path, permissions, or command usage before retrying an exit `2`.
 
-A valid bundle can truthfully report `incomplete` or `unknown` capture or provenance evidence. Version 3 bundles are unsigned, so the verifier reports authenticity as `not-established`. Exchange the reported bundle SHA-256 or expected manifest identity through a separately trusted channel when authorship or source-channel authenticity matters.
+A valid bundle can truthfully report `incomplete` or `unknown` capture or provenance evidence. Version 3 and 4 bundles are unsigned, so the verifier reports authenticity as `not-established`. Exchange the reported bundle SHA-256 or expected manifest identity through a separately trusted channel when authorship or source-channel authenticity matters.
+
+For a real-world handoff claim, follow the [independent field-proof procedure](docs/field-proofs/README.md). Loopback capture, simulated serial, self-verification, and reopening on the source browser are regression evidence, not an independent field proof.
 
 ## Compare two bounded inputs
 
@@ -459,7 +463,7 @@ Review and sanitize evidence before committing it to a repository, attaching it 
 
 The managed bridge control plane is loopback-only and uses an internal short-lived credential. The UDP listener still binds the interface chosen by the operator and can receive traffic from that interface.
 
-Release checksums and bundle verification establish internal consistency. The v0.2 release, checksum file, decoder packs, comparison findings, and version 3 evidence bundles are unsigned. They do not establish publisher, author, source-channel, or build-environment authenticity.
+Release checksums and bundle verification establish internal consistency. The v0.2 release, checksum file, decoder packs, comparison findings, and version 3 or 4 evidence bundles are unsigned. They do not establish publisher, author, source-channel, or build-environment authenticity.
 
 ## Current operating limits
 
@@ -470,8 +474,9 @@ Release checksums and bundle verification establish internal consistency. The v0
 - Imported and saved replay documents are limited to 64 MiB of canonical UTF-8 JSON, 200,000 records, and 24 hours.
 - Live capture is limited to 100,000 retained records, 32 MiB of retained payload bytes, 24 hours, and a canonical file that fits the 64 MiB replay limit.
 - Replay parsing, validation, decoding, aggregation, canonicalization, comparison construction, and bundle construction use local workers with progress and cancellation. The active replay and comparison evidence still occupy browser memory.
-- The tested 200,000-record corpus is 52,378,445 bytes. Its release budgets are no main-thread heartbeat gap above one second and no Chromium heap growth above 768 MiB for the measured operation; timings and baseline memory vary by browser and machine.
-- Version 3 bundle NDJSON and CSV artifacts are limited to 100,000 rows; use a narrower incident when the active replay contains more evidence.
+- The tested 200,000-record corpus is 52,378,445 bytes. Its release gate rejects a main-thread heartbeat gap above five seconds or accumulated timer delay above 50% of the measured operation; Chromium heap growth may not exceed 768 MiB. Timings and baseline memory vary by browser and machine.
+- Version 3 and 4 bundle NDJSON and CSV artifacts are limited to 100,000 rows; use a narrower incident when the active replay contains more evidence.
+- Linux procfs is the only current measured host UDP socket-drop source. Unsupported platforms, unreadable procfs, counter regression, and ambiguous socket identity remain explicit unavailable states. Payload bytes are observed; UDP and minimum IP bytes are estimates; link and radio bytes are unavailable.
 - Browser quota and Web Crypto availability can prevent a library save.
 - Only one replay is active at a time.
 - Physical Web Serial hardware and manual screen-reader/browser combinations remain outside the automated release gate.

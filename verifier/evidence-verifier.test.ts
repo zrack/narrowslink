@@ -290,6 +290,54 @@ function makeIncompleteUdpSession() {
   return parseSession(document);
 }
 
+function makeMeasuredDropUdpSession() {
+  const document = structuredClone(makeUdpSession().document) as SessionDocumentV2;
+  if (!document.transportProvenance || document.transportProvenance.transport !== "udp" || !document.transportProvenance.journal) {
+    throw new Error("Expected UDP journal.");
+  }
+  const journal = document.transportProvenance.journal;
+  journal.kernelDroppedDatagrams = 3;
+  journal.kernelDroppedDatagramsSource = "linux-proc-net-udp-socket";
+  const udpBytes = journal.bytes + (journal.datagrams * 8);
+  document.transportProvenance = {
+    ...document.transportProvenance,
+    schemaVersion: 2,
+    issueCodes: [],
+    byteAccounting: {
+      schemaVersion: 1,
+      scope: "whole-session",
+      datagrams: journal.datagrams,
+      payload: { bytes: journal.bytes, basis: "observed", source: "udp-bridge-payload-counter", confidence: "exact" },
+      udp: { bytes: udpBytes, basis: "estimated", source: "payload-plus-fixed-udp-header", confidence: "deterministic", headerBytesPerDatagram: 8 },
+      ip: {
+        bytes: udpBytes + (journal.datagrams * 20),
+        basis: "minimum-estimate",
+        source: "payload-plus-fixed-udp-and-ip-headers",
+        confidence: "bounded-assumption",
+        family: "IPv4",
+        headerBytesPerDatagram: 20,
+        assumptions: ["no-ip-options-or-extension-headers", "no-fragmentation"],
+      },
+      linkLayer: { bytes: null, basis: "unavailable", reason: "not-observed-at-udp-socket" },
+      radioLayer: { bytes: null, basis: "unavailable", reason: "not-observed-at-udp-socket" },
+    },
+  };
+  document.transportEvents = [{
+    id: "receiver-kernel-drops",
+    index: 0,
+    type: "udp-kernel-drops-observed",
+    transport: "udp",
+    scope: { kind: "session" },
+    severity: "critical",
+    message: "The capture socket reported three dropped datagrams.",
+    kernelDroppedDatagrams: 3,
+    counterSource: "linux-proc-net-udp-socket",
+  }];
+  document.captureIntegrity.status = "incomplete";
+  document.captureIntegrity.issueCodes = ["udp-kernel-drops-observed"];
+  return parseSession(document);
+}
+
 function makeJournalCounterMismatchUdpSession() {
   const document = structuredClone(makeUdpSession().document) as SessionDocumentV2;
   if (!document.transportProvenance || document.transportProvenance.transport !== "udp" || !document.transportProvenance.journal) {
@@ -402,7 +450,7 @@ function expectVerificationCode(action: () => unknown, code: string): void {
 }
 
 describe("production evidence receiver verifier", () => {
-  it("verifies full and minimal v3 bundles while keeping evidence and authenticity separate", async () => {
+  it("verifies full and minimal v4 bundles while keeping evidence and authenticity separate", async () => {
     const full = verifyEvidenceBundleBytes(await bundleFor());
     expect(full.report).toMatchObject({
       integrity: "internally-consistent",
@@ -426,6 +474,38 @@ describe("production evidence receiver verifier", () => {
     expect(minimal.rawRecords).toEqual([]);
     expect(minimal.report.integrity).toBe("internally-consistent");
     expect(minimal.report.warnings).toContain("Raw source records were excluded from this bundle.");
+  });
+
+  it("retains read compatibility for a canonical version 3 bundle", async () => {
+    const legacy = rewriteBundle(await bundleFor(), (_entries, manifest) => {
+      (manifest as { formatVersion: 3 | 4 }).formatVersion = 3;
+    });
+    const verified = verifyEvidenceBundleBytes(legacy);
+    expect(verified.manifest.formatVersion).toBe(3);
+    expect(verified.report.integrity).toBe("internally-consistent");
+  });
+
+  it("verifies measured kernel drops and rejects recomputed byte-accounting tampering", async () => {
+    const source = await bundleFor(makeMeasuredDropUdpSession());
+    const verified = verifyEvidenceBundleBytes(source);
+    expect(verified.report).toMatchObject({
+      integrity: "internally-consistent",
+      captureEvidence: "incomplete",
+      provenanceEvidence: "verified",
+    });
+    expect(verified.transportEvents).toContainEqual(expect.objectContaining({
+      type: "udp-kernel-drops-observed",
+      kernelDroppedDatagrams: 3,
+    }));
+
+    const tampered = rewriteBundle(source, (entries) => {
+      const provenance = JSON.parse(strFromU8(entries["transport/provenance.json"] ?? new Uint8Array())) as {
+        provenance: { byteAccounting: { ip: { bytes: number } } };
+      };
+      provenance.provenance.byteAccounting.ip.bytes += 1;
+      entries["transport/provenance.json"] = canonicalJson(provenance);
+    });
+    expectVerificationCode(() => verifyEvidenceBundleBytes(tampered), "SEMANTIC_MISMATCH");
   });
 
   it("replays NMEA evidence through the exact embedded decoder pack", async () => {
@@ -989,14 +1069,14 @@ describe("production evidence receiver verifier", () => {
         createdAt: "2026-07-18",
       }],
       generatedAt,
-    })).rejects.toThrow("markers artifact violates the version 3 receiver contract");
+    })).rejects.toThrow("markers artifact violates the current receiver contract");
 
     await expect(buildEvidenceBundle({
       session: makeUdpSession(),
       range: { startUs: 0, endUs: 300 },
       notes: [{ id: "invalid-note", title: "", body: "Empty present titles are not receiver-canonical." }],
       generatedAt,
-    })).rejects.toThrow("notes artifact violates the version 3 receiver contract");
+    })).rejects.toThrow("notes artifact violates the current receiver contract");
   });
 
   it("preflights NDJSON and CSV record and column bombs before unbounded container growth", async () => {
@@ -1051,7 +1131,7 @@ describe("production evidence receiver verifier", () => {
     expectVerificationCode(() => verifyEvidenceBundleBytes(noncanonicalJson), "CONTENT_INVALID");
 
     const unsupported = rewriteBundle(source, (_entries, manifest) => {
-      (manifest as unknown as { formatVersion: number }).formatVersion = 4;
+      (manifest as unknown as { formatVersion: number }).formatVersion = 5;
     });
     expectVerificationCode(() => verifyEvidenceBundleBytes(unsupported), "UNSUPPORTED_BUNDLE_VERSION");
   });

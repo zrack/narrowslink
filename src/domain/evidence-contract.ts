@@ -11,7 +11,8 @@ import {
 import type { TransportProvenance, UdpBridgeJournal } from "./types";
 
 export const EVIDENCE_BUNDLE_FORMAT = "narrowslink/evidence-bundle" as const;
-export const EVIDENCE_BUNDLE_FORMAT_VERSION = 3 as const;
+export const EVIDENCE_BUNDLE_FORMAT_VERSION = 4 as const;
+export const SUPPORTED_EVIDENCE_BUNDLE_FORMAT_VERSIONS = [3, 4] as const;
 export const EVIDENCE_BUNDLE_MEDIA_TYPE = "application/vnd.narrowslink.evidence-bundle+zip" as const;
 export const EVIDENCE_RANGE_SEMANTICS = "half-open [startUs, endUs)" as const;
 export const EVIDENCE_SOURCE_RECORD_ID_CHARACTERS = 128 as const;
@@ -175,13 +176,25 @@ export type EvidenceTransportUnavailableReason = z.infer<typeof unavailableReaso
 
 const availableProvenanceDocumentSchema = z.object({
   format: z.literal("narrowslink/transport-provenance"),
-  formatVersion: z.literal(1),
+  formatVersion: z.union([z.literal(1), z.literal(2)]),
   availability: z.literal("available"),
   sessionFormatVersion: z.literal(2),
   sourceId: boundedText(128),
   transport: z.enum(["udp", "serial"]),
   provenance: z.union([udpTransportProvenanceSchema, serialTransportProvenanceSchema]),
-}).strict();
+}).strict().superRefine((document, context) => {
+  const expectedFormatVersion = document.provenance.transport === "udp"
+    && document.provenance.schemaVersion === 2
+    ? 2
+    : 1;
+  if (document.formatVersion !== expectedFormatVersion) {
+    context.addIssue({
+      code: "custom",
+      path: ["formatVersion"],
+      message: "Transport-provenance document version does not match its nested provenance contract.",
+    });
+  }
+});
 
 const unavailableProvenanceDocumentSchema = z.object({
   format: z.literal("narrowslink/transport-provenance"),
@@ -202,7 +215,7 @@ export const evidenceTransportProvenanceDocumentSchema = z.discriminatedUnion("a
 export type EvidenceTransportProvenanceDocument =
   | {
       format: "narrowslink/transport-provenance";
-      formatVersion: 1;
+      formatVersion: 1 | 2;
       availability: "available";
       sessionFormatVersion: 2;
       sourceId: string;
@@ -298,7 +311,10 @@ export type EvidenceBundleProvenanceSummary = z.infer<typeof evidenceBundleProve
 
 export const evidenceBundleManifestSchema = z.object({
   format: z.literal(EVIDENCE_BUNDLE_FORMAT),
-  formatVersion: z.literal(EVIDENCE_BUNDLE_FORMAT_VERSION),
+  formatVersion: z.union([
+    z.literal(SUPPORTED_EVIDENCE_BUNDLE_FORMAT_VERSIONS[0]),
+    z.literal(SUPPORTED_EVIDENCE_BUNDLE_FORMAT_VERSIONS[1]),
+  ]),
   generatedAt: z.string().max(64).datetime({ offset: true }),
   session: z.object({
     id: boundedText(128),

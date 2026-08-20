@@ -4,6 +4,26 @@ All notable changes to NarrowsLink are recorded here. This is the canonical proj
 
 ## [Unreleased]
 
+### Added
+
+- Added a capture-scoped Linux UDP socket-drop adapter that reconciles `/proc/self/net/udp` or `udp6` with the bridge process socket inode, preserves explicit unavailable reasons on unsupported or ambiguous hosts, and projects positive measured drops into immutable transport evidence and capture-path diagnostics.
+- Added UDP transport-provenance schema version 2 with exact observed payload bytes, deterministic UDP overhead, minimum IPv4 or IPv6 estimates under explicit assumptions, and unavailable link and radio layers.
+- Added evidence-bundle version 4 with receiver recomputation of UDP byte accounting and cross-document host-drop reconciliation while retaining bounded read compatibility for version 3 bundles.
+
+### Changed
+
+- Replaced the timing-sensitive one-second large-session heartbeat assertion with a five-second hard gap ceiling plus a 50% accumulated timer-delay ratio, while retaining the 768 MiB Chromium heap-growth budget.
+- Expanded replay and receiver provenance inspectors to show host UDP drop-counter status, observation source, layered byte accounting, and the UDP-socket claim boundary.
+- Refocused the roadmap on a real non-demo, second-installation field handoff and separated future signed identity from capture-path attribution.
+
+### Fixed
+
+- Detached a removed active replay from persisted workspace writes even when residual marker, note, or authored-range cleanup fails, preventing stale cleanup state from erasing the still-open in-memory note in WebKit.
+
+### Documentation
+
+- Documented the UDP capture-attribution contract, bundle compatibility, independent field-proof procedure, and a dated pending readiness result that does not substitute loopback or simulated-device coverage for physical evidence.
+
 ## [0.2.0] - 2026-07-25
 
 ### Added

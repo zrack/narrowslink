@@ -75,7 +75,7 @@ Available commands:
 | `npm run capture:demo:nmea` | Send repeatable checksummed NMEA 0183 datagrams |
 | `npm run fixture:generate` | Regenerate the deterministic bundled replay |
 | `npm run fixture:large` | Stream the ignored 200,000-record acceptance corpus into `output/large-session/` |
-| `npm run verify:bundle -- incident.nlb` | Build the receiver CLI and verify a local version 3 evidence bundle; add `--json` for machine-readable output |
+| `npm run verify:bundle -- incident.nlb` | Build the receiver CLI and verify a local version 3 or 4 evidence bundle; add `--json` for machine-readable output |
 
 ## Maintainer release process
 
@@ -147,6 +147,7 @@ Changing a description, schema, fixture, or expected result changes pack identit
 - New live captures must finalize as session v2 with immutable transport events and a terminal receipt. Preserve strict v1 import behavior and never infer verified integrity for legacy evidence.
 - Never substitute browser or recorder counts for an unavailable transport-reported count. Preserve null observations, use the truthful incomplete assessment basis, and require explicit adapter evidence before verification.
 - Preserve the bridge journal, per-datagram UDP remote endpoint, and Web Serial device and negotiated-setting evidence when changing capture code. Keep unavailable operating-system counters explicitly null with their observation source; do not convert missing evidence into a clean zero.
+- Keep host UDP counters scoped to one identified capture socket and sampling interval. A numeric counter requires its measured observation source; unsupported platforms, unreadable counters, ambiguous sockets, and regressions remain explicit unavailable states. Keep observed payload, estimated UDP, minimum IP, and unavailable link or radio accounting distinct.
 - Reconcile receipt issue codes, counters, and immutable events for incomplete as well as verified captures. If the bounded event log is exhausted, mark it incomplete and retain every known receipt-level fact rather than fabricating an event.
 - Classify observed capture failures as `capture-path` evidence; CRC or partial-frame detection alone does not prove whether the source, link, decoder, or local capture path caused the corruption.
 - Bound live recording by the serialized `.nlsession` size, not only the binary payload size, so every accepted capture remains importable.
@@ -156,7 +157,7 @@ Changing a description, schema, fixture, or expected result changes pack identit
 - Make evidence manifests truthful: every listed file must exist, every inclusion toggle must be honored, and hashes must cover the exact emitted bytes.
 - Always emit and hash `transport/events.json`, `transport/provenance.json`, `transport/journal.json`, and `transport/integrity-receipt.json`; transport evidence is a mandatory bundle baseline, not an optional group.
 - Treat received `.nlb` bytes as untrusted. Preflight bounded ZIP structure and canonical paths before decompression, reject unsupported or ambiguous archive features, and apply strict resource limits, UTF-8 parsing, schemas, counts, ranges, and cross-artifact reconciliation.
-- Treat the version 3 manifest duration as authoritative: every selected range, timed event, raw or decoded record, diagnostic, annotation, receipt stop, and bridge-journal offset must remain within it.
+- Treat the supported version 3 or 4 manifest duration as authoritative: every selected range, timed event, raw or decoded record, diagnostic, annotation, receipt stop, and bridge-journal offset must remain within it.
 - Keep receiver verification in production code and make browser or test helpers thin adapters to it. Report internal consistency, capture and provenance evidence, and authenticity separately; do not turn an unsigned consistency pass into an authenticity claim or treat truthfully incomplete or unknown evidence as tampering.
 - Do not add a required cloud dependency for capture, replay, analysis, or export.
 

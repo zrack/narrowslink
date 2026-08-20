@@ -10,6 +10,7 @@ import {
   EVIDENCE_SOURCE_RECORD_ID_CHARACTERS,
   MANDATORY_EVIDENCE_ARTIFACT_PATHS,
   OPTIONAL_EVIDENCE_ARTIFACT_GROUPS,
+  SUPPORTED_EVIDENCE_BUNDLE_FORMAT_VERSIONS,
   evidenceBundleManifestSchema,
   evidenceDiagnosticsDocumentSchema,
   evidenceMarkersDocumentSchema,
@@ -142,6 +143,7 @@ const FORMULA_PATTERN = /^[\t\r ]*[=+\-@]/;
 const UDP_CAPTURE_ISSUE_CODES = new Set([
   "udp-event-sequence-discontinuity",
   "udp-counter-mismatch",
+  "udp-kernel-drops-observed",
   "udp-bridge-error",
   "udp-event-stream-disconnected",
   "capture-backpressure",
@@ -1020,7 +1022,7 @@ function verifyCaptureReceipt(
   }
 
   if (receipt.eventLogComplete) {
-    for (const type of ["udp-counter-mismatch", "serial-counter-mismatch"] as const) {
+    for (const type of ["udp-counter-mismatch", "udp-kernel-drops-observed", "serial-counter-mismatch"] as const) {
       if (!issueCodes.has(type)) continue;
       ensure(events.filter((event) => event.type === type).length === 1, "SEMANTIC_MISMATCH", `Complete event evidence requires one ${type} event.`, "transport/events.json");
     }
@@ -1029,7 +1031,13 @@ function verifyCaptureReceipt(
 
 function verifyUdpJournal(journal: UdpBridgeJournal, receipt: CaptureIntegrityReceipt, sessionStartedAt: string, durationUs: number): void {
   ensure(journal.startedAt === sessionStartedAt, "SEMANTIC_MISMATCH", "Journal start does not match the session start.", "transport/journal.json");
-  ensure((journal.kernelDroppedDatagramsSource === "unavailable") === (journal.kernelDroppedDatagrams === null), "SEMANTIC_MISMATCH", "Journal kernel-drop availability conflicts with its counter.", "transport/journal.json");
+  ensure(
+    (journal.kernelDroppedDatagramsSource === "linux-proc-net-udp-socket")
+      === (journal.kernelDroppedDatagrams !== null),
+    "SEMANTIC_MISMATCH",
+    "Journal kernel-drop availability conflicts with its counter.",
+    "transport/journal.json",
+  );
   ensure(journal.entriesComplete === (journal.omittedEntries === 0), "SEMANTIC_MISMATCH", "Journal completeness conflicts with omitted entries.", "transport/journal.json");
   ensure(!(journal.state === "active" && journal.endedAt !== null), "SEMANTIC_MISMATCH", "An active journal cannot declare an end timestamp.", "transport/journal.json");
   ensure(!(journal.state === "clean" && (journal.endedAt === null || !journal.entriesComplete)), "SEMANTIC_MISMATCH", "A clean journal requires a complete terminal lifecycle.", "transport/journal.json");
@@ -1082,6 +1090,7 @@ function verifyTransportEvidence(
   provenanceDocument: EvidenceTransportProvenanceDocument,
   journalDocument: EvidenceTransportJournalDocument,
   receipt: CaptureIntegrityReceipt,
+  events: readonly TransportEvent[],
   rawRecords: readonly SourceRecord[],
   warnings: string[],
 ): void {
@@ -1193,7 +1202,7 @@ function verifyTransportEvidence(
     ...(journalIncomplete ? ["udp-bridge-journal-incomplete"] : []),
     ...(journalCounterMismatch ? ["udp-bridge-journal-counter-mismatch"] : []),
     ...(attribution.unattributedRecords > 0 ? ["udp-endpoint-attribution-incomplete"] : []),
-    ...(journal !== null ? ["udp-kernel-drop-counter-unavailable"] : []),
+    ...(journal !== null && journal.kernelDroppedDatagrams === null ? ["udp-kernel-drop-counter-unavailable"] : []),
   ];
   ensure(
     sameStringSet(provenance.issueCodes, expectedIssueCodes)
@@ -1207,6 +1216,41 @@ function verifyTransportEvidence(
     ensure(isDeepStrictEqual(manifest.provenance.journal, { availability: "unavailable", reason: "journal-unavailable", state: null, entriesComplete: null, entryCount: 0, omittedEntries: 0 }) && manifest.provenance.captureId === null, "SEMANTIC_MISMATCH", "Manifest journal summary does not match unavailable journal evidence.");
     return;
   }
+
+  if (provenance.schemaVersion === 2) {
+    const accounting = provenance.byteAccounting;
+    ensure(accounting !== null, "SEMANTIC_MISMATCH", "Version 2 UDP provenance requires byte accounting when its journal is available.", "transport/provenance.json");
+    const expectedUdpBytes = journal.bytes + (journal.datagrams * 8);
+    const expectedIpHeaderBytes = journal.bind.family === "IPv4" ? 20 : 40;
+    ensure(
+      accounting.datagrams === journal.datagrams
+        && accounting.payload.bytes === journal.bytes
+        && accounting.udp.bytes === expectedUdpBytes
+        && accounting.ip.bytes === expectedUdpBytes + (journal.datagrams * expectedIpHeaderBytes)
+        && accounting.ip.family === journal.bind.family
+        && accounting.ip.headerBytesPerDatagram === expectedIpHeaderBytes,
+      "SEMANTIC_MISMATCH",
+      "UDP byte accounting does not reconcile with the bridge journal.",
+      "transport/provenance.json",
+    );
+  }
+
+  const kernelDrops = journal.kernelDroppedDatagrams ?? 0;
+  const dropEvents = events.filter((event) => event.type === "udp-kernel-drops-observed");
+  ensure(
+    receipt.issueCodes.includes("udp-kernel-drops-observed") === (kernelDrops > 0)
+      && dropEvents.length <= 1
+      && (kernelDrops > 0
+        ? (!receipt.eventLogComplete || dropEvents.length === 1)
+        : dropEvents.length === 0)
+      && dropEvents.every((event) => (
+        event.kernelDroppedDatagrams === kernelDrops
+        && event.counterSource === journal.kernelDroppedDatagramsSource
+      )),
+    "SEMANTIC_MISMATCH",
+    "UDP kernel-drop evidence does not reconcile across the journal, event log, and receipt.",
+    "transport/provenance.json",
+  );
 
   ensure(journalDocument.availability === "available" && journalDocument.captureId === journal.captureId && isDeepStrictEqual(journalDocument.journal, journal), "SEMANTIC_MISMATCH", "Journal artifact does not match provenance.json.");
   verifyUdpJournal(journal, receipt, manifest.session.startedAt, manifest.session.durationUs);
@@ -1385,12 +1429,19 @@ export function verifyEvidenceBundleBytes(archiveBytes: Uint8Array): VerifiedEvi
   } catch (error) {
     fail("CONTENT_INVALID", "manifest.json is not valid JSON.", "manifest.json", error);
   }
-  if (manifestValue && typeof manifestValue === "object" && "formatVersion" in manifestValue && (manifestValue as { formatVersion?: unknown }).formatVersion !== 3) {
+  if (
+    manifestValue
+    && typeof manifestValue === "object"
+    && "formatVersion" in manifestValue
+    && !SUPPORTED_EVIDENCE_BUNDLE_FORMAT_VERSIONS.includes(
+      (manifestValue as { formatVersion?: unknown }).formatVersion as 3 | 4,
+    )
+  ) {
     fail("UNSUPPORTED_BUNDLE_VERSION", `Unsupported NarrowsLink evidence bundle version ${String((manifestValue as { formatVersion?: unknown }).formatVersion)}.`, "manifest.json");
   }
   ensure(manifestText === canonicalJson(manifestValue, true), "CONTENT_INVALID", "manifest.json is not canonical NarrowsLink JSON.", "manifest.json");
   const parsedManifest = evidenceBundleManifestSchema.safeParse(manifestValue);
-  if (!parsedManifest.success) fail("CONTENT_INVALID", "manifest.json does not match the v3 evidence schema.", "manifest.json", parsedManifest.error);
+  if (!parsedManifest.success) fail("CONTENT_INVALID", "manifest.json does not match the supported v3/v4 evidence schema.", "manifest.json", parsedManifest.error);
   const manifest = parsedManifest.data;
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: manifest.session.displayTimeZone }).format(0);
@@ -1458,11 +1509,11 @@ export function verifyEvidenceBundleBytes(archiveBytes: Uint8Array): VerifiedEvi
   const diagnostics = verifyDiagnostics(entries, manifest, decoded.frameIds);
   const markers = verifyMarkers(entries, manifest);
   const notes = verifyNotes(entries, manifest);
-  verifyTransportEvidence(manifest, provenance, journal, receipt, rawRecords, warnings);
+  verifyTransportEvidence(manifest, provenance, journal, receipt, transportEventsDocument.events, rawRecords, warnings);
   if (!manifest.inclusions.rawRecords) warnings.push("Raw source records were excluded from this bundle.");
   if (receipt.status === "incomplete") warnings.push(`Capture integrity is incomplete: ${receipt.issueCodes.join(", ") || "unspecified"}.`);
   if (receipt.status === "unknown") warnings.push("Capture integrity is unknown for this session format or source.");
-  warnings.push("Authenticity is not established: v3 evidence bundles are checksummed but unsigned.");
+  warnings.push("Authenticity is not established: v3/v4 evidence bundles are checksummed but unsigned.");
 
   const artifactPaths = manifest.artifacts.map((artifact) => artifact.path);
   const report: EvidenceVerificationReport = {

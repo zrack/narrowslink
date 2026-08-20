@@ -122,7 +122,7 @@ describe("CaptureDialog UDP integrity", () => {
       datagrams: 1,
       bytes: 4,
       kernelDroppedDatagrams: null,
-      kernelDroppedDatagramsSource: "unavailable",
+      kernelDroppedDatagramsSource: "unavailable-unsupported-platform",
       entriesComplete: true,
       omittedEntries: 0,
       entries: [

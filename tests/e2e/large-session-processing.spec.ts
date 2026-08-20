@@ -24,6 +24,8 @@ const LARGE_SESSION_PATH = path.join(
 interface HeartbeatReport {
   readonly ticks: number;
   readonly maximumGapMs: number;
+  readonly delayedMs: number;
+  readonly delayRatio: number;
   readonly elapsedMs: number;
   readonly heapStartBytes: number | null;
   readonly heapEndBytes: number | null;
@@ -100,7 +102,7 @@ async function startHeartbeat(
   page: Page,
   options: { onNextReplayFileChange?: boolean } = {},
 ): Promise<void> {
-  await page.evaluate(({ onNextReplayFileChange }) => {
+  await page.evaluate(({ onNextReplayFileChange, heartbeatIntervalMs }) => {
     const scope = globalThis as typeof globalThis & {
       __narrowslinkScaleHeartbeat?: {
         timer: number;
@@ -108,6 +110,7 @@ async function startHeartbeat(
         previousAt: number;
         ticks: number;
         maximumGapMs: number;
+        delayedMs: number;
         heapStartBytes: number | null;
       };
     };
@@ -124,19 +127,22 @@ async function startHeartbeat(
         previousAt: startedAt,
         ticks: 0,
         maximumGapMs: 0,
+        delayedMs: 0,
         heapStartBytes: typeof memory?.usedJSHeapSize === "number"
           ? memory.usedJSHeapSize
           : null,
       };
       heartbeat.timer = window.setInterval(() => {
         const now = performance.now();
+        const gapMs = now - heartbeat.previousAt;
         heartbeat.maximumGapMs = Math.max(
           heartbeat.maximumGapMs,
-          now - heartbeat.previousAt,
+          gapMs,
         );
+        heartbeat.delayedMs += Math.max(0, gapMs - heartbeatIntervalMs);
         heartbeat.previousAt = now;
         heartbeat.ticks += 1;
-      }, 25);
+      }, heartbeatIntervalMs);
       scope.__narrowslinkScaleHeartbeat = heartbeat;
     };
     if (onNextReplayFileChange) {
@@ -148,11 +154,14 @@ async function startHeartbeat(
     } else {
       begin();
     }
-  }, options);
+  }, {
+    ...options,
+    heartbeatIntervalMs: LARGE_SESSION_SUPPORT_TIER.heartbeatIntervalMs,
+  });
 }
 
 async function stopHeartbeat(page: Page): Promise<HeartbeatReport> {
-  return page.evaluate(() => {
+  return page.evaluate((heartbeatIntervalMs) => {
     const scope = globalThis as typeof globalThis & {
       __narrowslinkScaleHeartbeat?: {
         timer: number;
@@ -160,6 +169,7 @@ async function stopHeartbeat(page: Page): Promise<HeartbeatReport> {
         previousAt: number;
         ticks: number;
         maximumGapMs: number;
+        delayedMs: number;
         heapStartBytes: number | null;
       };
     };
@@ -178,25 +188,33 @@ async function stopHeartbeat(page: Page): Promise<HeartbeatReport> {
     const heapGrowthBytes = heartbeat.heapStartBytes === null || heapEndBytes === null
       ? null
       : Math.max(0, heapEndBytes - heartbeat.heapStartBytes);
+    const finalGapMs = endedAt - heartbeat.previousAt;
+    const delayedMs = heartbeat.delayedMs + Math.max(0, finalGapMs - heartbeatIntervalMs);
+    const elapsedMs = endedAt - heartbeat.startedAt;
     delete scope.__narrowslinkScaleHeartbeat;
     return {
       ticks: heartbeat.ticks,
       maximumGapMs: Math.max(
         heartbeat.maximumGapMs,
-        endedAt - heartbeat.previousAt,
+        finalGapMs,
       ),
-      elapsedMs: endedAt - heartbeat.startedAt,
+      delayedMs,
+      delayRatio: elapsedMs === 0 ? 0 : Math.min(1, delayedMs / elapsedMs),
+      elapsedMs,
       heapStartBytes: heartbeat.heapStartBytes,
       heapEndBytes,
       heapGrowthBytes,
     };
-  });
+  }, LARGE_SESSION_SUPPORT_TIER.heartbeatIntervalMs);
 }
 
 function assertResponsive(report: HeartbeatReport): void {
   expect(report.ticks).toBeGreaterThan(0);
   expect(report.maximumGapMs).toBeLessThanOrEqual(
     LARGE_SESSION_SUPPORT_TIER.maxMainThreadHeartbeatGapMs,
+  );
+  expect(report.delayRatio).toBeLessThanOrEqual(
+    LARGE_SESSION_SUPPORT_TIER.maxMainThreadDelayRatio,
   );
   if (report.heapGrowthBytes !== null) {
     expect(report.heapGrowthBytes).toBeLessThanOrEqual(
